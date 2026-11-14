@@ -79,7 +79,7 @@
       if (items.length === 0) {
         listContainer.innerHTML = `
           <div class="notification-empty-state">
-            <div class="empty-icon">🔔</div>
+            <div class="empty-icon"><i data-lucide="bell-off" aria-hidden="true"></i></div>
             <h4>No Notifications Yet</h4>
             <p>You're all caught up! New updates will appear here.</p>
           </div>
@@ -263,6 +263,14 @@
         return;
       }
 
+      if (type === 'report' || refType === 'report_submitted' || link === 'sectionReports') {
+        switchSection('sectionReports');
+        if (refId && typeof window.openReportDetailsById === 'function') {
+          window.openReportDetailsById(refId);
+        }
+        return;
+      }
+
       if (link === 'sectionDirectory') switchSection('sectionDirectory');
       else if (link === 'sectionProfile' && typeof openProfileView === 'function') openProfileView('accountInfo');
       else if (link) switchSection(link);
@@ -271,6 +279,17 @@
     else if (typeof switchTenantSection === 'function') {
       if (link === 'tenantProfile' && typeof openProfileView === 'function') {
         openProfileView('accountInfo');
+      } else if (type === 'report' || refType === 'report_reviewed' || link === 'tenantReport') {
+        switchTenantSection('tenantReport');
+        if (refId && typeof openTenantReportModal === 'function') {
+          fetch('api/report_api.php?report_id=' + parseInt(refId, 10))
+            .then(r => r.json())
+            .then(res => {
+              if (res.status === 'success' && res.report) {
+                openTenantReportModal(res.report);
+              }
+            }).catch(() => {});
+        }
       } else if (link) {
         switchTenantSection(link);
       }

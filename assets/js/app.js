@@ -57,15 +57,19 @@ document.addEventListener('DOMContentLoaded', () => {
     toastMessage.textContent = message;
 
     if (type === 'success') {
-      toastIcon.textContent = '✨';
+      toastIcon.innerHTML = '<i data-lucide="check-circle-2" class="w-4 h-4" aria-hidden="true"></i>';
+      toastIcon.style.color = '#059669';
       clayToast.style.borderColor = 'rgba(110, 231, 183, 0.8)';
     } else if (type === 'error') {
-      toastIcon.textContent = '⚠️';
+      toastIcon.innerHTML = '<i data-lucide="alert-triangle" class="w-4 h-4" aria-hidden="true"></i>';
+      toastIcon.style.color = '#dc2626';
       clayToast.style.borderColor = 'rgba(253, 164, 175, 0.8)';
     } else {
-      toastIcon.textContent = 'ℹ️';
+      toastIcon.innerHTML = '<i data-lucide="info" class="w-4 h-4" aria-hidden="true"></i>';
+      toastIcon.style.color = '#0284c7';
       clayToast.style.borderColor = 'rgba(125, 211, 252, 0.8)';
     }
+    if (window.refreshLucideIcons) window.refreshLucideIcons();
 
     clayToast.classList.add('show');
     toastTimer = setTimeout(() => {
@@ -402,7 +406,7 @@ document.addEventListener('DOMContentLoaded', () => {
           const alertEl = document.createElement('div');
           alertEl.className = 'alert-clay alert-clay-warning';
           alertEl.innerHTML = `
-            <div class="alert-icon-clay">⚡</div>
+            <div class="alert-icon-clay"><i data-lucide="zap" class="w-5 h-5" aria-hidden="true"></i></div>
             <div class="alert-body-clay">
               <h4>${alert.unit} - Anomaly Detected (${alert.variance_percent})</h4>
               <p>${escapeHtml(alert.message)}</p>
@@ -418,7 +422,7 @@ document.addEventListener('DOMContentLoaded', () => {
           const delinqEl = document.createElement('div');
           delinqEl.className = 'alert-clay alert-clay-info';
           delinqEl.innerHTML = `
-            <div class="alert-icon-clay">📌</div>
+            <div class="alert-icon-clay"><i data-lucide="pin" class="w-5 h-5" aria-hidden="true"></i></div>
             <div class="alert-body-clay">
               <h4>${delinq.unit} Receivables Delay - ${delinq.tenant}</h4>
               <p>${escapeHtml(delinq.diagnostic_explanation)}</p>

@@ -254,6 +254,8 @@ if (!$tokenMode && $_SERVER['REQUEST_METHOD'] === 'POST') {
 
   <!-- Claymorphism Design System -->
   <link rel="stylesheet" href="assets/css/claymorphism.css">
+  <script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+  <script src="assets/js/lucide_init.js?v=20261112"></script>
 
   <style>
     .login-wrapper {
@@ -337,7 +339,7 @@ if (!$tokenMode && $_SERVER['REQUEST_METHOD'] === 'POST') {
       <?php elseif ($tokenMode): ?>
         <?php if (!$tokenValid): ?>
           <div class="alert-clay alert-clay-warning" style="margin-bottom: 24px;">
-            <div class="alert-icon-clay">⚠️</div>
+            <div class="alert-icon-clay" style="color: #b91c1c;"><i data-lucide="alert-triangle" class="w-5 h-5" aria-hidden="true"></i></div>
             <div class="alert-body-clay">
               <h4 style="color: #9f1239;">Link Unavailable</h4>
               <p style="font-size: 13px; line-height: 1.5;"><?= htmlspecialchars($errorMessage ?? 'Invalid password setup link.', ENT_QUOTES, 'UTF-8') ?></p>
@@ -359,7 +361,7 @@ if (!$tokenMode && $_SERVER['REQUEST_METHOD'] === 'POST') {
 
           <?php if ($errorMessage): ?>
             <div class="alert-clay alert-clay-warning" style="margin-bottom: 20px;">
-              <div class="alert-icon-clay">⚠️</div>
+              <div class="alert-icon-clay" style="color: #b91c1c;"><i data-lucide="alert-triangle" class="w-5 h-5" aria-hidden="true"></i></div>
               <div class="alert-body-clay">
                 <h4 style="color: #9f1239;">Error</h4>
                 <p style="font-size: 13px; line-height: 1.45;"><?= htmlspecialchars($errorMessage, ENT_QUOTES, 'UTF-8') ?></p>
@@ -417,7 +419,7 @@ if (!$tokenMode && $_SERVER['REQUEST_METHOD'] === 'POST') {
 
         <?php if ($codeSent): ?>
           <div class="alert-clay alert-clay-success" style="margin-bottom: 20px;">
-            <div class="alert-icon-clay">✉️</div>
+            <div class="alert-icon-clay" style="color: #059669;"><i data-lucide="mail" class="w-5 h-5" aria-hidden="true"></i></div>
             <div class="alert-body-clay">
               <h4 style="color: #065f46;">Verification Code Sent</h4>
               <p style="font-size: 13px; line-height: 1.45;">
@@ -429,7 +431,7 @@ if (!$tokenMode && $_SERVER['REQUEST_METHOD'] === 'POST') {
 
         <?php if ($errorMessage): ?>
           <div class="alert-clay alert-clay-warning" style="margin-bottom: 20px;">
-            <div class="alert-icon-clay">⚠️</div>
+            <div class="alert-icon-clay" style="color: #b91c1c;"><i data-lucide="alert-triangle" class="w-5 h-5" aria-hidden="true"></i></div>
             <div class="alert-body-clay">
               <h4 style="color: #9f1239;">Notice</h4>
               <p style="font-size: 13px; line-height: 1.45;"><?= htmlspecialchars($errorMessage, ENT_QUOTES, 'UTF-8') ?></p>

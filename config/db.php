@@ -48,6 +48,7 @@ class Database {
                 $pdo->exec("ALTER TABLE `users` ADD KEY IF NOT EXISTS `idx_users_email` (`email`)");
             } catch (Throwable $e) {}
 
+            $pdo->exec("ALTER TABLE `users` ADD COLUMN IF NOT EXISTS `monthly_rent` DECIMAL(10,2) NULL AFTER `unit_id`");
             $pdo->exec("ALTER TABLE `payments` ADD COLUMN IF NOT EXISTS `payment_type` VARCHAR(50) NOT NULL DEFAULT 'Rent' AFTER `unit_id`");
             $pdo->exec("ALTER TABLE `payments` MODIFY COLUMN `status` ENUM('pending_setup', 'unpaid', 'pending', 'approved', 'rejected', 'overdue') NOT NULL DEFAULT 'pending_setup'");
         } catch (Throwable $e) {

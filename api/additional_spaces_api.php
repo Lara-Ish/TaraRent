@@ -237,6 +237,13 @@ try {
             $breakdownStr = implode(' + ', $breakdownParts);
             $totalMonthlyBill = $baseRent + $totalExtraFee;
 
+            // Keep users.monthly_rent synchronized with base rent + rented additional spaces
+            $updUserRentStmt = $pdo->prepare("UPDATE users SET monthly_rent = :mr WHERE id = :tid");
+            $updUserRentStmt->execute([
+                ':mr' => $totalMonthlyBill,
+                ':tid' => $tenantId
+            ]);
+
             // Automatically sync tenant's active unpaid Rent bill (current cycle)
             $unpaidBillStmt = $pdo->prepare("
                 SELECT id, base_rent_amount, amount_due, status 
@@ -398,6 +405,13 @@ try {
             }
             $remainingBreakdown = !empty($remParts) ? implode(' + ', $remParts) : null;
             $newTotalMonthlyBill = $baseRent + $remainingExtraFee;
+
+            // Keep users.monthly_rent synchronized after cancelling space rental
+            $updUserRentStmt = $pdo->prepare("UPDATE users SET monthly_rent = :mr WHERE id = :tid");
+            $updUserRentStmt->execute([
+                ':mr' => $newTotalMonthlyBill,
+                ':tid' => $assignedTenantId
+            ]);
 
             // If tenant has an unpaid Rent bill, adjust its amount (paid bills remain completely untouched)
             $unpaidBillStmt = $pdo->prepare("

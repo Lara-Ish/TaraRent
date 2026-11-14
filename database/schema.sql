@@ -31,6 +31,8 @@ CREATE TABLE `units` (
     `bedrooms` INT NOT NULL DEFAULT 2,
     `bathrooms` DECIMAL(3,1) NOT NULL DEFAULT 1.0,
     `monthly_rent` DECIMAL(10,2) NOT NULL,
+    `status` VARCHAR(20) NOT NULL DEFAULT 'available',
+    `occupant_id` INT UNSIGNED NULL,
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -52,6 +54,8 @@ CREATE TABLE `users` (
     `is_verified` TINYINT(1) NOT NULL DEFAULT 0,
     `id_type` VARCHAR(50) NULL,
     `id_photo_filename` VARCHAR(255) NULL,
+    `pending_id_path` VARCHAR(255) NULL,
+    `pending_id_type` VARCHAR(50) NULL,
     `live_photo_filename` VARCHAR(255) NULL,
     `profile_picture` VARCHAR(255) NULL,
     `id_submitted_at` DATETIME NULL,
@@ -136,7 +140,7 @@ CREATE TABLE `maintenance_tickets` (
     `title` VARCHAR(150) NOT NULL,
     `description` TEXT NOT NULL,
     `photo_path` VARCHAR(1000) NULL,
-    `category` ENUM('Plumbing', 'Electrical', 'HVAC', 'Appliance', 'Structural', 'General') NOT NULL,
+    `category` VARCHAR(50) NOT NULL DEFAULT 'General',
     `priority` ENUM('low', 'medium', 'high', 'urgent') NOT NULL DEFAULT 'medium',
     `status` ENUM('open', 'in_progress', 'resolved', 'closed') NOT NULL DEFAULT 'open',
     `actual_cost` DECIMAL(10,2) NOT NULL DEFAULT 0.00,
@@ -321,5 +325,44 @@ CREATE TABLE IF NOT EXISTS `announcement_recipients` (
         FOREIGN KEY (`tenant_id`) REFERENCES `users` (`id`) 
         ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ----------------------------------------------------------------------------
+-- 8. TENANT REPORTS TABLE
+-- General non-maintenance tenant reports/requests (occupants, pets, unit modifications, inquiries).
+-- Completely separated from maintenance_tickets repair queues.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `tenant_reports` (
+    `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+    `tenant_id` INT UNSIGNED NOT NULL,
+    `unit_id` INT UNSIGNED NOT NULL,
+    `category` ENUM(
+        'Additional Occupant Registration',
+        'Pet Adoption/Registration',
+        'Unit Customization/Modification',
+        'General Inquiry',
+        'Other...'
+    ) NOT NULL,
+    `subject` VARCHAR(180) NOT NULL,
+    `details` TEXT NOT NULL,
+    `attachment_path` VARCHAR(1000) NULL DEFAULT NULL,
+    `status` ENUM('Pending','Approved','Rejected','Acknowledged') NOT NULL DEFAULT 'Pending',
+    `owner_remarks` TEXT NULL DEFAULT NULL,
+    `reviewed_by` INT UNSIGNED NULL DEFAULT NULL,
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `reviewed_at` DATETIME NULL DEFAULT NULL,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    KEY `idx_tr_tenant` (`tenant_id`),
+    KEY `idx_tr_unit` (`unit_id`),
+    KEY `idx_tr_status` (`status`),
+    KEY `idx_tr_created` (`created_at`),
+    CONSTRAINT `fk_tr_tenant`
+        FOREIGN KEY (`tenant_id`) REFERENCES `users` (`id`)
+        ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT `fk_tr_unit`
+        FOREIGN KEY (`unit_id`) REFERENCES `units` (`id`)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 
 

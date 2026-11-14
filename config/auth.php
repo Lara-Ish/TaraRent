@@ -245,6 +245,8 @@ class Auth {
 
     /**
      * Guard: Require Tenant role
+     * Checks if tenant account has been archived or deactivated; if so, immediately terminates session
+     * and redirects with appropriate reason to prevent forced URL navigation.
      */
     public static function requireTenant(): void {
         self::requireAuth();
@@ -253,10 +255,28 @@ class Auth {
             exit;
         }
         $pdo = Database::getConnection();
-        $stmt = $pdo->prepare("SELECT is_active FROM users WHERE id = :id LIMIT 1");
+        $stmt = $pdo->prepare("SELECT is_active, is_archived, rental_status, deleted_at FROM users WHERE id = :id LIMIT 1");
         $stmt->execute([':id' => (int)($_SESSION['user_id'] ?? 0)]);
-        $active = $stmt->fetchColumn();
-        if ($active === false || (int)$active !== 1) {
+        $userRow = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$userRow) {
+            self::logout();
+            header('Location: login.php');
+            exit;
+        }
+
+        // Lockout archived tenant accounts immediately and destroy session
+        $isArchived = ((int)($userRow['is_archived'] ?? 0) === 1)
+            || (($userRow['rental_status'] ?? '') === 'archived')
+            || !empty($userRow['deleted_at']);
+
+        if ($isArchived) {
+            self::logout();
+            header('Location: login.php?msg=archived');
+            exit;
+        }
+
+        if ((int)($userRow['is_active'] ?? 1) !== 1) {
             self::logout();
             header('Location: login.php?msg=deactivated');
             exit;
@@ -264,39 +284,82 @@ class Auth {
     }
 
     /**
-     * Authenticate user credentials against SQL database
+     * Authenticate user credentials against SQL database and validate account status.
+     * Returns structured result distinguishing between invalid credentials, archived accounts,
+     * deactivated accounts, and successful authentications.
      */
-    public static function attempt(string $username, string $password, bool $rememberMe = false): bool {
+    public static function validateLogin(string $username, string $password, bool $rememberMe = false): array {
         $pdo = Database::getConnection();
 
         $stmt = $pdo->prepare("
-            SELECT u.id, u.unit_id, u.username, u.name, u.email, u.password_hash, u.role, u.phone, u.is_active,
+            SELECT u.id, u.unit_id, u.username, u.name, u.email, u.password_hash, u.role, u.phone,
+                   u.is_active, u.is_archived, u.rental_status, u.deleted_at,
                    un.unit_number
             FROM users u
             LEFT JOIN units un ON u.unit_id = un.id
-            WHERE (u.username = :u1 OR u.email = :u2) AND u.is_active = 1 AND (u.is_archived = 0 OR u.is_archived IS NULL)
+            WHERE (u.username = :u1 OR u.email = :u2)
             LIMIT 1
         ");
         $stmt->execute([':u1' => $username, ':u2' => $username]);
-        $user = $stmt->fetch();
+        $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
-        if ($user && password_verify($password, $user['password_hash'])) {
-            if (PHP_SAPI !== 'cli' && session_status() === PHP_SESSION_ACTIVE && !headers_sent()) {
-                session_regenerate_id(true);
-            }
-
-            self::populateSession($user);
-
-            if ($rememberMe) {
-                self::issueRememberCookies($user, $username);
-            } else {
-                self::clearRememberCookies(true);
-            }
-
-            return true;
+        if (!$user || !password_verify($password, (string)($user['password_hash'] ?? ''))) {
+            return [
+                'success' => false,
+                'status'  => 'invalid',
+                'message' => 'Invalid email address or password.'
+            ];
         }
 
-        return false;
+        // Check if account is archived (moved out with zero balance)
+        $isArchived = ((int)($user['is_archived'] ?? 0) === 1)
+            || (($user['rental_status'] ?? '') === 'archived')
+            || !empty($user['deleted_at']);
+
+        if ($isArchived) {
+            self::logout();
+            return [
+                'success' => false,
+                'status'  => 'archived',
+                'message' => 'This account has been archived as the move-out process is complete.'
+            ];
+        }
+
+        // Check if account is inactive / deactivated
+        if ((int)($user['is_active'] ?? 0) !== 1) {
+            self::logout();
+            return [
+                'success' => false,
+                'status'  => 'deactivated',
+                'message' => 'This account has been deactivated or removed by property management.'
+            ];
+        }
+
+        if (PHP_SAPI !== 'cli' && session_status() === PHP_SESSION_ACTIVE && !headers_sent()) {
+            session_regenerate_id(true);
+        }
+
+        self::populateSession($user);
+
+        if ($rememberMe) {
+            self::issueRememberCookies($user, $username);
+        } else {
+            self::clearRememberCookies(true);
+        }
+
+        return [
+            'success' => true,
+            'status'  => 'authenticated',
+            'user'    => $user
+        ];
+    }
+
+    /**
+     * Authenticate user credentials against SQL database (convenience boolean method)
+     */
+    public static function attempt(string $username, string $password, bool $rememberMe = false): bool {
+        $res = self::validateLogin($username, $password, $rememberMe);
+        return !empty($res['success']);
     }
 
     /**

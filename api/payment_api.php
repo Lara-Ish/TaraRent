@@ -138,24 +138,45 @@ try {
 
             // Automatic Archiving Check:
             // When a tenant has officially moved out and paid all outstanding bills,
-            // automatically archive the tenant account and payment history.
+            // automatically archive the tenant account and payment history safely inside a locked transaction.
             $autoArchived = false;
             $tenantId = (int)($payment['tenant_id'] ?? 0);
             if ($isApproved && $tenantId > 0) {
-                $tStmt = $pdo->prepare("
-                    SELECT * FROM users 
-                    WHERE id = :id AND role = 'tenant' AND is_active = 1 AND (is_archived = 0 OR is_archived IS NULL)
-                    LIMIT 1
-                ");
-                $tStmt->execute([':id' => $tenantId]);
-                $tUser = $tStmt->fetch(PDO::FETCH_ASSOC);
+                $startedTx = false;
+                if (!$pdo->inTransaction()) {
+                    $pdo->beginTransaction();
+                    $startedTx = true;
+                }
+                try {
+                    $tStmt = $pdo->prepare("
+                        SELECT * FROM users 
+                        WHERE id = :id AND role = 'tenant' AND is_active = 1 AND (is_archived = 0 OR is_archived IS NULL)
+                        LIMIT 1
+                        FOR UPDATE
+                    ");
+                    $tStmt->execute([':id' => $tenantId]);
+                    $tUser = $tStmt->fetch(PDO::FETCH_ASSOC);
 
-                if ($tUser && ($tUser['rental_status'] ?? 'active') === 'moved_out') {
-                    $settlement = TenantService::checkTenantSettlement($pdo, $tenantId);
-                    if ($settlement['is_settled']) {
-                        TenantService::archiveSettledTenant($pdo, $tenantId, $tUser);
-                        $autoArchived = true;
+                    if ($tUser && ($tUser['rental_status'] ?? 'active') === 'moved_out') {
+                        $lockPay = $pdo->prepare("SELECT id FROM payments WHERE tenant_id = :tid FOR UPDATE");
+                        $lockPay->execute([':tid' => $tenantId]);
+                        $lockPay->fetchAll(PDO::FETCH_COLUMN);
+
+                        $settlement = TenantService::checkTenantSettlement($pdo, $tenantId);
+                        if ($settlement['is_settled']) {
+                            $autoArchived = TenantService::archiveSettledTenant($pdo, $tenantId, $tUser);
+                        }
                     }
+
+                    if ($startedTx) {
+                        $pdo->commit();
+                    }
+                } catch (Throwable $archiveErr) {
+                    if ($startedTx && $pdo->inTransaction()) {
+                        $pdo->rollBack();
+                    }
+                    error_log('[payment_api] Auto-archive error: ' . $archiveErr->getMessage());
+                    $autoArchived = false;
                 }
             }
 

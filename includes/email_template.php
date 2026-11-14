@@ -170,7 +170,7 @@ HTML;
                     <span style=\"font-family: 'Courier New', Courier, monospace; font-size: 36px; font-weight: 800; letter-spacing: 10px; color: #4338ca;\">{$formattedCode}</span>
                 </div>
                 <p style=\"font-size: 13.5px; font-weight: 600; color: #dc2626; margin-top: 14px;\">
-                    ⏰ This code is valid for {$expireMinutes} minutes.
+                    This code is valid for {$expireMinutes} minutes.
                 </p>
             </div>
         ";

@@ -181,13 +181,39 @@ try {
 
         AccessControl::requireVerifiedTenantJson($pdo);
 
+        $tenantUser = Auth::user();
+        $tenantId = (int)$tenantUser['id'];
+
+        // Enforce Moved-Out / Unpaid Ex-Tenant restriction
+        $freshCheckStmt = $pdo->prepare("SELECT rental_status FROM users WHERE id = :id LIMIT 1");
+        $freshCheckStmt->execute([':id' => $tenantId]);
+        $currRentalStatus = $freshCheckStmt->fetchColumn();
+        if ($currRentalStatus === 'moved_out') {
+            http_response_code(403);
+            echo json_encode([
+                'status'  => 'error',
+                'message' => 'Your account is marked as moved out. Maintenance requests are closed for ex-tenants.'
+            ]);
+            exit;
+        }
+
+        // Enforce unpaid balance restriction: tenants with unpaid balances cannot submit maintenance tickets
+        require_once __DIR__ . '/../includes/tenant_service.php';
+        $settlementCheck = TenantService::checkTenantSettlement($pdo, $tenantId);
+        if (!$settlementCheck['is_settled'] && ($settlementCheck['unpaid_count'] > 0 || $settlementCheck['unpaid_balance'] > 0.01)) {
+            http_response_code(403);
+            echo json_encode([
+                'status'  => 'error',
+                'message' => 'Cannot log maintenance requests: Outstanding balances must be settled first.'
+            ]);
+            exit;
+        }
+
         $title = trim((string)($input['title'] ?? ''));
         $description = trim((string)($input['description'] ?? ''));
         $category = trim((string)($input['category'] ?? 'General'));
         $priority = trim((string)($input['priority'] ?? 'medium'));
 
-        $tenantUser = Auth::user();
-        $tenantId = (int)$tenantUser['id'];
         $unitId = isset($tenantUser['unit_id']) ? (int)$tenantUser['unit_id'] : 0;
         if ($unitId <= 0) {
             $uStmt = $pdo->prepare("SELECT unit_id FROM users WHERE id = :id LIMIT 1");
@@ -204,9 +230,42 @@ try {
             exit;
         }
 
-        $validCats = ['Plumbing', 'Electrical', 'HVAC', 'Appliance', 'Structural', 'General'];
+        $categoryAliasMap = [
+            'structural & masonry'      => 'Structural',
+            'structural'                => 'Structural',
+            'plumbing & water system'   => 'Plumbing',
+            'plumbing'                  => 'Plumbing',
+            'electrical & lighting'     => 'Electrical',
+            'electrical'                => 'Electrical',
+            'carpentry & fixtures'      => 'Carpentry',
+            'carpentry'                 => 'Carpentry',
+            'pest control & sanitation' => 'General',
+            'sanitation'                => 'General',
+            'others...'                 => 'General',
+            'others'                    => 'General',
+            'general'                   => 'General',
+            'hvac'                      => 'HVAC',
+            'appliance'                 => 'Appliance',
+        ];
+        $catKey = strtolower($category);
+        if (isset($categoryAliasMap[$catKey])) {
+            $category = $categoryAliasMap[$catKey];
+        }
+        $validCats = ['Plumbing', 'Electrical', 'HVAC', 'Appliance', 'Structural', 'Carpentry', 'General'];
         if (!in_array($category, $validCats, true)) $category = 'General';
 
+        $priorityAliasMap = [
+            'very high' => 'urgent',
+            'urgent'    => 'urgent',
+            'high'      => 'high',
+            'medium'    => 'medium',
+            'med'       => 'medium',
+            'low'       => 'low',
+        ];
+        $prioKey = strtolower($priority);
+        if (isset($priorityAliasMap[$prioKey])) {
+            $priority = $priorityAliasMap[$prioKey];
+        }
         $validPrios = ['low', 'medium', 'high', 'urgent'];
         if (!in_array($priority, $validPrios, true)) $priority = 'medium';
 
@@ -333,7 +392,7 @@ try {
 
     if ($requestMethod === 'GET') {
         $currentUser = Auth::user();
-        $ticketId = isset($_GET['id']) ? (int)$_GET['id'] : 0;
+        $ticketId = isset($_GET['id']) ? (int)$_GET['id'] : (isset($_GET['ticket_id']) ? (int)$_GET['ticket_id'] : 0);
 
         $normalizeStatus = function($st) {
             $s = strtolower((string)$st);
@@ -377,18 +436,35 @@ try {
             exit;
         }
 
-        // List maintenance requests with strict tenant filtering
+        // List maintenance requests with strict tenant filtering and optional status query filter
         $query = "
             SELECT mt.*, u.name AS tenant_name, u.email AS tenant_email, u.phone AS tenant_phone, un.unit_number
             FROM maintenance_tickets mt
             JOIN users u ON mt.tenant_id = u.id
             LEFT JOIN units un ON mt.unit_id = un.id
         ";
+        $whereClauses = [];
         $params = [];
 
         if (Auth::isTenant() && $currentUser) {
-            $query .= " WHERE mt.tenant_id = :tid";
+            $whereClauses[] = "mt.tenant_id = :tid";
             $params[':tid'] = (int)$currentUser['id'];
+        }
+
+        $statusFilter = isset($_GET['status']) ? strtolower(trim((string)$_GET['status'])) : '';
+        if ($statusFilter === 'all' || $statusFilter === 'active') {
+            // Fetch both pending and on-going tickets simultaneously
+            $whereClauses[] = "LOWER(mt.status) IN ('pending', 'open', 'on-going', 'ongoing', 'in_progress')";
+        } elseif ($statusFilter === 'pending') {
+            $whereClauses[] = "LOWER(mt.status) IN ('pending', 'open')";
+        } elseif ($statusFilter === 'on-going' || $statusFilter === 'ongoing' || $statusFilter === 'in_progress') {
+            $whereClauses[] = "LOWER(mt.status) IN ('on-going', 'ongoing', 'in_progress')";
+        } elseif ($statusFilter === 'done' || $statusFilter === 'completed' || $statusFilter === 'resolved') {
+            $whereClauses[] = "LOWER(mt.status) IN ('done', 'resolved', 'closed')";
+        }
+
+        if (!empty($whereClauses)) {
+            $query .= " WHERE " . implode(" AND ", $whereClauses);
         }
 
         $query .= " ORDER BY mt.created_at DESC";

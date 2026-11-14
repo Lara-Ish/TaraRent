@@ -57,6 +57,43 @@ TenantService::syncMovedOutSettlements($pdo);
 $unitsStmt = $pdo->query("SELECT * FROM units ORDER BY unit_number ASC");
 $units = $unitsStmt->fetchAll();
 
+// Fetch Additional Rental Spaces (Space 1 & Space 2) with active occupancy check
+$registrationSpaces = [];
+try {
+    $regSpacesStmt = $pdo->query("
+        SELECT s.id, s.space_number, s.space_name, s.monthly_fee, s.status, s.assigned_tenant_id,
+               u.name AS assigned_tenant_name, u.is_active AS tenant_is_active, u.is_archived AS tenant_is_archived
+        FROM additional_spaces s
+        LEFT JOIN users u ON s.assigned_tenant_id = u.id
+        ORDER BY s.space_number ASC
+    ");
+    $regSpaceRows = $regSpacesStmt->fetchAll();
+    foreach ($regSpaceRows as $sr) {
+        $hasActiveTenant = !empty($sr['assigned_tenant_id'])
+            && (int)($sr['tenant_is_active'] ?? 0) === 1
+            && (int)($sr['tenant_is_archived'] ?? 0) === 0;
+        $isSpaceOccupied = ($sr['status'] !== 'available') || $hasActiveTenant;
+        $registrationSpaces[] = [
+            'id' => (int)$sr['id'],
+            'space_number' => (int)$sr['space_number'],
+            'space_name' => (string)$sr['space_name'],
+            'monthly_fee' => ((float)$sr['monthly_fee'] > 0) ? (float)$sr['monthly_fee'] : 1500.00,
+            'status' => $isSpaceOccupied ? 'occupied' : 'available',
+            'is_occupied' => $isSpaceOccupied,
+            'assigned_tenant_name' => $sr['assigned_tenant_name'] ?? null
+        ];
+    }
+} catch (Throwable $spaceQueryEx) {
+    $registrationSpaces = [];
+}
+
+if (empty($registrationSpaces)) {
+    $registrationSpaces = [
+        ['id' => 1, 'space_number' => 1, 'space_name' => 'Space 1', 'monthly_fee' => 1500.00, 'status' => 'available', 'is_occupied' => false, 'assigned_tenant_name' => null],
+        ['id' => 2, 'space_number' => 2, 'space_name' => 'Space 2', 'monthly_fee' => 1500.00, 'status' => 'available', 'is_occupied' => false, 'assigned_tenant_name' => null],
+    ];
+}
+
 // Fetch All Active Tenants (Strictly active, non-archived residents)
 $tenantsStmt = $pdo->query("
     SELECT u.id, u.unit_id, u.username, u.name, u.email, u.phone, 
@@ -64,9 +101,10 @@ $tenantsStmt = $pdo->query("
            u.birthday, u.emergency_contact, u.emergency_contact_name,
            u.emergency_contact_relationship, u.emergency_contact_phone,
            u.move_in_date, u.move_out_date, u.rental_status, u.total_occupants, u.adults_count, u.kids_count, u.created_at,
-           un.unit_number, un.monthly_rent
+           COALESCE(un.unit_number, u.archived_unit_number, 'Moved Out') AS unit_number, 
+           COALESCE(un.monthly_rent, u.archived_monthly_rent, 0.00) AS monthly_rent
     FROM users u
-    JOIN units un ON u.unit_id = un.id
+    LEFT JOIN units un ON u.unit_id = un.id
     WHERE u.role = 'tenant' 
       AND u.is_active = 1
       AND (u.is_archived = 0 OR u.is_archived IS NULL)
@@ -75,19 +113,44 @@ $tenantsStmt = $pdo->query("
 ");
 $allTenants = $tenantsStmt->fetchAll();
 
-// Group tenants by unit
+// Group tenants by unit and evaluate payment settlement status
 $unitsWithTenants = [];
 foreach ($units as $u) {
     $uId = (int)$u['id'];
     $unitsWithTenants[$uId] = $u;
+    $unitsWithTenants[$uId]['unit_id'] = $uId;
+    $unitsWithTenants[$uId]['is_occupied'] = false;
+    $unitsWithTenants[$uId]['is_paid_up'] = null;
+    $unitsWithTenants[$uId]['card_state'] = 'available';
     $unitsWithTenants[$uId]['tenants'] = [];
 }
 foreach ($allTenants as $t) {
-    $uId = (int)$t['unit_id'];
-    if (isset($unitsWithTenants[$uId])) {
+    $uId = (int)($t['unit_id'] ?? 0);
+    $tId = (int)$t['id'];
+    $settlement = TenantService::checkTenantSettlement($pdo, $tId);
+    $t['settlement'] = $settlement;
+    $t['is_paid_up'] = (bool)($settlement['is_settled'] ?? false);
+    if ($uId > 0 && ($t['rental_status'] ?? 'active') !== 'moved_out' && isset($unitsWithTenants[$uId])) {
         $unitsWithTenants[$uId]['tenants'][] = $t;
     }
 }
+$activeUnitsCount = 0;
+foreach ($unitsWithTenants as &$uItem) {
+    if (!empty($uItem['tenants'])) {
+        $activeUnitsCount++;
+        $uItem['is_occupied'] = true;
+        $allSettled = true;
+        foreach ($uItem['tenants'] as $occ) {
+            if (empty($occ['is_paid_up'])) {
+                $allSettled = false;
+                break;
+            }
+        }
+        $uItem['is_paid_up'] = $allSettled;
+        $uItem['card_state'] = $allSettled ? 'occupied_paid' : 'occupied_unpaid';
+    }
+}
+unset($uItem);
 
 // Fetch Maintenance Tickets
 $tickets = $pdo->query("
@@ -114,6 +177,19 @@ unset($tk);
 
 $activeTickets = array_values(array_filter($tickets, fn($t) => in_array($t['status'], ['Pending', 'On-Going'])));
 $completedTickets = array_values(array_filter($tickets, fn($t) => $t['status'] === 'Done'));
+
+
+// Fetch General Tenant Reports (strictly separated from maintenance_tickets)
+$tenantReports = $pdo->query("
+    SELECT tr.*, u.name AS tenant_name, u.email AS tenant_email, u.phone AS tenant_phone, un.unit_number, rv.name AS reviewer_name
+    FROM tenant_reports tr
+    JOIN users u ON tr.tenant_id = u.id
+    LEFT JOIN units un ON tr.unit_id = un.id
+    LEFT JOIN users rv ON tr.reviewed_by = rv.id
+    ORDER BY tr.created_at DESC
+")->fetchAll();
+$pendingReports = array_values(array_filter($tenantReports, fn($r) => ($r['status'] ?? 'Pending') === 'Pending'));
+$reviewedReports = array_values(array_filter($tenantReports, fn($r) => ($r['status'] ?? 'Pending') !== 'Pending'));
 
 // Fetch Payments Ledger & Pending Reviews (Strictly active, non-archived tenants)
 $payments = $pdo->query("
@@ -146,6 +222,35 @@ rsort($availablePaymentYears);
 // Count pending payment receipts for manual review badge (only those with uploaded receipts)
 $pendingReviewPayments = array_values(array_filter($payments, fn($p) => $p['status'] === 'pending' && !empty($p['receipt_filename'])));
 $pendingReviewCount = count($pendingReviewPayments);
+
+// Initial Live Financial, Maintenance & Portfolio Metrics (No Hardcoded Sample Data)
+$finInitStmt = $pdo->query("
+    SELECT
+        COALESCE(SUM(CASE WHEN status != 'pending_setup' THEN amount_due ELSE 0 END), 0) AS total_billed,
+        COALESCE(SUM(CASE WHEN status = 'approved' THEN amount_paid ELSE 0 END), 0) AS total_collected,
+        COALESCE(SUM(CASE WHEN status NOT IN ('approved', 'pending_setup') AND amount_due IS NOT NULL THEN (amount_due - amount_paid) ELSE 0 END), 0) AS total_unpaid
+    FROM payments
+");
+$finInit = $finInitStmt->fetch() ?: [];
+$initTotalBilled = (float)($finInit['total_billed'] ?? 0);
+$initRentCollected = (float)($finInit['total_collected'] ?? 0);
+$initUnpaidRent = (float)($finInit['total_unpaid'] ?? 0);
+$initCollectionRate = $initTotalBilled > 0 ? round(($initRentCollected / $initTotalBilled) * 100, 1) : 0.0;
+
+$maintInitStmt = $pdo->query("
+    SELECT COALESCE(SUM(actual_cost), 0) AS total_expenses, COUNT(*) AS total_tickets
+    FROM maintenance_tickets
+");
+$maintInit = $maintInitStmt->fetch() ?: [];
+$initRepairExpenses = (float)($maintInit['total_expenses'] ?? 0);
+$initTotalTicketsCount = (int)($maintInit['total_tickets'] ?? 0);
+
+$occupiedUnitsCount = count(array_filter($unitsWithTenants, fn($u) => count($u['tenants']) > 0));
+$availableUnitsCount = max(0, count($units) - $occupiedUnitsCount);
+$archivedTenantsCount = (int)$pdo->query("
+    SELECT COUNT(*) FROM users
+    WHERE role = 'tenant' AND (is_archived = 1 OR deleted_at IS NOT NULL)
+")->fetchColumn();
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -165,15 +270,45 @@ $pendingReviewCount = count($pendingReviewPayments);
   <!-- Typography -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 
-  <!-- Claymorphism Design System -->
+  <!-- Claymorphism Base & Owner Warm Cream/Gold Design System -->
   <link rel="stylesheet" href="assets/css/claymorphism.css">
+  <link rel="stylesheet" href="assets/css/admin_theme.css?v=20261112c">
 
-  <!-- Chart.js CDN -->
+  <!-- Icons, Charts & Shared Sidebar Controller -->
+  <script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+  <script src="assets/js/lucide_init.js?v=20261112"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="assets/js/sidebar.js?v=20261112"></script>
+
+  <!-- Tailwind CSS (with Preflight disabled to preserve claymorphic layout) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      corePlugins: {
+        preflight: false,
+      }
+    }
+  </script>
 
   <style>
+    /* Interactive Settings & Privacy Action Item Styling */
+    #settingsToggleBtn.hover\:bg-gray-200:hover,
+    #settingsToggleBtn:hover {
+      background-color: #e5e7eb !important;
+      color: #2563eb !important;
+      cursor: pointer !important;
+    }
+    #settingsToggleBtn:hover .fb-action-label,
+    #settingsToggleBtn:hover .fb-action-arrow,
+    #settingsToggleBtn:hover .fb-action-icon-circle {
+      color: #2563eb !important;
+    }
+    #settingsToggleBtn:hover .fb-action-icon-circle {
+      background-color: rgba(37, 99, 235, 0.12) !important;
+    }
+
     .modal-backdrop {
       display: none !important;
       position: fixed;
@@ -212,8 +347,8 @@ $pendingReviewCount = count($pendingReviewPayments);
       display: inline-block;
       width: 20px;
       height: 20px;
-      border: 2.5px solid rgba(99, 102, 241, 0.25);
-      border-top-color: #4f46e5;
+      border: 2.5px solid rgba(181, 143, 83, 0.25);
+      border-top-color: #56380E;
       border-radius: 50%;
       animation: spin 0.8s linear infinite;
     }
@@ -222,31 +357,27 @@ $pendingReviewCount = count($pendingReviewPayments);
       cursor: not-allowed !important;
       pointer-events: none !important;
     }
-    .clickable-payment-row {
-      cursor: pointer;
-      transition: background-color 0.18s ease, transform 0.15s ease, box-shadow 0.18s ease;
+    .clickable-payment-row,
+    .clickable-ticket-row {
+      cursor: pointer !important;
+      transition: background-color 0.16s ease, transform 0.15s ease, box-shadow 0.16s ease;
     }
-    .clickable-payment-row:hover {
-      background-color: rgba(99, 102, 241, 0.06) !important;
+    .clickable-payment-row:hover,
+    .clickable-ticket-row:hover {
+      background-color: rgba(245, 217, 158, 0.34) !important;
     }
-    .clickable-payment-row:active {
-      background-color: rgba(99, 102, 241, 0.12) !important;
+    .clickable-payment-row:active,
+    .clickable-ticket-row:active {
+      background-color: rgba(216, 189, 148, 0.4) !important;
     }
 
-    /* Standardized Sidebar Layout & Stacking */
+    /* Stacking & Dropdown Visibility */
     .clay-sidebar,
     #appSidebar,
     .sidebar-top-header,
-    .sidebar-footer,
     .sidebar-settings-container,
     .header-settings-container {
       overflow: visible !important;
-    }
-
-    .clay-sidebar {
-      position: sticky;
-      top: 24px;
-      z-index: 900;
     }
 
     #sidebarToggleBtn,
@@ -281,85 +412,20 @@ $pendingReviewCount = count($pendingReviewPayments);
       cursor: pointer !important;
     }
 
-    @media (max-width: 960px) {
-      .clay-sidebar {
-        z-index: 1000;
-      }
-      .clay-sidebar:not(.mobile-open) {
-        pointer-events: none;
-      }
-      .clay-sidebar:not(.mobile-open) .sidebar-inner-toggle {
-        position: absolute;
-        right: -48px;
-        top: 14px;
-        background: var(--clay-card-bg);
-        box-shadow: 4px 4px 12px rgba(166, 180, 204, 0.4);
-        z-index: 1001 !important;
-        pointer-events: auto !important;
-        cursor: pointer !important;
-      }
-      .clay-sidebar.mobile-open {
-        pointer-events: auto;
-      }
-      .clay-sidebar.mobile-open .sidebar-inner-toggle {
-        position: relative;
-        right: auto;
-        top: auto;
-        z-index: 1001 !important;
-        pointer-events: auto !important;
-        cursor: pointer !important;
-      }
-    }
-
-    .clay-btn,
-    .priority-pill,
-    .sidebar-nav-item,
-    .profile-subnav-item,
-    .subview-tab-btn,
-    .btn-remove-file,
-    .btn-inspect-proof,
-    .main-content button,
-    .main-content .clay-btn,
-    .dashboard-header-bar button {
-      position: relative;
-      z-index: 50;
-    }
-
     .subview-tab-btn {
       display: inline-flex;
       align-items: center;
       gap: 8px;
       padding: 10px 20px;
-      border-radius: var(--radius-md, 12px);
+      border-radius: 12px;
       font-size: 13.5px;
       font-weight: 700;
       cursor: pointer;
-      border: 1.5px solid rgba(166, 180, 204, 0.4);
-      background: var(--clay-card-bg, #ffffff);
-      color: var(--text-muted, #64748b);
-      box-shadow: 2px 2px 5px rgba(166, 180, 204, 0.25), -2px -2px 5px rgba(255, 255, 255, 0.8);
       transition: all 0.2s ease;
-    }
-    .subview-tab-btn:hover {
-      color: #0f172a;
-      border-color: rgba(99, 102, 241, 0.5);
-    }
-    .subview-tab-btn.active {
-      background: linear-gradient(135deg, #4f46e5, #4338ca);
-      color: #ffffff !important;
-      border-color: #4338ca;
-      box-shadow: 0 4px 12px rgba(79, 70, 229, 0.35);
     }
     .subview-tab-btn.active .clay-badge {
       background: rgba(255, 255, 255, 0.25) !important;
       color: #ffffff !important;
-    }
-    .clickable-ticket-row {
-      cursor: pointer !important;
-      transition: background-color 0.15s ease, transform 0.15s ease;
-    }
-    .clickable-ticket-row:hover {
-      background: rgba(238, 242, 255, 0.85) !important;
     }
 
     /* Animated Maintenance Details Modal (Fade-In & Scale-Up Transition) */
@@ -430,7 +496,7 @@ $pendingReviewCount = count($pendingReviewPayments);
     }
     #archivedTenantDetailsModal .archived-modal-box {
       width: 100%;
-      max-width: 760px;
+      max-width: 860px;
       max-height: 90vh;
       overflow-y: auto;
       background: var(--clay-card-bg, #ffffff);
@@ -488,111 +554,512 @@ $pendingReviewCount = count($pendingReviewPayments);
       transform: scale(1) translateY(0);
       opacity: 1;
     }
+
+    /* Animated Move-Out Confirmation & Settlement Audit Modal */
+    #moveOutConfirmModal {
+      display: flex !important;
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.62);
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      z-index: 10045;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+      transition: opacity 0.22s cubic-bezier(0.16, 1, 0.3, 1), visibility 0.22s ease;
+    }
+    #moveOutConfirmModal.open,
+    #moveOutConfirmModal.active {
+      opacity: 1;
+      visibility: visible;
+      pointer-events: auto;
+    }
+    #moveOutConfirmModal .moveout-modal-box {
+      width: 100%;
+      max-width: 580px;
+      max-height: 90vh;
+      overflow-y: auto;
+      background: var(--clay-card-bg, #fffdf8);
+      border-radius: var(--radius-xl, 20px);
+      box-shadow: 0 24px 55px -12px rgba(86, 56, 14, 0.28), 0 10px 25px -5px rgba(15, 23, 42, 0.22);
+      border: 1.5px solid rgba(181, 143, 83, 0.45);
+      padding: 26px;
+      transform: scale(0.92) translateY(14px);
+      opacity: 0;
+      transition: transform 0.24s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.2s ease;
+    }
+    #moveOutConfirmModal.open .moveout-modal-box,
+    #moveOutConfirmModal.active .moveout-modal-box {
+      transform: scale(1) translateY(0);
+      opacity: 1;
+    }
+    .moveout-audit-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    @media (max-width: 600px) {
+      .moveout-audit-grid {
+        grid-template-columns: 1fr;
+      }
+      #archivedTenantDetailsModal .archived-info-grid {
+        grid-template-columns: 1fr !important;
+      }
+    }
+
+    /* =========================================================================
+       NEW RESIDENT REGISTRATION FORM MODAL (Matched to Reference Design)
+       ========================================================================= */
+    #addTenantModal .resident-reg-modal {
+      max-width: 560px;
+      width: 100%;
+      max-height: 92vh;
+      overflow-y: auto;
+      background: #ffffff;
+      border: 2px solid #8c6d46;
+      border-radius: 14px;
+      padding: 30px 28px 26px;
+      box-shadow: 0 24px 55px -12px rgba(43, 30, 12, 0.28);
+      position: relative;
+      color: #1c140d;
+    }
+    #addTenantModal .resident-reg-close {
+      position: absolute;
+      top: 14px;
+      right: 14px;
+      z-index: 50;
+      cursor: pointer;
+    }
+    #addTenantModal .resident-reg-header {
+      text-align: center;
+      margin-bottom: 10px;
+    }
+    #addTenantModal .resident-reg-title {
+      font-family: 'Playfair Display', Georgia, 'Times New Roman', serif;
+      font-size: 21px;
+      font-weight: 800;
+      line-height: 1.25;
+      letter-spacing: 0.03em;
+      color: #1c140d;
+      text-transform: uppercase;
+      margin: 0;
+    }
+    #addTenantModal .resident-reg-unit-bar {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      margin-top: 8px;
+      flex-wrap: wrap;
+    }
+    #addTenantModal .resident-reg-unit-label {
+      font-family: 'Playfair Display', Georgia, 'Times New Roman', serif;
+      font-size: 12.5px;
+      font-weight: 600;
+      color: #5c4324;
+    }
+    #addTenantModal .resident-reg-unit-select {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      font-size: 12px;
+      font-weight: 600;
+      color: #2b2116;
+      background: #f5efe6;
+      border: 1px solid #8c6d46;
+      border-radius: 9999px;
+      padding: 4px 12px;
+      outline: none;
+      cursor: pointer;
+    }
+    #addTenantModal .resident-reg-divider {
+      border: none;
+      border-top: 1.5px solid #8c704c;
+      margin: 14px 0 20px;
+    }
+    #addTenantModal .resident-reg-divider-mid {
+      border: none;
+      border-top: 1.5px solid #8c704c;
+      margin: 22px 0 20px;
+    }
+    #addTenantModal .resident-reg-row-3 {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      margin-bottom: 16px;
+    }
+    #addTenantModal .resident-reg-row-2 {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+      margin-bottom: 16px;
+    }
+    #addTenantModal .resident-reg-field {
+      min-width: 0;
+    }
+    #addTenantModal .resident-reg-label {
+      display: block;
+      font-family: 'Playfair Display', Georgia, 'Times New Roman', serif;
+      font-size: 14.5px;
+      font-weight: 500;
+      color: #1f170f;
+      margin-bottom: 6px;
+    }
+    #addTenantModal .resident-reg-pill-input {
+      width: 100%;
+      height: 38px;
+      padding: 6px 14px;
+      border-radius: 9999px;
+      background: #e8e0d5;
+      border: 1.2px solid #2b2116;
+      box-shadow: 0 3px 6px rgba(0, 0, 0, 0.14);
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      font-size: 13px;
+      color: #1c140d;
+      outline: none;
+      transition: border-color 0.18s ease, box-shadow 0.18s ease, background-color 0.18s ease;
+    }
+    #addTenantModal .resident-reg-pill-input:focus {
+      border-color: #7c521b;
+      background: #efe9e0;
+      box-shadow: 0 0 0 3px rgba(150, 97, 28, 0.18), 0 3px 6px rgba(0, 0, 0, 0.14);
+    }
+    #addTenantModal input[type="date"].resident-reg-date-input::-webkit-calendar-picker-indicator {
+      cursor: pointer;
+      opacity: 0.78;
+    }
+    #addTenantModal .resident-reg-box {
+      background: #e8e0d5;
+      border-radius: 18px;
+      border: 1.2px solid #2b2116;
+      box-shadow: 0 3px 7px rgba(0, 0, 0, 0.14);
+      padding: 14px 20px 18px;
+      margin-bottom: 18px;
+    }
+    #addTenantModal .resident-reg-box-title {
+      font-family: 'Playfair Display', Georgia, 'Times New Roman', serif;
+      font-size: 15.5px;
+      font-weight: 500;
+      color: #1f170f;
+      margin: 0 0 10px 0;
+      text-align: left;
+    }
+    #addTenantModal .resident-reg-occupant-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+      align-items: end;
+    }
+    #addTenantModal .resident-reg-emergency-row {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+    #addTenantModal .resident-reg-sub-label {
+      display: block;
+      font-family: 'Playfair Display', Georgia, 'Times New Roman', serif;
+      font-size: 11.5px;
+      font-weight: 500;
+      color: #1f170f;
+      margin-bottom: 5px;
+    }
+    #addTenantModal .resident-reg-rect-input {
+      width: 100%;
+      height: 34px;
+      padding: 5px 10px;
+      border-radius: 7px;
+      background: #ffffff;
+      border: 1.2px solid #2b2116;
+      box-shadow: 0 2px 5px rgba(0, 0, 0, 0.12);
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      font-size: 13px;
+      color: #1c140d;
+      outline: none;
+      transition: border-color 0.18s ease, box-shadow 0.18s ease;
+    }
+    #addTenantModal .resident-reg-rect-input:focus {
+      border-color: #7c521b;
+      box-shadow: 0 0 0 3px rgba(150, 97, 28, 0.18), 0 2px 5px rgba(0, 0, 0, 0.12);
+    }
+    #addTenantModal .resident-reg-num-input {
+      text-align: center;
+      font-weight: 600;
+    }
+    #addTenantModal .resident-reg-total-wrap {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-end;
+    }
+    #addTenantModal .resident-reg-total-input {
+      width: 100%;
+      height: 32px;
+      background: transparent;
+      border: none;
+      border-bottom: 1.5px solid #1c140d;
+      border-radius: 0;
+      text-align: center;
+      font-family: 'Playfair Display', Georgia, 'Times New Roman', serif;
+      font-size: 15px;
+      font-weight: 700;
+      color: #1c140d;
+      outline: none;
+      cursor: default;
+    }
+    #addTenantModal .resident-reg-submit-row {
+      display: flex;
+      justify-content: center;
+      margin-top: 20px;
+    }
+    #addTenantModal .resident-reg-submit-btn {
+      min-width: 225px;
+      padding: 10px 38px;
+      border-radius: 9999px;
+      background: #96611c;
+      border: 1.2px solid #2b2116;
+      box-shadow: 0 3px 7px rgba(0, 0, 0, 0.18);
+      color: #1c1206;
+      font-family: 'Playfair Display', Georgia, 'Times New Roman', serif;
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: transform 0.16s ease, background-color 0.16s ease, box-shadow 0.16s ease;
+    }
+    #addTenantModal .resident-reg-submit-btn:hover:not(:disabled) {
+      background: #845315;
+      transform: translateY(-1px);
+      box-shadow: 0 5px 12px rgba(0, 0, 0, 0.22);
+    }
+    #addTenantModal .resident-reg-submit-btn:disabled {
+      opacity: 0.7;
+      cursor: not-allowed;
+    }
+    #addTenantModal .resident-reg-box-desc {
+      margin: -4px 0 12px;
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      font-size: 12px;
+      line-height: 1.45;
+      color: #54412e;
+    }
+    #addTenantModal .resident-reg-space-list {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+    #addTenantModal .resident-reg-space-item {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 9px 10px;
+      min-width: 0;
+      box-sizing: border-box;
+      border-radius: 7px;
+      background: #ffffff;
+      border: 1.2px solid #2b2116;
+      box-shadow: 0 2px 5px rgba(0, 0, 0, 0.12);
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      font-size: 12.5px;
+      font-weight: 600;
+      color: #1c140d;
+      cursor: pointer;
+      user-select: none;
+      transition: border-color 0.18s ease, background-color 0.18s ease, box-shadow 0.18s ease;
+    }
+    #addTenantModal .resident-reg-space-item:hover:not(.is-occupied) {
+      border-color: #7c521b;
+      background: #fffcf7;
+    }
+    #addTenantModal .resident-reg-space-item:has(input:checked):not(.is-occupied) {
+      border-color: #7c521b;
+      background: #fdf6ea;
+      box-shadow: 0 0 0 2px rgba(150, 97, 28, 0.16), 0 2px 5px rgba(0, 0, 0, 0.12);
+    }
+    #addTenantModal .resident-reg-space-item.is-occupied {
+      background: #e5dfd6;
+      border-color: #9e9384;
+      color: #78716c;
+      opacity: 0.78;
+      cursor: not-allowed;
+      box-shadow: none;
+    }
+    #addTenantModal .resident-reg-space-checkbox {
+      width: 16px;
+      height: 16px;
+      margin: 0;
+      flex-shrink: 0;
+      accent-color: #96611c;
+      cursor: inherit;
+    }
+    #addTenantModal .resident-reg-space-text {
+      flex: 1;
+      min-width: 0;
+      line-height: 1.25;
+      overflow-wrap: break-word;
+    }
+    #addTenantModal .resident-reg-occupied-tag {
+      margin-left: auto;
+      flex-shrink: 0;
+      padding: 2px 6px;
+      border-radius: 9999px;
+      background: #d6ccc0;
+      color: #4f463c;
+      font-size: 9.5px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    #addTenantModal .resident-reg-space-summary {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 8px 16px;
+      margin-top: 12px;
+      padding-top: 10px;
+      border-top: 1px dashed rgba(43, 33, 22, 0.28);
+    }
+    #addTenantModal .resident-reg-total-rent-preview {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      font-size: 12.5px;
+      font-weight: 600;
+      color: #4b3926;
+    }
+    #addTenantModal .resident-reg-additional-rent {
+      margin-left: auto;
+      text-align: right;
+      font-family: 'Playfair Display', Georgia, 'Times New Roman', serif;
+      font-size: 14px;
+      font-weight: 700;
+      color: #1c140d;
+    }
+    /* Archived Tenants Redesign - Global Theme Container & Main Actions */
+    .archived-tenants-beige-container {
+      background: #e8e0d5;
+      border-radius: 18px;
+      border: 1.2px solid #2b2116;
+      box-shadow: 0 4px 14px rgba(43, 33, 22, 0.14);
+      padding: 22px 24px 26px;
+      margin-top: 8px;
+    }
+    .archived-main-action-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 8px 18px;
+      border-radius: 9999px;
+      background: #96611c;
+      border: 1.2px solid #2b2116;
+      box-shadow: 0 2px 5px rgba(0, 0, 0, 0.14);
+      color: #1c1206 !important;
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: transform 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+    .archived-main-action-btn:hover {
+      background: #845315;
+      transform: translateY(-1px);
+      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.18);
+    }
+    .archived-main-action-btn.archived-btn-sm {
+      padding: 5px 12px;
+      font-size: 12px;
+    }
+    .archived-table-wrapper {
+      background: #ffffff;
+      border-radius: 12px;
+      border: 1.2px solid #2b2116;
+      overflow: hidden;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+    }
+    @media (max-width: 560px) {
+      #addTenantModal .resident-reg-modal {
+        padding: 24px 16px 22px;
+      }
+      #addTenantModal .resident-reg-row-3,
+      #addTenantModal .resident-reg-row-2,
+      #addTenantModal .resident-reg-occupant-grid,
+      #addTenantModal .resident-reg-space-list,
+      #addTenantModal .resident-reg-emergency-row {
+        grid-template-columns: 1fr;
+        gap: 12px;
+      }
+      #addTenantModal .resident-reg-additional-rent {
+        margin-left: 0;
+      }
+    }
   </style>
 </head>
-<body>
+<body class="admin-warm-theme">
 
-  <!-- Overlay for Mobile Retractable Sidebar -->
-  <div class="sidebar-overlay" onclick="closeSidebarMobile()"></div>
-
-  <!-- Full Application Shell with Retractable Claymorphic Sidebar -->
-  <div class="app-shell">
-    
-    <!-- ===================================================================
-         RETRACTABLE CLAYMORPHIC SIDEBAR
-         (Clean navigation drawer: No duplicate toggle button in sidebar)
-         =================================================================== -->
-    <aside class="clay-sidebar" id="appSidebar">
-      <div>
-        <!-- Brand Badge & Inner Sidebar Toggle (Strictly inside sidebar) -->
-        <div class="sidebar-top-header">
-          <div class="brand-wrapper" style="padding: 0; margin-bottom: 0;">
-            <div class="brand-icon-clay" style="width: 42px; height: 42px; display: flex; align-items: center; justify-content: center; background: #ffffff;">
-              <img src="assets/images/tararent-logo.png" alt="TaraRent Logo" style="width: 32px; height: 32px; object-fit: contain;">
-            </div>
-            <div class="hide-on-retract">
-              <div style="font-size: 18px; font-weight: 800; color: #0f172a; letter-spacing: -0.5px;">TaraRent</div>
-              <div style="font-size: 10.5px; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Management Portal</div>
-            </div>
-          </div>
-          <button type="button" id="sidebarToggleBtn" class="clay-toggle-btn sidebar-inner-toggle" onclick="toggleSidebar()" aria-label="Toggle Sidebar" title="Toggle Sidebar">
-            ☰
-          </button>
-        </div>
-
-        <!-- Sidebar Navigation Menu -->
-        <div class="sidebar-menu">
-          <div class="sidebar-category-label hide-on-retract">Menu Categories</div>
-          
-          <!-- Requirement: Prominent, clickable "Landlord Dashboard" link routing to analytics view -->
-          <button type="button" class="sidebar-nav-item active" id="navLandlordDashboard" data-section="sectionAnalytics" onclick="switchSection('sectionAnalytics', this)" title="Landlord Dashboard">
-            <span class="nav-icon">
-              <svg fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-6 h-6 text-gray-700">
-                <path stroke-linecap="round" stroke-linejoin="round" d="m2.25 12 8.954-8.955c.44-.439 1.152-.439 1.591 0L21.75 12M4.5 9.75v10.125c0 .621.504 1.125 1.125 1.125H9.75v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c.621 0 1.125-.504 1.125-1.125V9.75M8.25 21h8.25" />
-              </svg>
-            </span>
-            <span class="hide-on-retract">Landlord Dashboard</span>
-          </button>
-
-          <!-- Requirement: Sidebar category for Tenant Directory -->
-          <button type="button" class="sidebar-nav-item" id="navTenantDirectory" data-section="sectionDirectory" onclick="switchSection('sectionDirectory', this)" title="Tenant Directory">
-            <span class="nav-icon">
-              <svg fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-6 h-6 text-gray-700">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M15 19.128a9.38 9.38 0 0 0 2.625.372 9.337 9.337 0 0 0 4.121-.952 4.125 4.125 0 0 0-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 0 1 8.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0 1 11.964-3.07M12 6.375a3.375 3.375 0 1 1-6.75 0 3.375 3.375 0 0 1 6.75 0Zm8.25 2.25a2.625 2.625 0 1 1-5.25 0 2.625 2.625 0 0 1 5.25 0Z" />
-              </svg>
-            </span>
-            <span class="hide-on-retract">Tenant Directory</span>
-          </button>
-
-          <button type="button" class="sidebar-nav-item" id="navMaintenanceTickets" data-section="sectionTickets" onclick="switchSection('sectionTickets', this)" title="Maintenance Tickets">
-            <span class="nav-icon">
-              <svg fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-6 h-6 text-gray-700">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M11.42 15.17 17.25 21A2.652 2.652 0 0 0 21 17.25l-5.877-5.877M11.42 15.17l2.496-3.03c.317-.384.74-.626 1.208-.766M11.42 15.17l-4.655 5.653a2.548 2.548 0 1 1-3.586-3.586l6.837-5.63m5.108-.233c.55-.164 1.163-.188 1.743-.14a4.5 4.5 0 0 0 4.486-6.32l-3.276 3.277a3.004 3.004 0 0 1-2.25 2.25l-3.276-3.276a4.5 4.5 0 0 0-6.32 4.486c.048.58.072 1.193-.092 1.743" />
-              </svg>
-            </span>
-            <span class="hide-on-retract">Maintenance Tickets</span>
-          </button>
-
-          <!-- Requirement: Manual Payment Verification & Ledger -->
-          <button type="button" class="sidebar-nav-item" id="navPaymentVerification" data-section="sectionPayments" onclick="switchSection('sectionPayments', this)" title="Payment Verification &amp; Ledger">
-            <span class="nav-icon">
-              <svg fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-6 h-6 text-gray-700">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 8.25h19.5M2.25 9h19.5m-16.5 5.25h6m-6 2.25h3m-3.75 3h15a2.25 2.25 0 0 0 2.25-2.25V6.75A2.25 2.25 0 0 0 19.5 4.5h-15a2.25 2.25 0 0 0-2.25 2.25v10.5A2.25 2.25 0 0 0 4.5 19.5Z" />
-              </svg>
-            </span>
-            <span class="hide-on-retract">Payment Verification</span>
-            <?php if ($pendingReviewCount > 0): ?>
-              <span class="clay-badge badge-pending hide-on-retract" style="margin-left: auto; font-size: 10px; padding: 2px 7px;">
-                <?= $pendingReviewCount ?> Review
-              </span>
-            <?php endif; ?>
-          </button>
-        </div>
-      </div>
-    </aside>
+  <?php
+  // Shared RBAC-Protected Sidebar Component (Landlord/Owner Context Only)
+  $sidebarConfig = [
+      'portal' => 'landlord',
+      'active_tickets_count' => count($activeTickets),
+      'pending_reports_count' => count($pendingReports),
+      'pending_payments_count' => $pendingReviewCount,
+  ];
+  require __DIR__ . '/includes/sidebar.php';
+  ?>
 
     <!-- ===================================================================
-         MAIN CONTENT AREA
+         MAIN WORKSPACE AREA
          =================================================================== -->
     <main class="main-content">
-      
+
       <!-- =================================================================
-           TOP NAVIGATION BAR:
-           Upper-right elements: Refresh button, Landlord profile block, and Settings button
+           STICKY TOP NAVIGATION BAR (Centered Search + Bell + Owner Profile)
            ================================================================= -->
       <header class="top-nav-bar">
-        <!-- Upper Right: Refresh Button, Landlord Name & Role Title, Avatar, Settings Button -->
+        <div class="top-nav-left-slot">
+          <button type="button" class="mobile-menu-trigger" onclick="toggleSidebar()" aria-label="Open Navigation Menu" title="Open Menu">
+            <i data-lucide="menu" class="w-5 h-5 pointer-events-none" style="pointer-events: none;" aria-hidden="true"></i>
+          </button>
+          <span class="mobile-brand-chip">TaraRent</span>
+        </div>
+
+        <!-- Centered Search Bar -->
+        <div class="top-nav-search-wrap">
+          <div class="top-search-box">
+            <span class="top-search-icon" aria-hidden="true">
+              <i data-lucide="search" style="width: 16px; height: 16px;"></i>
+            </span>
+            <input type="search"
+                   id="ownerGlobalSearchInput"
+                   autocomplete="off"
+                   placeholder="Search tenants, units, tickets, payments..."
+                   aria-label="Search owner dashboard">
+            <button type="button"
+                    id="ownerGlobalSearchClear"
+                    class="top-search-clear-btn"
+                    onclick="clearGlobalOwnerSearch()"
+                    aria-label="Clear search"
+                    title="Clear search"><i data-lucide="x" class="w-3.5 h-3.5" aria-hidden="true"></i></button>
+          </div>
+          <div id="globalSearchDropdown" class="global-search-dropdown" role="listbox" aria-label="Search Results"></div>
+        </div>
+
+        <!-- Right Controls: Notification Bell + Owner Profile & Name -->
         <div class="top-nav-right">
           <!-- Notification Bell Trigger and Dropdown Panel -->
           <div class="header-notification-container" style="position: relative;">
             <button type="button" class="header-notification-btn" id="headerNotificationBtn" onclick="toggleNotificationPanel(event)" title="Notifications" aria-label="Notifications">
-              <svg fill="none" viewBox="0 0 24 24" stroke-width="1.6" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M14.857 17.082a23.848 23.848 0 0 0 5.454-1.31A8.967 8.967 0 0 1 18 9.75V9A6 6 0 0 0 6 9v.75a8.967 8.967 0 0 1-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 0 1-5.714 0m5.714 0a3 3 0 1 1-5.714 0" />
-              </svg>
+              <i data-lucide="bell"></i>
               <span class="notification-badge" id="notificationBadge" style="display: none;">0</span>
             </button>
 
-            <!-- Notification Dropdown Panel: Glassmorphism Design -->
+            <!-- Notification Dropdown Panel -->
             <div class="clay-settings-dropdown notification-dropdown-panel" id="notificationDropdown">
               <div class="notification-panel-header">
                 <div class="notification-title-group" style="display: flex; align-items: center; gap: 8px;">
@@ -604,26 +1071,33 @@ $pendingReviewCount = count($pendingReviewPayments);
                 </button>
               </div>
 
-              <!-- Notification items container -->
               <div class="notification-items-scroll" id="notificationListContainer">
-                <div class="notification-loading-state" id="notificationLoading" style="padding: 24px; text-align: center; color: #64748b; font-size: 13px;">
+                <div class="notification-loading-state" id="notificationLoading" style="padding: 24px; text-align: center; color: var(--text-muted); font-size: 13px;">
                   <span>Loading notifications...</span>
                 </div>
               </div>
             </div>
           </div>
 
-          <!-- Circular Profile Icon Trigger with Dropdown Menu -->
+          <!-- Owner Profile Trigger (Avatar/Initial + Owner Name Beside Profile) -->
           <div class="sidebar-settings-container header-settings-container" style="position: relative;">
-            <div class="header-avatar-badge" id="headerAvatarBadge" onclick="toggleSettingsMenu(event)" role="button" tabindex="0" title="Account &amp; Settings" style="cursor: pointer;">
-              <span class="header-avatar-initial"><?= htmlspecialchars($userInitial) ?></span>
+            <div class="header-owner-trigger" id="headerProfileTrigger" onclick="toggleSettingsMenu(event)" role="button" tabindex="0" title="Account &amp; Settings" aria-label="Owner Account Menu">
+              <div class="header-avatar-badge" id="headerAvatarBadge">
+                <?php if (!empty($userAvatarUrl)): ?>
+                  <img src="<?= $userAvatarUrl ?>" alt="<?= htmlspecialchars($user['name'] ?? 'Owner') ?>" class="header-avatar-img">
+                <?php else: ?>
+                  <span class="header-avatar-initial"><?= htmlspecialchars($userInitial) ?></span>
+                <?php endif; ?>
+              </div>
+              <div class="header-owner-meta">
+                <span class="header-owner-name" id="headerUserName"><?= htmlspecialchars($user['name'] ?? 'Lead Dimaculangan') ?></span>
+                <span class="header-owner-role" style="display: inline-flex; align-items: center; gap: 4px;"><i data-lucide="circle-user" class="w-3.5 h-3.5" aria-hidden="true"></i>Owner</span>
+              </div>
             </div>
 
-            <!-- Profile Dropdown: Clean Glassmorphism Panel -->
+            <!-- Preserved Profile Dropdown Menu -->
             <div class="clay-settings-dropdown fb-profile-dropdown" id="settingsDropdown">
-              <!-- Top Profile Information Card (Display-Only) -->
               <div class="fb-profile-card">
-                <!-- Main Profile Display: Avatar/Initial & Full Name (Non-clickable) -->
                 <div class="fb-profile-main-row fb-profile-display-only">
                   <div class="fb-profile-avatar-circle">
                     <?php if (!empty($userAvatarUrl)): ?>
@@ -638,36 +1112,24 @@ $pendingReviewCount = count($pendingReviewPayments);
                 </div>
               </div>
 
-              <!-- Options Directly Below Profile Information: Visually Separated -->
               <div class="fb-actions-group">
-                <!-- Settings & Privacy Option (Positioned Directly Below Profile Information) -->
-                <button type="button" class="fb-dropdown-action-item" id="settingsToggleBtn" onclick="openProfileView('accountInfo')" title="Settings &amp; privacy">
+                <a href="settings.php" class="fb-dropdown-action-item cursor-pointer hover:bg-gray-200 hover:text-blue-600 transition-colors duration-150" id="settingsToggleBtn" onclick="openProfileView('accountInfo'); return false;" role="button" title="Settings &amp; privacy">
                   <div class="fb-action-icon-circle">
-                    <svg fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5 text-gray-700">
-                      <path stroke-linecap="round" stroke-linejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 0 1 0 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 0 1 0-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281Z" />
-                      <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
-                    </svg>
+                    <i data-lucide="settings" style="width: 18px; height: 18px;"></i>
                   </div>
                   <span class="fb-action-label">Settings &amp; privacy</span>
                   <span class="fb-action-arrow">
-                    <svg fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-4 h-4">
-                      <path stroke-linecap="round" stroke-linejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" />
-                    </svg>
+                    <i data-lucide="chevron-right" style="width: 16px; height: 16px;"></i>
                   </span>
-                </button>
+                </a>
 
-                <!-- Sign Out Option -->
                 <a href="logout.php" class="fb-dropdown-action-item fb-action-item-danger" title="Sign Out">
                   <div class="fb-action-icon-circle">
-                    <svg fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
-                      <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0 0 13.5 3h-6a2.25 2.25 0 0 0-2.25 2.25v13.5A2.25 2.25 0 0 0 7.5 21h6a2.25 2.25 0 0 0 2.25-2.25V15m3 0 3-3m0 0-3-3m3 3H9" />
-                    </svg>
+                    <i data-lucide="log-out" style="width: 18px; height: 18px;"></i>
                   </div>
                   <span class="fb-action-label">Sign Out</span>
                   <span class="fb-action-arrow">
-                    <svg fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-4 h-4">
-                      <path stroke-linecap="round" stroke-linejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" />
-                    </svg>
+                    <i data-lucide="chevron-right" style="width: 16px; height: 16px;"></i>
                   </span>
                 </a>
               </div>
@@ -676,82 +1138,117 @@ $pendingReviewCount = count($pendingReviewPayments);
         </div>
       </header>
 
+      <!-- Uniform Content Wrapper Shared Across All Owner Modules -->
+      <div class="admin-content-container">
+
       <!-- SECTION 1: LANDLORD DASHBOARD (ANALYTICS VIEW) -->
       <section id="sectionAnalytics" class="app-view-section active-section">
-        
-        <div class="dashboard-header-bar">
-          <div class="dashboard-title-group">
-            <h1>Landlord Business Analytics Dashboard</h1>
-            <p>Collection efficiency, maintenance expenses per unit, and diagnostic operational intelligence</p>
+
+        <!-- Hero Top Row: 2x2 Summary Cards Grid + Aligned Right Overview Panel -->
+        <div class="dashboard-top-grid">
+          <div class="kpi-grid">
+            <div class="kpi-card">
+              <div class="kpi-value" id="kpiRevenue">₱<?= number_format($initRentCollected, 2) ?></div>
+              <div class="kpi-label">Total Rent Collected</div>
+              <div class="kpi-subtitle">Verified approved payments</div>
+            </div>
+
+            <div class="kpi-card">
+              <div class="kpi-value" id="kpiOutstanding">₱<?= number_format($initUnpaidRent, 2) ?></div>
+              <div class="kpi-label">Unpaid Rent</div>
+              <div class="kpi-subtitle">Outstanding receivables</div>
+            </div>
+
+            <div class="kpi-card">
+              <div class="kpi-value" id="kpiMaintenance">₱<?= number_format($initRepairExpenses, 2) ?></div>
+              <div class="kpi-label">Repair Expenses</div>
+              <div class="kpi-subtitle" id="kpiTicketsCountLabel"><?= $initTotalTicketsCount ?> logged request<?= $initTotalTicketsCount === 1 ? '' : 's' ?></div>
+            </div>
+
+            <div class="kpi-card">
+              <div class="kpi-value" id="kpiEfficiency"><?= number_format($initCollectionRate, 1) ?>%</div>
+              <div class="kpi-label">Rent Collection Rate</div>
+              <div class="kpi-subtitle">Collected vs. billed total</div>
+            </div>
           </div>
 
-          <!-- Dashboard Summary: No occupancy fractions. Simple summary widget showing ONLY total residing tenants -->
-          <div>
-            <div class="tenant-summary-widget" id="tenantSummaryWidget">
-              <span class="summary-widget-icon">👥</span>
-              <span class="summary-widget-text" id="tenantSummaryText"><?= count($allTenants) ?> Active Residents</span>
+          <!-- Right-Side Tall Overview Panel -->
+          <aside class="overview-panel" aria-label="Property Overview">
+            <div class="overview-panel-header">
+              <span class="overview-panel-title">overview</span>
+              <span class="overview-live-pill">
+                <span class="overview-live-dot" aria-hidden="true"></span>
+                Live Data
+              </span>
+            </div>
+
+            <div class="overview-stats-list">
+              <button type="button" class="overview-stat-row" onclick="switchSection('sectionDirectory', document.getElementById('navTenantDirectory'))">
+                <span class="overview-stat-left">
+                  <span class="overview-stat-icon"><i data-lucide="users"></i></span>
+                  <span class="overview-stat-label">Active Residents</span>
+                </span>
+                <span class="overview-stat-val" id="tenantSummaryText"><?= count($allTenants) ?></span>
+              </button>
+
+              <button type="button" class="overview-stat-row" onclick="switchSection('sectionDirectory', document.getElementById('navTenantDirectory'))">
+                <span class="overview-stat-left">
+                  <span class="overview-stat-icon"><i data-lucide="building-2"></i></span>
+                  <span class="overview-stat-label">Available Units</span>
+                </span>
+                <span class="overview-stat-val" id="overviewUnitsValue"><?= $availableUnitsCount ?> of <?= count($units) ?></span>
+              </button>
+
+              <button type="button" class="overview-stat-row" onclick="switchSection('sectionPayments', document.getElementById('navPaymentVerification'))">
+                <span class="overview-stat-left">
+                  <span class="overview-stat-icon"><i data-lucide="receipt"></i></span>
+                  <span class="overview-stat-label">Pending Receipts</span>
+                </span>
+                <span class="overview-stat-val" id="overviewPendingPayments"><?= $pendingReviewCount ?></span>
+              </button>
+
+              <button type="button" class="overview-stat-row" onclick="switchSection('sectionTickets', document.getElementById('navMaintenanceTickets'))">
+                <span class="overview-stat-left">
+                  <span class="overview-stat-icon"><i data-lucide="wrench"></i></span>
+                  <span class="overview-stat-label">Open Repairs</span>
+                </span>
+                <span class="overview-stat-val" id="overviewOpenTickets"><?= count($activeTickets) ?></span>
+              </button>
+
+              <button type="button" class="overview-stat-row" onclick="switchSection('sectionArchivedTenants')">
+                <span class="overview-stat-left">
+                  <span class="overview-stat-icon"><i data-lucide="archive"></i></span>
+                  <span class="overview-stat-label">Archived Tenants</span>
+                </span>
+                <span class="overview-stat-val" id="overviewArchivedTenants"><?= $archivedTenantsCount ?></span>
+              </button>
+            </div>
+          </aside>
+        </div>
+
+        <!-- Primary Revenue Analytics Container -->
+        <div class="revenue-analytics-card">
+          <div class="revenue-analytics-header">
+            <div>
+              <h1 class="revenue-analytics-title">REVENUE ANALYTICS</h1>
+              <p class="revenue-analytics-subtitle">Monthly billed vs. collected rent &amp; collection efficiency rate (%)</p>
+            </div>
+            <span class="widget-badge">Collection Timeline</span>
+          </div>
+          <div class="revenue-chart-stage">
+            <canvas id="chartCollectionEfficiency"></canvas>
+            <div id="revenueChartEmptyState" class="chart-empty-overlay">
+              <i data-lucide="bar-chart-3" style="width: 34px; height: 34px; color: var(--tr-golden-brown); margin-bottom: 10px;"></i>
+              <div style="font-size: 14.5px; font-weight: 800; color: var(--tr-dark-brown);">No Monthly Billing Cycles Yet</div>
+              <p style="font-size: 12.5px; color: var(--tr-text-muted); margin-top: 4px; max-width: 360px;">
+                Configure rent schedules in Payment Verification or record tenant payments to visualize monthly revenue analytics.
+              </p>
             </div>
           </div>
         </div>
 
-        <!-- 4 KPI Summary Cards (Strictly ₱) -->
-        <div class="kpi-grid">
-          <div class="kpi-card clay-card-interactive">
-            <div class="kpi-top">
-              <span class="kpi-label">Collection Efficiency</span>
-              <div class="kpi-icon kpi-icon-efficiency">📈</div>
-            </div>
-            <div class="kpi-value" id="kpiEfficiency">87.9%</div>
-            <div class="kpi-subtitle"><span class="kpi-trend-positive">↑ 6 Billing Cycles</span> • All Units</div>
-          </div>
-
-          <div class="kpi-card clay-card-interactive">
-            <div class="kpi-top">
-              <span class="kpi-label">Outstanding Balance</span>
-              <div class="kpi-icon kpi-icon-overdue">⏳</div>
-            </div>
-            <div class="kpi-value" id="kpiOutstanding">₱24,000.00</div>
-            <div class="kpi-subtitle"><span class="kpi-trend-negative">Uncollected Arrears</span></div>
-          </div>
-
-          <div class="kpi-card clay-card-interactive">
-            <div class="kpi-top">
-              <span class="kpi-label">Gross Revenue Collected</span>
-              <div class="kpi-icon kpi-icon-revenue">💵</div>
-            </div>
-            <div class="kpi-value" id="kpiRevenue">₱174,000.00</div>
-            <div class="kpi-subtitle"><span>Verified Inflow</span></div>
-          </div>
-
-          <div class="kpi-card clay-card-interactive">
-            <div class="kpi-top">
-              <span class="kpi-label">Maintenance Costs</span>
-              <div class="kpi-icon kpi-icon-cost">🛠️</div>
-            </div>
-            <div class="kpi-value" id="kpiMaintenance">₱12,600.00</div>
-            <div class="kpi-subtitle"><span>6 Logged Work Orders</span></div>
-          </div>
-        </div>
-
-        <!-- Analytics Charts Grid -->
-        <div class="analytics-grid">
-          <!-- Widget 1: Revenue & Collection Analytics -->
-          <div class="clay-card chart-widget">
-            <div class="widget-header">
-              <div>
-                <h2 class="widget-title">Revenue &amp; Collection Analytics</h2>
-                <p style="font-size: 13px; color: var(--text-muted); margin-top: 2px;">
-                  Monthly billed vs. collected rent &amp; efficiency rate (%)
-                </p>
-              </div>
-              <span class="widget-badge">Collection Timeline</span>
-            </div>
-            <div class="chart-container">
-              <canvas id="chartCollectionEfficiency"></canvas>
-            </div>
-          </div>
-
-          <!-- Widget 2: Maintenance by Category -->
+        <!-- Secondary Analytics Grid: Category Spend & Unit Maintenance Breakdown -->
+        <div class="analytics-secondary-grid">
           <div class="clay-card chart-widget">
             <div class="widget-header">
               <div>
@@ -766,49 +1263,19 @@ $pendingReviewCount = count($pendingReviewPayments);
               <canvas id="chartCategoryBreakdown"></canvas>
             </div>
           </div>
-        </div>
 
-        <!-- Widget 3: Maintenance Costs Per Unit (Bar Chart) -->
-        <div class="clay-card chart-widget" style="margin-bottom: 32px;">
-          <div class="widget-header">
-            <div>
-              <h2 class="widget-title">Maintenance Costs Per Unit</h2>
-              <p style="font-size: 13px; color: var(--text-muted); margin-top: 2px;">
-                Historical repair expense breakdown across Unit 101, Unit 102, and Unit 103
-              </p>
-            </div>
-            <span class="widget-badge">Unit Comparison</span>
-          </div>
-          <div class="chart-container">
-            <canvas id="chartUnitMaintenance"></canvas>
-          </div>
-        </div>
-
-        <!-- Diagnostic Intelligence Box -->
-        <div class="clay-card" style="margin-top: 10px;">
-          <div class="widget-header">
-            <div>
-              <h2 class="widget-title">Diagnostic Intelligence &amp; Arrears Root Causes</h2>
-              <p style="font-size: 13px; color: var(--text-muted); margin-top: 2px;">
-                Automated root-cause diagnostics on unit expenses and delinquencies
-              </p>
-            </div>
-            <span class="clay-badge badge-urgent">Actionable Insights</span>
-          </div>
-          <div id="diagnosticAlertsContainer" style="margin-top: 14px;">
-            <div class="alert-clay alert-clay-warning">
-              <div class="alert-icon-clay">⚡</div>
-              <div class="alert-body-clay">
-                <h4>Primary Expense Category: HVAC (₱4,800.00)</h4>
-                <p>HVAC represents 38.1% of all repair expenditures across the 3 units, driven by the Unit 102 aircon blower resolution.</p>
+          <div class="clay-card chart-widget">
+            <div class="widget-header">
+              <div>
+                <h2 class="widget-title">Maintenance Costs Per Unit</h2>
+                <p style="font-size: 13px; color: var(--text-muted); margin-top: 2px;">
+                  Historical repair expense breakdown across apartment units
+                </p>
               </div>
+              <span class="widget-badge">Unit Comparison</span>
             </div>
-            <div class="alert-clay alert-clay-info">
-              <div class="alert-icon-clay">📌</div>
-              <div class="alert-body-clay">
-                <h4>Unit 102 Unpaid Balance: October 2026 (₱18,000.00)</h4>
-                <p>Maria Santos has an uncollected balance of ₱18,000.00 for October 2026 (Due: 2026-10-05).</p>
-              </div>
+            <div class="chart-container">
+              <canvas id="chartUnitMaintenance"></canvas>
             </div>
           </div>
         </div>
@@ -818,231 +1285,164 @@ $pendingReviewCount = count($pendingReviewPayments);
       <!-- SECTION 2: TENANT DIRECTORY (ACTIVE TENANTS + ARCHIVED TENANTS) -->
       <section id="sectionDirectory" class="app-view-section">
 
-        <!-- DIRECTORY VIEW TABS: ACTIVE TENANTS VS ARCHIVED TENANTS -->
-        <div class="directory-view-tabs" style="display: flex; gap: 10px; margin-bottom: 22px;">
-          <button type="button" class="subview-tab-btn active" id="btnTabActiveDirectory" onclick="switchDirectoryTab('active')">
-            👥 Active Tenants
-          </button>
-          <button type="button" class="subview-tab-btn" id="btnTabArchivedDirectory" onclick="switchDirectoryTab('archived')">
-            📁 Archived Tenants 
-            <span id="directoryArchivedCountBadge" class="clay-badge" style="font-size: 11px; padding: 2px 8px; margin-left: 6px; background: #e2e8f0; color: #475569;">0</span>
-          </button>
-        </div>
-
-        <!-- 1. ACTIVE TENANTS VIEW (Folders + Detail) -->
-        <div id="directoryActiveView">
-          <!-- FOLDERS VIEW (Default Directory Landing: Unit 101, Unit 102, Unit 103) -->
-          <div id="directoryFoldersView">
-          <div class="dashboard-header-bar">
-            <div class="dashboard-title-group">
-              <h1>Tenant Directory Folders</h1>
-              <p>Select an apartment unit folder to view assigned residents, contact details, and process move-outs</p>
-            </div>
-            <!-- Requirement: 'Add New Tenant' button strictly removed from root folder view -->
-          </div>
-
-          <!-- 3 Claymorphic Folders Grid: Unit 1, Unit 2, Unit 3 -->
-          <div class="clay-folder-grid">
-            <?php foreach ($unitsWithTenants as $u): ?>
-            <div class="clay-folder-card" onclick="openUnitFolder(<?= $u['id'] ?>)">
-              <div class="clay-folder-tab"></div>
-              <div class="folder-title" style="display: flex; align-items: center; gap: 8px;">
-                <svg fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-6 h-6 text-gray-700">
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 21h19.5m-18-18v18m10.5-18v18m6-13.5V21M6.75 6.75h.75m-.75 3h.75m-.75 3h.75m3-6h.75m-.75 3h.75m-.75 3h.75M6.75 21v-3.375c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21M3 3h12m-.75 4.5H21m-3.75 3.75h.008v.008h-.008v-.008Zm0 3h.008v.008h-.008v-.008Zm0 3h.008v.008h-.008v-.008Z" />
-                </svg>
-                <span><?= htmlspecialchars($u['unit_number']) ?></span>
-              </div>
-              <div class="folder-subtitle">Floor <?= $u['floor_level'] ?> • <?= $u['bedrooms'] ?> Bed / <?= $u['bathrooms'] ?> Bath</div>
-              
-              <div class="folder-meta-row">
-                <span class="clay-badge <?= count($u['tenants']) > 0 ? 'badge-paid' : 'badge-low' ?>" style="font-size: 11.5px;" id="unit-folder-badge-<?= $u['id'] ?>">
-                  <?= count($u['tenants']) > 0 ? '🔒 Occupied' : '🟢 Available' ?>
-                </span>
-                <span style="font-size: 13.5px; font-weight: 800; color: var(--clay-primary-dark);">
-                  ₱<?= number_format((float)$u['monthly_rent'], 2) ?>/mo
-                </span>
-              </div>
-
-            </div>
-            <?php endforeach; ?>
+        <div class="dashboard-header-bar">
+          <div class="dashboard-title-group">
+            <h1>Tenant Directory</h1>
+            <p>View residential units, real-time occupant payment status, and archived tenant records</p>
           </div>
         </div>
 
-        <!-- FOLDER DETAIL VIEW (Visible when Landlord clicks into a specific unit folder) -->
-        <div id="directoryFolderDetailView" style="display: none;">
-          <?php foreach ($unitsWithTenants as $u): ?>
-          <div class="unit-folder-content" id="unit-detail-folder-<?= $u['id'] ?>" style="display: none;">
-            
-            <div class="folder-detail-header">
-              <div style="display: flex; align-items: center; gap: 14px; flex-wrap: wrap;">
-                <button type="button" class="btn-back-folders" onclick="closeUnitFolder()">
-                  ← Back to Folders
-                </button>
-                <div>
-                  <h1 style="font-size: 24px; font-weight: 800; color: #0f172a; margin: 0; display: flex; align-items: center; gap: 8px;">
-                    <svg fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-6 h-6 text-gray-700">
-                      <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 21h19.5m-18-18v18m10.5-18v18m6-13.5V21M6.75 6.75h.75m-.75 3h.75m-.75 3h.75m3-6h.75m-.75 3h.75m-.75 3h.75M6.75 21v-3.375c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21M3 3h12m-.75 4.5H21m-3.75 3.75h.008v.008h-.008v-.008Zm0 3h.008v.008h-.008v-.008Zm0 3h.008v.008h-.008v-.008Z" />
-                    </svg>
-                    <span><?= htmlspecialchars($u['unit_number']) ?></span>
-                  </h1>
-                  <p style="font-size: 13px; color: var(--text-muted); margin-top: 2px;">
-                    Monthly Rent: <strong>₱<?= number_format((float)$u['monthly_rent'], 2) ?>/mo</strong> • Floor <?= $u['floor_level'] ?> • <?= $u['bedrooms'] ?> Bed / <?= $u['bathrooms'] ?> Bath
-                  </p>
+        <!-- PERSISTENT TABBED FOLDER CONTAINER -->
+        <div class="maintenance-folder-shell" id="directoryFolderShell">
+          <div class="maintenance-folder-tabs" role="tablist" aria-label="Tenant Directory Views">
+            <button type="button"
+                    class="maintenance-folder-tab active"
+                    id="btnTabActiveDirectory"
+                    role="tab"
+                    aria-selected="true"
+                    aria-controls="directoryActiveView"
+                    onclick="switchDirectoryTab('active')">
+              <span>Active Tenants</span>
+              <span id="directoryActiveCountBadge" class="folder-tab-count"><?= $activeUnitsCount ?></span>
+            </button>
+            <button type="button"
+                    class="maintenance-folder-tab"
+                    id="btnTabArchivedDirectory"
+                    role="tab"
+                    aria-selected="false"
+                    aria-controls="directoryArchivedView"
+                    onclick="switchDirectoryTab('archived')">
+              <span>Archived Tenants</span>
+              <span id="directoryArchivedCountBadge" class="folder-tab-count"><?= $archivedTenantsCount ?></span>
+            </button>
+          </div>
+
+          <div class="maintenance-folder-body" id="directoryFolderBody">
+            <!-- 1. ACTIVE TENANTS VIEW (UNIT CARDS GRID) -->
+            <div id="directoryActiveView" role="tabpanel" aria-labelledby="btnTabActiveDirectory" style="display: block;">
+              <div class="directory-toolbar">
+                <div class="directory-active-counter" id="directoryActiveUnitsCounter">
+                  <?= $activeUnitsCount ?> active unit<?= $activeUnitsCount === 1 ? '' : 's' ?>
                 </div>
               </div>
-              <!-- Requirement: 'Add Tenant' button accessible inside the specific unit view -->
-              <div id="unit-add-tenant-btn-wrapper-<?= $u['id'] ?>">
-                <?php if (count($u['tenants']) > 0): ?>
-                  <button type="button" class="clay-btn" style="opacity: 0.85; cursor: not-allowed; background: rgba(241, 245, 249, 0.9); color: #64748b; border: 1.5px solid #cbd5e1;" onclick="openAddTenantModal(<?= $u['id'] ?>)" title="Unit is already occupied">
-                    <span>🔒 Occupied (1 Tenant Limit)</span>
-                  </button>
-                <?php else: ?>
-                  <button type="button" class="clay-btn clay-btn-primary" onclick="openAddTenantModal(<?= $u['id'] ?>)">
-                    <span>➕ Add Tenant to <?= htmlspecialchars($u['unit_number']) ?></span>
-                  </button>
-                <?php endif; ?>
+
+              <div class="directory-units-grid" id="directoryUnitsGrid">
+                <?php foreach ($unitsWithTenants as $u):
+                  $uId = (int)$u['id'];
+                  $isOccupied = !empty($u['tenants']);
+                  $primaryTenant = $isOccupied ? $u['tenants'][0] : null;
+                  $isPaidUp = $isOccupied ? !empty($u['is_paid_up']) : false;
+                  $cardClass = $isOccupied ? 'unit-dir-card--occupied' : 'unit-dir-card--available';
+                  $pillClass = !$isOccupied
+                    ? 'unit-dir-status-pill--available'
+                    : ($isPaidUp ? 'unit-dir-status-pill--paid' : 'unit-dir-status-pill--unpaid');
+                  $pillText = $isOccupied ? 'OCCUPIED' : 'AVAILABLE';
+                  $brCount = (int)($u['bedrooms'] ?? 1);
+                  $crRaw = rtrim(rtrim(number_format((float)($u['bathrooms'] ?? 1), 1), '0'), '.');
+                  $crCount = $crRaw !== '' ? $crRaw : '1';
+                  $isMovedOutPending = $primaryTenant && (($primaryTenant['rental_status'] ?? 'active') === 'moved_out');
+                ?>
+                  <article class="unit-dir-card <?= $cardClass ?>"
+                           id="unit-directory-card-<?= $uId ?>"
+                           data-unit-id="<?= $uId ?>"
+                           data-card-state="<?= htmlspecialchars((string)$u['card_state']) ?>"
+                           tabindex="0"
+                           role="button"
+                           aria-label="<?= htmlspecialchars((string)$u['unit_number']) ?> - <?= $pillText ?>"
+                           onclick="handleUnitCardClick(<?= $uId ?>)"
+                           onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();handleUnitCardClick(<?= $uId ?>);}">
+                    <div class="unit-dir-header">
+                      <h2 class="unit-dir-title"><?= htmlspecialchars(strtoupper((string)$u['unit_number'])) ?></h2>
+                      <div class="unit-dir-specs"><?= $brCount ?> BR | <?= htmlspecialchars($crCount) ?> CR</div>
+                      <?php if ($isOccupied && $primaryTenant): ?>
+                        <div class="unit-dir-occupant">OCCUPANT: <?= htmlspecialchars(strtoupper((string)$primaryTenant['name'])) ?></div>
+                        <?php if ($isMovedOutPending): ?>
+                          <span class="unit-dir-movedout-tag">Moved Out (Pending Settlement)</span>
+                        <?php endif; ?>
+                      <?php endif; ?>
+                    </div>
+
+                    <?php if ($isOccupied): ?>
+                      <div class="unit-dir-divider"></div>
+                    <?php endif; ?>
+
+                    <div class="unit-dir-footer">
+                      <span class="unit-dir-status-pill <?= $pillClass ?>" id="unit-folder-badge-<?= $uId ?>"><?= $pillText ?></span>
+                    </div>
+                  </article>
+                <?php endforeach; ?>
               </div>
-            </div>
+            </div> <!-- /#directoryActiveView -->
 
-            <!-- Requirement: Summary View - Clean, clickable summary list showing ONLY: Name, Username, Birthday, Email, and Phone Number -->
-            <div id="unit-tenants-container-<?= $u['id'] ?>" style="margin-top: 20px;">
-              <?php if (empty($u['tenants'])): ?>
-                <div class="clay-card-sm" id="empty-state-unit-<?= $u['id'] ?>" style="text-align: center; color: var(--text-muted); padding: 54px 24px;">
-                  <div style="font-size: 46px; margin-bottom: 12px;">📭</div>
-                  <h3 style="font-size: 18px; font-weight: 800; color: #0f172a; margin-bottom: 6px;">No Tenants Assigned to <?= htmlspecialchars($u['unit_number']) ?></h3>
-                  <p style="font-size: 13px; max-width: 440px; margin: 0 auto; line-height: 1.5;">This unit currently has no active residents. Click the <strong>"Add Tenant"</strong> button at the top right to provision a new tenant account.</p>
-                </div>
-              <?php else: ?>
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-                  <span style="font-size: 12.5px; font-weight: 700; color: var(--text-muted);">
-                    Registered Residents (<span id="unit-count-text-<?= $u['id'] ?>"><?= count($u['tenants']) ?></span>) • Click any resident row to view complete details
-                  </span>
-                  <span class="clay-badge badge-paid" style="font-size: 11px;">1 Family per Account</span>
+            <!-- 2. ARCHIVED TENANTS VIEW (Integrated inside persistent folder container) -->
+            <div id="directoryArchivedView" role="tabpanel" aria-labelledby="btnTabArchivedDirectory" style="display: none;">
+              <!-- Beige Container Box with Rounded Corners, Thin Dark Brown Border, and Drop Shadow -->
+              <div class="archived-tenants-beige-container">
+                <div class="dashboard-header-bar" style="margin-bottom: 16px;">
+                  <div class="dashboard-title-group">
+                    <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+                      <h2 style="font-size: 20px; font-weight: 800; color: #1f170f; margin: 0; font-family: 'Playfair Display', Georgia, serif;">Archived Tenant Accounts</h2>
+                      <span id="archivedTenantCountBadge" class="clay-badge" style="font-size: 12px; padding: 4px 12px; background: #fdf6ea; color: #56380E; border: 1.2px solid #2b2116; font-weight: 700; border-radius: 9999px;">0 Archived Records</span>
+                    </div>
+                    <p style="font-size: 13px; color: #54412e; margin-top: 3px;">Preserved repository of deleted and moved-out tenant records with historical billing, receipts, and maintenance logs.</p>
+                  </div>
+                  <div class="action-btn-group" style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                    <div style="position: relative; min-width: 260px;">
+                      <input type="text" id="archivedTenantSearchInput" class="clay-input" placeholder="Search by name, email, or unit..." style="padding-left: 36px; font-size: 13px; background: #ffffff; border: 1.2px solid #2b2116; border-radius: 8px;" oninput="filterArchivedTenants(this.value)">
+                      <i data-lucide="search" aria-hidden="true" style="width: 17px; height: 17px; position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: #6e5539; pointer-events: none;"></i>
+                    </div>
+                    <button type="button" id="btnExportArchivedTenants" class="archived-main-action-btn" onclick="exportArchivedTenantsToCSV()" title="Export Archived Records (CSV)">
+                      <i data-lucide="download" class="w-4 h-4" aria-hidden="true"></i>
+                      <span>Export</span>
+                    </button>
+                    <button type="button" class="archived-main-action-btn" onclick="loadArchivedTenants()" title="Refresh Archived Records">
+                      <i data-lucide="refresh-cw" class="w-4 h-4" aria-hidden="true"></i>
+                      <span>Refresh</span>
+                    </button>
+                  </div>
                 </div>
 
-                <div class="clay-card" style="padding: 0; overflow: hidden; border-radius: var(--radius-lg);">
+                <!-- Archived Notice Banner -->
+                <div class="alert-clay alert-clay-info" style="margin-bottom: 18px; padding: 12px 18px; background: #fffcf7; border: 1.2px solid #2b2116; border-radius: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.06);">
+                  <div class="alert-icon-clay" style="color: #6e5539;">
+                    <i data-lucide="info" class="w-5 h-5" aria-hidden="true"></i>
+                  </div>
+                  <div class="alert-body-clay" style="font-size: 13px; color: #3b2b1d; line-height: 1.5;">
+                    <strong>Data Integrity Guarantee:</strong> Moving out and archiving a tenant preserves all payment receipts, billing history, and maintenance records permanently for accounting and auditing.
+                  </div>
+                </div>
+
+                <!-- Archived Tenants Table Card -->
+                <div class="archived-table-wrapper">
                   <div class="table-responsive" style="overflow-x: auto;">
-                    <table class="tenant-summary-table">
+                    <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 13.5px;">
                       <thead>
-                        <tr>
-                          <th>Name</th>
-                          <th>Username</th>
-                          <th>Date of Moving In</th>
-                          <th>Birthday</th>
-                          <th>Email</th>
-                          <th>Phone Number</th>
+                        <tr style="border-bottom: 1.5px solid #2b2116; color: #1c140d; font-weight: 700; background: #fdf6ea;">
+                          <th style="padding: 14px 16px;">Tenant Name</th>
+                          <th style="padding: 14px 16px;">Unit Number</th>
+                          <th style="padding: 14px 16px;">Email Address</th>
+                          <th style="padding: 14px 16px;">Contact Number</th>
+                          <th style="padding: 14px 16px;">Date of Moving In</th>
+                          <th style="padding: 14px 16px;">Move-Out Date</th>
+                          <th style="padding: 14px 16px;">Date Archived</th>
+                          <th style="padding: 14px 16px; text-align: center;">Main Actions</th>
                         </tr>
                       </thead>
-                      <tbody id="unit-table-body-<?= $u['id'] ?>">
-                        <?php foreach ($u['tenants'] as $t): ?>
-                        <tr class="tenant-summary-row" id="tenant-row-<?= $t['id'] ?>" onclick="openTenantDetailsModal(<?= htmlspecialchars(json_encode($t), ENT_QUOTES, 'UTF-8') ?>, '<?= htmlspecialchars($u['unit_number']) ?>', <?= $u['id'] ?>)" title="Click to view complete details for <?= htmlspecialchars($t['name']) ?>">
-                          <td>
-                            <div style="display: flex; align-items: center; gap: 10px;">
-                              <div style="width: 32px; height: 32px; border-radius: 10px; background: linear-gradient(135deg, #a5b4fc, #818cf8); color: #fff; font-weight: 800; font-size: 13px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
-                                <?= strtoupper(substr($t['name'], 0, 1)) ?>
-                              </div>
-                              <div style="font-weight: 800; color: #0f172a; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-                                <span><?= htmlspecialchars($t['name']) ?></span>
-                                <?php if (($t['rental_status'] ?? 'active') === 'moved_out'): ?>
-                                  <span class="clay-badge" style="background: #fef3c7; color: #92400e; font-size: 10px; font-weight: 800; padding: 2px 7px;">MOVED OUT (PENDING SETTLEMENT)</span>
-                                <?php endif; ?>
-                              </div>
-                            </div>
-                          </td>
-                          <td>
-                            <span style="font-weight: 700; color: var(--clay-primary-dark); background: #e0e7ff; padding: 3px 8px; border-radius: 6px; font-size: 12.5px;">
-                              @<?= htmlspecialchars($t['username']) ?>
-                            </span>
-                          </td>
-                          <td>
-                            <span style="font-weight: 700; color: #0f172a;">
-                              <?= !empty($t['move_in_date']) ? date('M j, Y', strtotime($t['move_in_date'])) : '<span style="color:var(--text-light)">N/A</span>' ?>
-                            </span>
-                          </td>
-                          <td>
-                            <?= !empty($t['birthday']) ? date('M j, Y', strtotime($t['birthday'])) : '<span style="color:var(--text-light)">N/A</span>' ?>
-                          </td>
-                          <td>
-                            <?= htmlspecialchars($t['email']) ?>
-                          </td>
-                          <td>
-                            <?= htmlspecialchars($t['phone'] ?: 'N/A') ?>
+                      <tbody id="archivedTenantsTableBody">
+                        <tr>
+                          <td colspan="8" style="text-align: center; padding: 36px 14px; color: #6e5539; font-size: 13.5px;">
+                            <span class="clay-spinner" style="width: 18px; height: 18px; border-width: 2px; vertical-align: middle; margin-right: 8px;"></span>
+                            Loading archived tenant accounts...
                           </td>
                         </tr>
-                        <?php endforeach; ?>
                       </tbody>
                     </table>
                   </div>
                 </div>
-              <?php endif; ?>
-            </div>
-
+              </div> <!-- /.archived-tenants-beige-container -->
+            </div> <!-- /#directoryArchivedView -->
           </div>
-          <?php endforeach; ?>
-        </div> <!-- /#directoryFolderDetailView -->
-        </div> <!-- /#directoryActiveView -->
-
-        <!-- 2. ARCHIVED TENANTS VIEW (Integrated inside Tenant Directory) -->
-        <div id="directoryArchivedView" style="display: none;">
-          <div class="dashboard-header-bar">
-            <div class="dashboard-title-group">
-              <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
-                <h1 style="font-size: 24px; font-weight: 800; color: #0f172a; margin: 0;">Archived Tenant Accounts</h1>
-                <span id="archivedTenantCountBadge" class="clay-badge" style="font-size: 12px; padding: 4px 12px; background: #e2e8f0; color: #475569; font-weight: 700;">0 Archived Records</span>
-              </div>
-              <p style="font-size: 13px; color: var(--text-muted); margin-top: 3px;">Preserved repository of deleted and moved-out tenant records with historical billing, receipts, and maintenance logs.</p>
-            </div>
-            <div class="action-btn-group" style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-              <div style="position: relative; min-width: 280px;">
-                <input type="text" id="archivedTenantSearchInput" class="clay-input" placeholder="Search by name, email, or unit..." style="padding-left: 36px; font-size: 13px;" oninput="filterArchivedTenants(this.value)">
-                <svg fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" style="width: 17px; height: 17px; position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: #94a3b8; pointer-events: none;">
-                  <path stroke-linecap="round" stroke-linejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" />
-                </svg>
-              </div>
-              <button type="button" class="clay-btn clay-btn-secondary" onclick="loadArchivedTenants()" title="Refresh Archived Records" style="padding: 9px 14px;">
-                <span>🔄 Refresh</span>
-              </button>
-            </div>
-          </div>
-
-          <!-- Archived Notice Banner -->
-          <div class="alert-clay alert-clay-info" style="margin-bottom: 22px; padding: 14px 20px; background: #f8fafc; border: 1.5px solid #e2e8f0; border-radius: var(--radius-md);">
-            <div class="alert-icon-clay" style="color: #64748b;">
-              <svg fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" style="width: 20px; height: 20px;">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M11.25 11.25l.041-.02a.75.75 0 0 1 1.063.852l-.708 2.836a.75.75 0 0 0 1.063.853l.041-.021M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9-3.75h.008v.008H12V8.25Z" />
-              </svg>
-            </div>
-            <div class="alert-body-clay" style="font-size: 13px; color: #475569; line-height: 1.5;">
-              <strong>Data Integrity Guarantee:</strong> Deleting a tenant account preserves all payment receipts, billing history, and maintenance records permanently for accounting and auditing.
-            </div>
-          </div>
-
-          <!-- Archived Tenants Table Card -->
-          <div class="clay-card" style="padding: 0; overflow: hidden; border-radius: var(--radius-lg);">
-            <div class="table-responsive" style="overflow-x: auto;">
-              <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 13.5px;">
-                <thead>
-                  <tr style="border-bottom: 2px solid rgba(166, 180, 204, 0.3); color: var(--text-muted); font-weight: 700; background: rgba(248, 250, 252, 0.6);">
-                    <th style="padding: 14px 16px;">Tenant Name</th>
-                    <th style="padding: 14px 16px;">Unit Number</th>
-                    <th style="padding: 14px 16px;">Email Address</th>
-                    <th style="padding: 14px 16px;">Contact Number</th>
-                    <th style="padding: 14px 16px;">Date of Moving In</th>
-                    <th style="padding: 14px 16px;">Date Archived</th>
-                  </tr>
-                </thead>
-                <tbody id="archivedTenantsTableBody">
-                  <tr>
-                    <td colspan="6" style="text-align: center; padding: 36px 14px; color: var(--text-muted); font-size: 13.5px;">
-                      <span class="clay-spinner" style="width: 18px; height: 18px; border-width: 2px; vertical-align: middle; margin-right: 8px;"></span>
-                      Loading archived tenant accounts...
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div> <!-- /#directoryArchivedView -->
+        </div>
 
       </section>
 
@@ -1056,171 +1456,205 @@ $pendingReviewCount = count($pendingReviewPayments);
           </div>
         </div>
 
-        <!-- TICKET SUB-NAVIGATION: ACTIVE / ON-GOING VS COMPLETED -->
-        <div class="ticket-view-tabs" style="display: flex; gap: 10px; margin-bottom: 20px;">
-            <button type="button" class="subview-tab-btn active" id="btnTabActiveTickets" onclick="switchTicketTab('active')">
-              🛠️ Active / On-Going Maintenance 
-              <span id="activeTicketCountBadge" class="clay-badge badge-pending" style="font-size: 11.5px; padding: 2px 9px; margin-left: 6px;">
-                <?= count($activeTickets) ?>
-              </span>
+        <!-- PERSISTENT TABBED FOLDER CONTAINER -->
+        <div class="maintenance-folder-shell" id="maintenanceFolderShell">
+          <div class="maintenance-folder-tabs" role="tablist" aria-label="Maintenance Views">
+            <button type="button"
+                    class="maintenance-folder-tab active"
+                    id="btnTabActiveTickets"
+                    role="tab"
+                    aria-selected="true"
+                    aria-controls="paneActiveTickets"
+                    onclick="switchTicketTab('active')">
+              <span>Active/On-going maintenance</span>
+              <span id="activeTicketCountBadge" class="folder-tab-count"><?= count($activeTickets) ?></span>
             </button>
-            <button type="button" class="subview-tab-btn" id="btnTabCompletedTickets" onclick="switchTicketTab('completed')">
-              ✅ Completed Maintenance 
-              <span id="completedTicketCountBadge" class="clay-badge badge-done" style="font-size: 11.5px; padding: 2px 9px; margin-left: 6px;">
-                <?= count($completedTickets) ?>
-              </span>
+            <button type="button"
+                    class="maintenance-folder-tab"
+                    id="btnTabCompletedTickets"
+                    role="tab"
+                    aria-selected="false"
+                    aria-controls="paneCompletedTickets"
+                    onclick="switchTicketTab('completed')">
+              <span>Completed maintenance</span>
+              <span id="completedTicketCountBadge" class="folder-tab-count"><?= count($completedTickets) ?></span>
             </button>
           </div>
 
-          <!-- PANE 1: ACTIVE / ON-GOING MAINTENANCE -->
-          <div id="paneActiveTickets" class="clay-card" style="padding: 0; overflow: hidden; border-radius: var(--radius-lg);">
-            <div style="overflow-x: auto;">
-              <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 13.5px;">
-                <thead>
-                  <tr style="border-bottom: 2px solid rgba(166, 180, 204, 0.3); color: var(--text-muted); font-weight: 700; background: rgba(248, 250, 252, 0.6);">
-                    <th style="padding: 14px 16px;">Ticket Number</th>
-                    <th style="padding: 14px 16px;">Tenant Name</th>
-                    <th style="padding: 14px 16px;">Unit</th>
-                    <th style="padding: 14px 16px;">Issue Description</th>
-                    <th style="padding: 14px 16px;">Date Submitted</th>
-                    <th style="padding: 14px 16px;">Priority</th>
-                    <th style="padding: 14px 16px;">Status</th>
-                  </tr>
-                </thead>
-                <tbody id="activeTicketsTableBody">
-                  <?php if (empty($activeTickets)): ?>
-                  <tr id="emptyActiveTicketsRow">
-                    <td colspan="7" style="text-align: center; padding: 42px 14px; color: var(--text-muted); font-size: 14px;">
-                      <div style="font-size: 32px; margin-bottom: 8px;">🎉</div>
-                      <strong>No active or pending maintenance requests.</strong>
-                      <div style="font-size: 12px; color: #94a3b8; margin-top: 4px;">All reported issues are currently resolved.</div>
-                    </td>
-                  </tr>
-                  <?php else: ?>
-                  <?php foreach ($activeTickets as $tk): ?>
-                  <tr class="clickable-ticket-row ticket-record-row"
-                      id="ticket-row-<?= $tk['id'] ?>"
-                      data-ticket-id="<?= $tk['id'] ?>"
-                      style="border-bottom: 1px solid rgba(166, 180, 204, 0.15);"
-                      onclick="openTicketDetailsModal(<?= htmlspecialchars(json_encode($tk), ENT_QUOTES, 'UTF-8') ?>)"
-                      title="Click to view maintenance ticket details">
-                    <td style="padding: 14px 16px; font-weight: 700; color: #4338ca; white-space: nowrap;">#MT-<?= str_pad((string)$tk['id'], 4, '0', STR_PAD_LEFT) ?></td>
-                    <td style="padding: 14px 16px; font-weight: 600; color: #0f172a; white-space: nowrap;"><?= htmlspecialchars($tk['tenant_name']) ?></td>
-                    <td style="padding: 14px 16px; white-space: nowrap;">
-                      <span class="clay-badge" style="background: #e0e7ff; color: #4338ca; font-weight: 800; font-size: 11px;">
-                        <?= htmlspecialchars($tk['unit_number']) ?>
-                      </span>
-                    </td>
-                    <td style="padding: 14px 16px; max-width: 320px;">
-                      <div style="font-weight: 600; color: #1e293b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="<?= htmlspecialchars($tk['title']) ?>">
-                        <?= htmlspecialchars($tk['title']) ?>
-                      </div>
-                      <?php if (!empty($tk['description'])): ?>
-                        <div style="font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px;" title="<?= htmlspecialchars($tk['description']) ?>">
-                          <?= htmlspecialchars(mb_strimwidth($tk['description'], 0, 60, '...')) ?>
-                        </div>
+          <div class="maintenance-folder-body" id="maintenanceFolderBody">
+            <!-- PANE 1: ACTIVE / ON-GOING MAINTENANCE (SINGLE UNIFIED VIEW) -->
+            <div id="paneActiveTickets" role="tabpanel" aria-labelledby="btnTabActiveTickets" style="display: block;">
+              <div class="kanban-toolbar">
+                <div class="kanban-toolbar-hint">
+                  <span id="kanbanCategoryStateLabel">Pending Maintenance</span>
+                </div>
+                <div class="kanban-filter-wrap">
+                  <select id="activeStatusDropdown"
+                          class="kanban-filter-select"
+                          aria-label="Filter maintenance status"
+                          onchange="handleActiveStatusDropdownChange(this.value)">
+                    <option value="All">All</option>
+                    <option value="Pending" selected>Pending</option>
+                    <option value="On-Going">On-going</option>
+                  </select>
+                  <span class="kanban-filter-caret" aria-hidden="true">▼</span>
+                </div>
+              </div>
+
+              <div class="maintenance-unified-box" id="maintenanceUnifiedBox" data-board-status="Pending">
+                <div class="maintenance-unified-grid" id="maintenanceUnifiedGrid"></div>
+              </div>
+            </div>
+
+            <!-- PANE 2: COMPLETED MAINTENANCE -->
+            <div id="paneCompletedTickets" role="tabpanel" aria-labelledby="btnTabCompletedTickets" style="display: none;">
+              <div class="maintenance-completed-card">
+                <div style="overflow-x: auto;">
+                  <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 13.5px;">
+                    <thead>
+                      <tr style="border-bottom: 2px solid rgba(166, 180, 204, 0.3); color: var(--text-muted); font-weight: 700; background: rgba(248, 250, 252, 0.6);">
+                        <th style="padding: 14px 16px;">Ticket Number</th>
+                        <th style="padding: 14px 16px;">Tenant Name</th>
+                        <th style="padding: 14px 16px;">Unit</th>
+                        <th style="padding: 14px 16px;">Issue Description</th>
+                        <th style="padding: 14px 16px;">Date Submitted</th>
+                        <th style="padding: 14px 16px;">Priority</th>
+                        <th style="padding: 14px 16px;">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody id="completedTicketsTableBody">
+                      <?php if (empty($completedTickets)): ?>
+                      <tr id="emptyCompletedTicketsRow">
+                        <td colspan="7" style="text-align: center; padding: 42px 14px; color: var(--text-muted); font-size: 14px;">
+                          <div style="margin-bottom: 8px; display: flex; justify-content: center; color: #94a3b8;"><i data-lucide="clipboard-list" class="w-8 h-8" aria-hidden="true"></i></div>
+                          <strong>No completed maintenance records yet.</strong>
+                          <div style="font-size: 12px; color: #94a3b8; margin-top: 4px;">Resolved tickets will be archived here for historical review.</div>
+                        </td>
+                      </tr>
+                      <?php else: ?>
+                      <?php foreach ($completedTickets as $tk): ?>
+                      <tr class="clickable-ticket-row ticket-record-row"
+                          id="ticket-row-<?= $tk['id'] ?>"
+                          data-ticket-id="<?= $tk['id'] ?>"
+                          style="border-bottom: 1px solid rgba(166, 180, 204, 0.15);"
+                          onclick="openTicketDetailsModal(<?= htmlspecialchars(json_encode($tk), ENT_QUOTES, 'UTF-8') ?>)"
+                          title="Click to view maintenance ticket details">
+                        <td style="padding: 14px 16px; font-weight: 700; color: #56380E; white-space: nowrap;">#MT-<?= str_pad((string)$tk['id'], 4, '0', STR_PAD_LEFT) ?></td>
+                        <td style="padding: 14px 16px; font-weight: 600; color: #0f172a; white-space: nowrap;"><?= htmlspecialchars($tk['tenant_name']) ?></td>
+                        <td style="padding: 14px 16px; white-space: nowrap;">
+                          <span class="clay-badge" style="background: #F3E4C6; color: #56380E; border: 1px solid rgba(181, 143, 83, 0.35); font-weight: 800; font-size: 11px;">
+                            <?= htmlspecialchars($tk['unit_number'] ?? ('Unit ' . $tk['unit_id'])) ?>
+                          </span>
+                        </td>
+                        <td style="padding: 14px 16px; max-width: 320px;">
+                          <div style="font-weight: 600; color: #1e293b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="<?= htmlspecialchars($tk['title']) ?>">
+                            <?= htmlspecialchars($tk['title']) ?>
+                          </div>
+                          <?php if (!empty($tk['description'])): ?>
+                            <div style="font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px;" title="<?= htmlspecialchars($tk['description']) ?>">
+                              <?= htmlspecialchars(mb_strimwidth($tk['description'], 0, 60, '...')) ?>
+                            </div>
+                          <?php endif; ?>
+                        </td>
+                        <td style="padding: 14px 16px; font-size: 12.5px; color: var(--text-muted); white-space: nowrap;">
+                          <?= date('M j, Y', strtotime($tk['created_at'])) ?>
+                        </td>
+                        <td style="padding: 14px 16px; white-space: nowrap;">
+                          <span class="clay-badge badge-<?= strtolower($tk['priority']) ?>" style="font-weight: 700; font-size: 11px; padding: 3px 8px;">
+                            <?= ucfirst(strtolower($tk['priority'])) ?>
+                          </span>
+                        </td>
+                        <td style="padding: 14px 16px; white-space: nowrap;">
+                          <span id="ticket-badge-<?= $tk['id'] ?>" class="clay-badge badge-done" style="font-weight: 700; font-size: 11.5px; padding: 4px 10px;">
+                            <?= htmlspecialchars($tk['status']) ?>
+                          </span>
+                        </td>
+                      </tr>
+                      <?php endforeach; ?>
                       <?php endif; ?>
-                    </td>
-                    <td style="padding: 14px 16px; font-size: 12.5px; color: var(--text-muted); white-space: nowrap;">
-                      <?= date('M j, Y', strtotime($tk['created_at'])) ?>
-                    </td>
-                    <td style="padding: 14px 16px; white-space: nowrap;">
-                      <span class="clay-badge badge-<?= strtolower($tk['priority']) ?>" style="font-weight: 700; font-size: 11px; padding: 3px 8px;">
-                        <?= ucfirst(strtolower($tk['priority'])) ?>
-                      </span>
-                    </td>
-                    <td style="padding: 14px 16px; white-space: nowrap;">
-                      <?php 
-                        $stClass = 'badge-pending';
-                        if ($tk['status'] === 'Done' || $tk['status'] === 'resolved' || $tk['status'] === 'closed') {
-                          $stClass = 'badge-done';
-                        } elseif ($tk['status'] === 'On-Going' || $tk['status'] === 'in_progress') {
-                          $stClass = 'badge-ongoing';
-                        }
-                      ?>
-                      <span id="ticket-badge-<?= $tk['id'] ?>" class="clay-badge <?= $stClass ?>" style="font-weight: 700; font-size: 11.5px; padding: 4px 10px;">
-                        <?= htmlspecialchars($tk['status']) ?>
-                      </span>
-                    </td>
-                  </tr>
-                  <?php endforeach; ?>
-                  <?php endif; ?>
-                </tbody>
-              </table>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
             </div>
           </div>
+        </div>
 
-          <!-- PANE 2: COMPLETED MAINTENANCE -->
-          <div id="paneCompletedTickets" class="clay-card" style="padding: 0; overflow: hidden; border-radius: var(--radius-lg); display: none;">
-            <div style="overflow-x: auto;">
-              <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 13.5px;">
-                <thead>
-                  <tr style="border-bottom: 2px solid rgba(166, 180, 204, 0.3); color: var(--text-muted); font-weight: 700; background: rgba(248, 250, 252, 0.6);">
-                    <th style="padding: 14px 16px;">Ticket Number</th>
-                    <th style="padding: 14px 16px;">Tenant Name</th>
-                    <th style="padding: 14px 16px;">Unit</th>
-                    <th style="padding: 14px 16px;">Issue Description</th>
-                    <th style="padding: 14px 16px;">Date Submitted</th>
-                    <th style="padding: 14px 16px;">Priority</th>
-                    <th style="padding: 14px 16px;">Status</th>
-                  </tr>
-                </thead>
-                <tbody id="completedTicketsTableBody">
-                  <?php if (empty($completedTickets)): ?>
-                  <tr id="emptyCompletedTicketsRow">
-                    <td colspan="7" style="text-align: center; padding: 42px 14px; color: var(--text-muted); font-size: 14px;">
-                      <div style="font-size: 32px; margin-bottom: 8px;">📋</div>
-                      <strong>No completed maintenance records yet.</strong>
-                      <div style="font-size: 12px; color: #94a3b8; margin-top: 4px;">Resolved tickets will be archived here for historical review.</div>
-                    </td>
-                  </tr>
-                  <?php else: ?>
-                  <?php foreach ($completedTickets as $tk): ?>
-                  <tr class="clickable-ticket-row ticket-record-row"
-                      id="ticket-row-<?= $tk['id'] ?>"
-                      data-ticket-id="<?= $tk['id'] ?>"
-                      style="border-bottom: 1px solid rgba(166, 180, 204, 0.15);"
-                      onclick="openTicketDetailsModal(<?= htmlspecialchars(json_encode($tk), ENT_QUOTES, 'UTF-8') ?>)"
-                      title="Click to view maintenance ticket details">
-                    <td style="padding: 14px 16px; font-weight: 700; color: #4338ca; white-space: nowrap;">#MT-<?= str_pad((string)$tk['id'], 4, '0', STR_PAD_LEFT) ?></td>
-                    <td style="padding: 14px 16px; font-weight: 600; color: #0f172a; white-space: nowrap;"><?= htmlspecialchars($tk['tenant_name']) ?></td>
-                    <td style="padding: 14px 16px; white-space: nowrap;">
-                      <span class="clay-badge" style="background: #e0e7ff; color: #4338ca; font-weight: 800; font-size: 11px;">
-                        <?= htmlspecialchars($tk['unit_number']) ?>
-                      </span>
-                    </td>
-                    <td style="padding: 14px 16px; max-width: 320px;">
-                      <div style="font-weight: 600; color: #1e293b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="<?= htmlspecialchars($tk['title']) ?>">
-                        <?= htmlspecialchars($tk['title']) ?>
-                      </div>
-                      <?php if (!empty($tk['description'])): ?>
-                        <div style="font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px;" title="<?= htmlspecialchars($tk['description']) ?>">
-                          <?= htmlspecialchars(mb_strimwidth($tk['description'], 0, 60, '...')) ?>
-                        </div>
-                      <?php endif; ?>
-                    </td>
-                    <td style="padding: 14px 16px; font-size: 12.5px; color: var(--text-muted); white-space: nowrap;">
-                      <?= date('M j, Y', strtotime($tk['created_at'])) ?>
-                    </td>
-                    <td style="padding: 14px 16px; white-space: nowrap;">
-                      <span class="clay-badge badge-<?= strtolower($tk['priority']) ?>" style="font-weight: 700; font-size: 11px; padding: 3px 8px;">
-                        <?= ucfirst(strtolower($tk['priority'])) ?>
-                      </span>
-                    </td>
-                    <td style="padding: 14px 16px; white-space: nowrap;">
-                      <span id="ticket-badge-<?= $tk['id'] ?>" class="clay-badge badge-done" style="font-weight: 700; font-size: 11.5px; padding: 4px 10px;">
-                        <?= htmlspecialchars($tk['status']) ?>
-                      </span>
-                    </td>
-                  </tr>
-                  <?php endforeach; ?>
-                  <?php endif; ?>
-                </tbody>
-              </table>
-            </div>
+      </section>
+
+      <!-- SECTION 3B: GENERAL TENANT REPORTS MANAGEMENT -->
+      <section id="sectionReports" class="app-view-section">
+
+        <div class="dashboard-header-bar">
+          <div class="dashboard-title-group">
+            <h1>Tenant Reports</h1>
+            <p>Review general tenant requests for additional occupants, pets, unit customizations, and inquiries</p>
+          </div>
+        </div>
+
+        <!-- PERSISTENT TABBED FOLDER CONTAINER -->
+        <div class="maintenance-folder-shell" id="reportsFolderShell">
+          <div class="maintenance-folder-tabs" role="tablist" aria-label="Tenant Report Views">
+            <button type="button"
+                    class="maintenance-folder-tab active"
+                    id="btnTabPendingReports"
+                    role="tab"
+                    aria-selected="true"
+                    aria-controls="panePendingReports"
+                    onclick="switchReportTab('pending')">
+              <span>Pending Review</span>
+              <span id="pendingReportsCountBadge" class="folder-tab-count"><?= count($pendingReports) ?></span>
+            </button>
+            <button type="button"
+                    class="maintenance-folder-tab"
+                    id="btnTabReviewedReports"
+                    role="tab"
+                    aria-selected="false"
+                    aria-controls="paneReviewedReports"
+                    onclick="switchReportTab('reviewed')">
+              <span>Reviewed Reports</span>
+              <span id="reviewedReportsCountBadge" class="folder-tab-count"><?= count($reviewedReports) ?></span>
+            </button>
           </div>
 
-        </section>
+          <div class="maintenance-folder-body" id="reportsFolderBody">
+            <div class="kanban-toolbar">
+              <div class="kanban-toolbar-hint">
+                <span id="reportsFolderStateLabel">Pending Tenant Reports</span>
+              </div>
+              <div class="kanban-filter-wrap">
+                <select id="reportsCategoryFilter"
+                        class="kanban-filter-select"
+                        aria-label="Filter reports by category"
+                        onchange="renderReportsFolderViews()">
+                  <option value="ALL">All Categories</option>
+                  <option value="Additional Occupant Registration">Additional Occupant Registration</option>
+                  <option value="Pet Adoption/Registration">Pet Adoption/Registration</option>
+                  <option value="Unit Customization/Modification">Unit Customization/Modification</option>
+                  <option value="General Inquiry">General Inquiry</option>
+                  <option value="Other...">Other...</option>
+                </select>
+                <span class="kanban-filter-caret" aria-hidden="true">▼</span>
+              </div>
+            </div>
+
+            <!-- PANE 1: PENDING REPORTS -->
+            <div id="panePendingReports" role="tabpanel" aria-labelledby="btnTabPendingReports" style="display: block;">
+              <div class="maintenance-unified-box" id="reportsPendingUnifiedBox">
+                <div class="maintenance-unified-grid" id="reportsPendingGrid"></div>
+              </div>
+            </div>
+
+            <!-- PANE 2: REVIEWED REPORTS (APPROVED / REJECTED / ACKNOWLEDGED) -->
+            <div id="paneReviewedReports" role="tabpanel" aria-labelledby="btnTabReviewedReports" style="display: none;">
+              <div class="maintenance-unified-box" id="reportsReviewedUnifiedBox">
+                <div class="maintenance-unified-grid" id="reportsReviewedGrid"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </section>
 
       <!-- SECTION 4: MANUAL PAYMENT VERIFICATION & AUDIT -->
       <section id="sectionPayments" class="app-view-section">
@@ -1229,20 +1663,6 @@ $pendingReviewCount = count($pendingReviewPayments);
             <h1>Rent Payment Verification &amp; Audit</h1>
             <p>Review tenant-submitted payment receipts, inspect proof slips, and manually approve or reject payments</p>
           </div>
-          <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
-            <button type="button" class="clay-btn clay-btn-primary" onclick="openAnnouncementModal()" style="font-size: 13px; padding: 8px 18px; display: inline-flex; align-items: center; gap: 6px;">
-              📢 Send Rent Due Announcement
-            </button>
-            <?php if ($pendingReviewCount > 0): ?>
-              <span class="clay-badge badge-pending" style="font-size: 13px; padding: 8px 18px;">
-                ⏳ <?= $pendingReviewCount ?> Receipt<?= $pendingReviewCount === 1 ? '' : 's' ?> Awaiting Review
-              </span>
-            <?php else: ?>
-              <span class="clay-badge badge-approved" style="font-size: 13px; padding: 8px 18px;">
-                ✓ All Receipts Verified
-              </span>
-            <?php endif; ?>
-          </div>
         </div>
 
         <!-- Pending Review Queue (Displayed when tenant uploads receipts) -->
@@ -1250,7 +1670,7 @@ $pendingReviewCount = count($pendingReviewPayments);
         <div style="margin-bottom: 28px;">
           <div class="widget-header" style="margin-bottom: 16px;">
             <div>
-              <h2 class="widget-title" style="font-size: 18px;">⏳ Pending Verification Queue</h2>
+              <h2 class="widget-title" style="font-size: 18px; display: flex; align-items: center; gap: 8px;"><i data-lucide="clock" class="w-5 h-5" aria-hidden="true"></i> Pending Verification Queue</h2>
               <p style="font-size: 12.5px; color: var(--text-muted); margin-top: 2px;">
                 Review submitted transaction slips and confirm payment legitimacy
               </p>
@@ -1263,7 +1683,7 @@ $pendingReviewCount = count($pendingReviewPayments);
               <div>
                 <div class="verification-card-header">
                   <div>
-                    <span class="clay-badge" style="background: #e0e7ff; color: #4338ca; font-weight: 800; font-size: 11.5px;">
+                    <span class="clay-badge" style="background: #F3E4C6; color: #56380E; border: 1px solid rgba(181, 143, 83, 0.35); font-weight: 800; font-size: 11.5px;">
                       <?= htmlspecialchars($pending['unit_number']) ?>
                     </span>
                     <h3 style="font-size: 17px; font-weight: 800; color: #0f172a; margin-top: 8px; margin-bottom: 2px;">
@@ -1290,8 +1710,8 @@ $pendingReviewCount = count($pendingReviewPayments);
 
                   <?php if ($pending['receipt_filename']): ?>
                     <div style="margin-top: 10px;">
-                      <a href="uploads/receipts/<?= htmlspecialchars($pending['receipt_filename']) ?>" target="_blank" class="btn-inspect-proof" style="display: inline-flex; width: 100%; justify-content: center; padding: 8px 12px; box-sizing: border-box;">
-                        📄 Inspect Uploaded Proof
+                      <a href="uploads/receipts/<?= htmlspecialchars($pending['receipt_filename']) ?>" target="_blank" class="btn-inspect-proof" style="display: inline-flex; width: 100%; justify-content: center; align-items: center; gap: 6px; padding: 8px 12px; box-sizing: border-box;">
+                        <i data-lucide="file-text" class="w-4 h-4" aria-hidden="true"></i> Inspect Uploaded Proof
                       </a>
                     </div>
                   <?php endif; ?>
@@ -1299,11 +1719,11 @@ $pendingReviewCount = count($pendingReviewPayments);
               </div>
 
               <div class="verification-card-actions">
-                <button type="button" class="btn-verify-approve" onclick="openPaymentDetailsModal(<?= htmlspecialchars(json_encode($pending), ENT_QUOTES, 'UTF-8') ?>, 'approved')">
-                  ✓ Approve
+                <button type="button" class="btn-verify-approve" style="display: inline-flex; align-items: center; justify-content: center; gap: 5px;" onclick="openPaymentDetailsModal(<?= htmlspecialchars(json_encode($pending), ENT_QUOTES, 'UTF-8') ?>, 'approved')">
+                  <i data-lucide="check" class="w-4 h-4" aria-hidden="true"></i> Approve
                 </button>
-                <button type="button" class="btn-verify-reject" onclick="openPaymentDetailsModal(<?= htmlspecialchars(json_encode($pending), ENT_QUOTES, 'UTF-8') ?>, 'rejected')">
-                  ✕ Reject
+                <button type="button" class="btn-verify-reject" style="display: inline-flex; align-items: center; justify-content: center; gap: 5px;" onclick="openPaymentDetailsModal(<?= htmlspecialchars(json_encode($pending), ENT_QUOTES, 'UTF-8') ?>, 'rejected')">
+                  <i data-lucide="x" class="w-4 h-4" aria-hidden="true"></i> Reject
                 </button>
               </div>
             </div>
@@ -1357,7 +1777,7 @@ $pendingReviewCount = count($pendingReviewPayments);
                 ↺ Reset
               </button>
 
-              <span id="paymentFilterCountBadge" class="clay-badge" style="background: #e0e7ff; color: #4338ca; font-size: 11.5px; font-weight: 700; padding: 7px 14px;">
+              <span id="paymentFilterCountBadge" class="clay-badge" style="background: #F3E4C6; color: #56380E; border: 1px solid rgba(181, 143, 83, 0.35); font-size: 11.5px; font-weight: 700; padding: 7px 14px;">
                 Showing <?= count($payments) ?> Records
               </span>
             </div>
@@ -1388,6 +1808,7 @@ $pendingReviewCount = count($pendingReviewPayments);
                 <tr class="clickable-payment-row payment-record-row"
                     id="payment-row-<?= $pm['id'] ?>"
                     data-id="<?= $pm['id'] ?>"
+                    data-tenant-id="<?= (int)$pm['tenant_id'] ?>"
                     data-month="<?= !empty($pm['billing_cycle']) ? date('m', strtotime($pm['billing_cycle'])) : '' ?>"
                     data-year="<?= !empty($pm['billing_cycle']) ? date('Y', strtotime($pm['billing_cycle'])) : '' ?>"
                     data-status="<?= htmlspecialchars($pm['status']) ?>"
@@ -1402,7 +1823,7 @@ $pendingReviewCount = count($pendingReviewPayments);
                   </td>
                   <td style="padding: 14px;">
                     <?php if (($pm['payment_type'] ?? 'Rent') === 'Advance Deposit'): ?>
-                      <span class="clay-badge" style="background: #ede9fe; color: #6d28d9; font-weight: 800; font-size: 11px; border: 1px solid rgba(109, 40, 217, 0.25);">
+                      <span class="clay-badge" style="background: #F5E6C4; color: #7B4B19; font-weight: 800; font-size: 11px; border: 1px solid rgba(181, 143, 83, 0.45);">
                         Advance Deposit
                       </span>
                     <?php else: ?>
@@ -1412,13 +1833,13 @@ $pendingReviewCount = count($pendingReviewPayments);
                     <?php endif; ?>
                   </td>
                   <td style="padding: 14px;">
-                    <span class="clay-badge" style="background: #e0e7ff; color: #4338ca; font-weight: 800; font-size: 11.5px;">
+                    <span class="clay-badge" style="background: #F3E4C6; color: #56380E; border: 1px solid rgba(181, 143, 83, 0.35); font-weight: 800; font-size: 11.5px;">
                       <?= htmlspecialchars($pm['unit_number']) ?>
                     </span>
                   </td>
                   <td style="padding: 14px;">
                     <div style="display: flex; align-items: center; gap: 8px;">
-                      <div style="width: 28px; height: 28px; border-radius: 8px; background: linear-gradient(135deg, #a5b4fc, #818cf8); color: #fff; font-weight: 800; font-size: 12px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+                      <div style="width: 28px; height: 28px; border-radius: 8px; background: linear-gradient(135deg, #B58F53, #56380E); color: #fffdf8; font-weight: 800; font-size: 12px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
                         <?= strtoupper(substr($pm['tenant_name'], 0, 1)) ?>
                       </div>
                       <span style="font-weight: 600; color: #0f172a;"><?= htmlspecialchars($pm['tenant_name']) ?></span>
@@ -1585,6 +2006,8 @@ $pendingReviewCount = count($pendingReviewPayments);
         </div>
       </section>
 
+      </div> <!-- /.admin-content-container -->
+
     </main>
 
   </div>
@@ -1602,8 +2025,8 @@ $pendingReviewCount = count($pendingReviewPayments);
       <!-- Modal Header -->
       <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 18px; border-bottom: 1px solid var(--clay-border); padding-bottom: 14px;">
         <div style="display: flex; align-items: center; gap: 12px;">
-          <div style="width: 44px; height: 44px; border-radius: 12px; background: linear-gradient(135deg, #a5b4fc, #6366f1); color: #fff; font-size: 22px; display: flex; align-items: center; justify-content: center; box-shadow: 2px 2px 8px rgba(99, 102, 241, 0.3);">
-            💳
+          <div style="width: 44px; height: 44px; border-radius: 12px; background: linear-gradient(135deg, #B58F53, #56380E); color: #fffdf8; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 12px rgba(86, 56, 14, 0.24);">
+            <i data-lucide="credit-card" class="w-5 h-5" aria-hidden="true"></i>
           </div>
           <div>
             <h2 style="font-size: 20px; font-weight: 800; color: #0f172a; margin: 0; line-height: 1.2;">Payment Verification &amp; Details</h2>
@@ -1612,7 +2035,7 @@ $pendingReviewCount = count($pendingReviewPayments);
             </p>
           </div>
         </div>
-        <button type="button" class="btn-remove-file" onclick="closePaymentDetailsModal()" title="Close details modal">✕</button>
+        <button type="button" class="modal-close-btn btn-remove-file" onclick="closeModal('paymentDetailsModal')" title="Close details modal" aria-label="Close"><i data-lucide="x" class="w-4 h-4" aria-hidden="true"></i></button>
       </div>
 
       <input type="hidden" id="pdPaymentId" value="">
@@ -1624,7 +2047,7 @@ $pendingReviewCount = count($pendingReviewPayments);
       <div style="background: var(--clay-input-bg); border-radius: var(--radius-md); padding: 16px; box-shadow: var(--clay-sunken-shadow); margin-bottom: 16px;">
         <div style="font-size: 13.5px; font-weight: 800; color: #0f172a; margin-bottom: 14px; display: flex; align-items: center; justify-content: space-between;">
           <span style="display: flex; align-items: center; gap: 6px;">
-            <span style="font-size: 15px;">📋</span>
+            <i data-lucide="clipboard-list" class="w-4 h-4" aria-hidden="true"></i>
             <span>Section A: Billing Information</span>
           </span>
           <span id="pdStatusBadge" class="clay-badge badge-pending">PENDING</span>
@@ -1633,7 +2056,7 @@ $pendingReviewCount = count($pendingReviewPayments);
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; font-size: 13px;">
           <div>
             <span style="color: var(--text-muted); font-size: 11px; font-weight: 700; text-transform: uppercase;">Payment Category:</span>
-            <div id="pdPaymentType" style="font-weight: 800; color: #6d28d9; margin-top: 2px; font-size: 14px;">Rent</div>
+            <div id="pdPaymentType" style="font-weight: 800; color: #8C5319; margin-top: 2px; font-size: 14px;">Rent</div>
           </div>
           <div>
             <span style="color: var(--text-muted); font-size: 11px; font-weight: 700; text-transform: uppercase;">Tenant Name:</span>
@@ -1641,7 +2064,7 @@ $pendingReviewCount = count($pendingReviewPayments);
           </div>
           <div>
             <span style="color: var(--text-muted); font-size: 11px; font-weight: 700; text-transform: uppercase;">Apartment Unit:</span>
-            <div id="pdUnitNumber" style="font-weight: 800; color: #4338ca; margin-top: 2px; font-size: 14px;">-</div>
+            <div id="pdUnitNumber" style="font-weight: 800; color: #56380E; margin-top: 2px; font-size: 14px;">-</div>
           </div>
           <div>
             <span style="color: var(--text-muted); font-size: 11px; font-weight: 700; text-transform: uppercase;">Billing Month:</span>
@@ -1683,7 +2106,7 @@ $pendingReviewCount = count($pendingReviewPayments);
            =================================================================== -->
       <div style="background: var(--clay-input-bg); border-radius: var(--radius-md); padding: 16px; box-shadow: var(--clay-sunken-shadow); margin-bottom: 16px;">
         <div style="font-size: 13.5px; font-weight: 800; color: #0f172a; margin-bottom: 12px; display: flex; align-items: center; gap: 6px;">
-          <span style="font-size: 15px;">🧾</span>
+          <i data-lucide="receipt" class="w-4 h-4" aria-hidden="true"></i>
           <span>Section B: Payment Information &amp; Proof</span>
         </div>
 
@@ -1698,7 +2121,7 @@ $pendingReviewCount = count($pendingReviewPayments);
           </div>
           <div style="grid-column: 1 / -1;">
             <span style="color: var(--text-muted); font-size: 11px; font-weight: 700; text-transform: uppercase;">Payment Reference Number:</span>
-            <div id="pdRefNumber" style="font-weight: 800; color: #4338ca; margin-top: 2px; font-family: monospace; font-size: 13.5px;">-</div>
+            <div id="pdRefNumber" style="font-weight: 800; color: #56380E; margin-top: 2px; font-family: monospace; font-size: 13.5px;">-</div>
           </div>
           <div style="grid-column: 1 / -1;">
             <span style="color: var(--text-muted); font-size: 11px; font-weight: 700; text-transform: uppercase;">Tenant's Payment Remarks:</span>
@@ -1716,7 +2139,7 @@ $pendingReviewCount = count($pendingReviewPayments);
             <div id="pdReceiptContent" style="display: none;">
               <div style="margin-bottom: 10px;">
                 <a id="pdReceiptInspectBtn" href="#" target="_blank" class="btn-inspect-proof" style="display: inline-flex; align-items: center; gap: 6px; padding: 8px 18px; font-size: 13px;">
-                  📄 Inspect Proof in New Tab
+                  <i data-lucide="file-text" class="w-4 h-4" aria-hidden="true"></i> Inspect Proof in New Tab
                 </a>
               </div>
               <!-- Image preview box -->
@@ -1734,7 +2157,7 @@ $pendingReviewCount = count($pendingReviewPayments);
       <div style="background: var(--clay-input-bg); border-radius: var(--radius-md); padding: 16px; box-shadow: var(--clay-sunken-shadow); margin-bottom: 10px;">
         <div style="font-size: 13.5px; font-weight: 800; color: #0f172a; margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between;">
           <span style="display: flex; align-items: center; gap: 6px;">
-            <span style="font-size: 15px;">⚖️</span>
+            <i data-lucide="scale" class="w-4 h-4" aria-hidden="true"></i>
             <span>Section C: Verification Actions</span>
           </span>
           <span id="pdVerifiedMeta" style="font-size: 11px; color: var(--text-muted);"></span>
@@ -1749,23 +2172,23 @@ $pendingReviewCount = count($pendingReviewPayments);
 
         <!-- Verification Action Buttons -->
         <div id="pdActionButtonsRow" style="display: flex; gap: 12px;">
-          <button type="button" id="btnPdReject" class="btn-verify-reject" style="flex: 1; padding: 12px; font-size: 13.5px; font-weight: 800;" onclick="handlePaymentVerificationDecision('rejected')">
-            ✕ Reject Payment
+          <button type="button" id="btnPdReject" class="btn-verify-reject" style="flex: 1; padding: 12px; font-size: 13.5px; font-weight: 800; display: inline-flex; align-items: center; justify-content: center; gap: 6px;" onclick="handlePaymentVerificationDecision('rejected')">
+            <i data-lucide="x" class="w-4 h-4" aria-hidden="true"></i> Reject Payment
           </button>
-          <button type="button" id="btnPdApprove" class="btn-verify-approve" style="flex: 1; padding: 12px; font-size: 13.5px; font-weight: 800;" onclick="handlePaymentVerificationDecision('approved')">
-            ✓ Approve Payment
+          <button type="button" id="btnPdApprove" class="btn-verify-approve" style="flex: 1; padding: 12px; font-size: 13.5px; font-weight: 800; display: inline-flex; align-items: center; justify-content: center; gap: 6px;" onclick="handlePaymentVerificationDecision('approved')">
+            <i data-lucide="check" class="w-4 h-4" aria-hidden="true"></i> Approve Payment
           </button>
         </div>
 
         <!-- Special Action for Placeholder Rent Setup -->
         <div id="pdSetupActionRow" style="display: none; margin-top: 10px;">
-          <button type="button" class="clay-btn clay-btn-primary" style="width: 100%; padding: 12px; font-size: 13.5px; background: linear-gradient(135deg, #7c3aed 0%, #4f46e5 100%); color: #fff;" onclick="triggerSetupFromModal()">
-            ⚙️ Configure Monthly Rent &amp; Billing Cycle
+          <button type="button" class="clay-btn clay-btn-primary" style="width: 100%; padding: 12px; font-size: 13.5px; background: linear-gradient(135deg, #B58F53 0%, #56380E 100%); color: #fffdf8; display: inline-flex; align-items: center; justify-content: center; gap: 6px;" onclick="triggerSetupFromModal()">
+            <i data-lucide="settings" class="w-4 h-4" aria-hidden="true"></i> Configure Monthly Rent &amp; Billing Cycle
           </button>
         </div>
 
         <!-- Processing Indicator with Spinner (Double-Click & Concurrency Protection) -->
-        <div id="pdProcessingIndicator" style="display: none; align-items: center; justify-content: center; gap: 10px; color: #4338ca; font-weight: 700; font-size: 13px; padding: 12px 0;">
+        <div id="pdProcessingIndicator" style="display: none; align-items: center; justify-content: center; gap: 10px; color: #56380E; font-weight: 700; font-size: 13px; padding: 12px 0;">
           <span class="clay-spinner" style="width: 20px; height: 20px; border-width: 2.5px;"></span>
           <span id="pdProcessingText">Processing decision and dispatching notification email...</span>
         </div>
@@ -1786,7 +2209,7 @@ $pendingReviewCount = count($pendingReviewPayments);
           <h2 style="font-size: 20px; font-weight: 800; color: #0f172a;" id="configRentTitle">Configure Rent Record</h2>
           <p style="font-size: 12.5px; color: var(--text-muted); margin-top: 2px;">Set monthly rent amount, billing cycle, and payment due date</p>
         </div>
-        <button type="button" class="btn-remove-file" onclick="closeConfigureRentModal()">✕</button>
+        <button type="button" class="modal-close-btn btn-remove-file" onclick="closeModal('configureRentModal')" title="Close" aria-label="Close"><i data-lucide="x" class="w-4 h-4" aria-hidden="true"></i></button>
       </div>
 
       <input type="hidden" id="configPaymentId" value="">
@@ -1795,7 +2218,7 @@ $pendingReviewCount = count($pendingReviewPayments);
       <div style="background: var(--clay-input-bg); border-radius: var(--radius-md); padding: 14px 18px; box-shadow: var(--clay-sunken-shadow); margin-bottom: 20px;">
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 13px;">
           <div><span style="color: var(--text-muted);">Resident:</span> <strong id="configTenantName" style="color: #0f172a;">-</strong></div>
-          <div><span style="color: var(--text-muted);">Apartment Unit:</span> <strong id="configUnitNumber" style="color: #4338ca;">-</strong></div>
+          <div><span style="color: var(--text-muted);">Apartment Unit:</span> <strong id="configUnitNumber" style="color: #56380E;">-</strong></div>
         </div>
       </div>
 
@@ -1820,16 +2243,17 @@ $pendingReviewCount = count($pendingReviewPayments);
           </div>
         </div>
 
-        <div style="background: rgba(124, 58, 237, 0.06); border: 1px solid rgba(124, 58, 237, 0.2); border-radius: var(--radius-md); padding: 12px 14px; margin-bottom: 22px; font-size: 12px; color: #4c1d95; line-height: 1.45;">
-          ℹ️ <strong>Note:</strong> Configuring this rent converts it to an active pending invoice. It will <strong>NOT</strong> be treated as paid and no receipt is generated until the resident submits payment proof.
+        <div style="background: rgba(245, 217, 158, 0.28); border: 1px solid rgba(181, 143, 83, 0.35); border-radius: var(--radius-md); padding: 12px 14px; margin-bottom: 22px; font-size: 12px; color: #56380E; line-height: 1.45; display: flex; align-items: flex-start; gap: 8px;">
+          <i data-lucide="info" class="w-4 h-4" style="margin-top: 2px;" aria-hidden="true"></i>
+          <span><strong>Note:</strong> Configuring this rent converts it to an active pending invoice. It will <strong>NOT</strong> be treated as paid and no receipt is generated until the resident submits payment proof.</span>
         </div>
 
         <div style="display: flex; gap: 12px; justify-content: flex-end;">
           <button type="button" class="clay-btn clay-btn-secondary" style="padding: 10px 18px;" onclick="closeConfigureRentModal()">
             Cancel
           </button>
-          <button type="submit" class="clay-btn clay-btn-primary" style="padding: 10px 22px; background: linear-gradient(135deg, #7c3aed 0%, #4f46e5 100%); color: #fff;">
-            ✓ Save &amp; Activate Rent
+          <button type="submit" class="clay-btn clay-btn-primary" style="padding: 10px 22px; background: linear-gradient(135deg, #B58F53 0%, #56380E 100%); color: #fffdf8; display: inline-flex; align-items: center; gap: 6px;">
+            <i data-lucide="check" class="w-4 h-4" aria-hidden="true"></i> Save &amp; Activate Rent
           </button>
         </div>
       </form>
@@ -1843,153 +2267,175 @@ $pendingReviewCount = count($pendingReviewPayments);
        Auto-generates sequential username (RC001, RC002, ...) and 6-digit passcode.
        ===================================================================== -->
   <div class="modal-backdrop" id="addTenantModal">
-    <div class="clay-modal" style="max-width: 520px;">
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px;">
-        <div>
-          <h2 style="font-size: 20px; font-weight: 800; color: #0f172a;">Register New Resident</h2>
-          <p style="font-size: 12.5px; color: var(--text-muted); margin-top: 2px;">Assign resident to an apartment unit</p>
-        </div>
-        <button type="button" class="btn-remove-file" onclick="closeAddTenantModal()">✕</button>
+    <div class="clay-modal resident-reg-modal">
+      <button type="button" class="modal-close-btn btn-remove-file resident-reg-close" onclick="closeModal('addTenantModal')" title="Close" aria-label="Close"><i data-lucide="x" class="w-4 h-4" aria-hidden="true"></i></button>
+
+      <div class="resident-reg-header">
+        <h2 class="resident-reg-title">NEW RESIDENT<br>REGISTRATION FORM</h2>
       </div>
 
       <form id="createTenantForm">
-        <div class="form-group">
-          <label class="form-label" for="newUnitId">Assign to Unit <span class="req">*</span></label>
-          <div class="select-wrapper">
-            <select id="newUnitId" name="unit_id" class="clay-select" required>
-              <?php foreach ($units as $u): ?>
-                <?php $isOcc = !empty($unitsWithTenants[$u['id']]['tenants']); ?>
-                <option value="<?= $u['id'] ?>" <?= $isOcc ? 'disabled style="color: #94a3b8;"' : '' ?>>
-                  <?= htmlspecialchars($u['unit_number']) ?> <?= $isOcc ? '(Occupied - 1 Account Limit)' : '(Available • ₱' . number_format((float)$u['monthly_rent'], 2) . '/mo)' ?>
-                </option>
-              <?php endforeach; ?>
-            </select>
+        <!-- Unit Assignment Selector (Kept compact in header band to preserve clean 3-row personal layout) -->
+        <div class="resident-reg-unit-bar">
+          <label class="resident-reg-unit-label" for="newUnitId">Assigned Unit:</label>
+          <select id="newUnitId" name="unit_id" class="resident-reg-unit-select" required>
+            <?php foreach ($units as $u): ?>
+              <?php $isOcc = !empty($unitsWithTenants[$u['id']]['tenants']); ?>
+              <option value="<?= $u['id'] ?>" data-monthly-rent="<?= (float)$u['monthly_rent'] ?>" <?= $isOcc ? 'disabled style="color: #94a3b8;"' : '' ?>>
+                <?= htmlspecialchars($u['unit_number']) ?> <?= $isOcc ? '(Occupied)' : '(Available • ₱' . number_format((float)$u['monthly_rent'], 2) . '/mo)' ?>
+              </option>
+            <?php endforeach; ?>
+          </select>
+        </div>
+
+        <hr class="resident-reg-divider">
+
+        <!-- Top Section: Personal & Contact Details (Pill-shaped light beige inputs) -->
+        <div class="resident-reg-row-3">
+          <div class="resident-reg-field">
+            <label class="resident-reg-label" for="newLastName">Last Name:</label>
+            <input type="text" id="newLastName" name="last_name" class="resident-reg-pill-input" required>
+          </div>
+          <div class="resident-reg-field">
+            <label class="resident-reg-label" for="newFirstName">First Name:</label>
+            <input type="text" id="newFirstName" name="first_name" class="resident-reg-pill-input" required>
+          </div>
+          <div class="resident-reg-field">
+            <label class="resident-reg-label" for="newMiddleName">Middle Name:</label>
+            <input type="text" id="newMiddleName" name="middle_name" class="resident-reg-pill-input">
           </div>
         </div>
 
-        <div class="form-group">
-          <label class="form-label" for="newName">Full Name <span class="req">*</span></label>
-          <input type="text" id="newName" name="name" class="clay-input" placeholder="e.g. Michael Jordan" required>
-        </div>
-
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px;">
-          <div class="form-group">
-            <label class="form-label" for="newMoveInDate">Date of Moving In <span class="req">*</span></label>
+        <div class="resident-reg-row-2">
+          <div class="resident-reg-field">
+            <label class="resident-reg-label" for="newBirthday">Birthday</label>
+            <input type="date"
+                   id="newBirthday"
+                   name="birthday"
+                   class="resident-reg-pill-input resident-reg-date-input"
+                   required
+                   max="<?= (new DateTime('now', new DateTimeZone('Asia/Manila')))->format('Y-m-d') ?>">
+          </div>
+          <div class="resident-reg-field">
+            <label class="resident-reg-label" for="newMoveInDate">Date of Moving In</label>
             <input type="date"
                    id="newMoveInDate"
                    name="move_in_date"
-                   class="clay-input"
+                   class="resident-reg-pill-input resident-reg-date-input"
                    required
                    min="<?= (new DateTime('now', new DateTimeZone('Asia/Manila')))->format('Y-m-d') ?>"
                    value="<?= (new DateTime('now', new DateTimeZone('Asia/Manila')))->format('Y-m-d') ?>">
           </div>
-          <div class="form-group">
-            <label class="form-label" for="newBirthday">Birthday <span class="req">*</span></label>
-            <input type="date"
-                   id="newBirthday"
-                   name="birthday"
-                   class="clay-input"
-                   required
-                   max="<?= (new DateTime('now', new DateTimeZone('Asia/Manila')))->format('Y-m-d') ?>">
+        </div>
+
+        <div class="resident-reg-row-2" style="margin-bottom: 0;">
+          <div class="resident-reg-field">
+            <label class="resident-reg-label" for="newEmail">Email Address</label>
+            <input type="email" id="newEmail" name="email" class="resident-reg-pill-input" required>
+          </div>
+          <div class="resident-reg-field">
+            <label class="resident-reg-label" for="newPhone">Phone Number</label>
+            <input type="tel" id="newPhone" name="phone" class="resident-reg-pill-input" required>
           </div>
         </div>
 
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px;">
-          <div class="form-group">
-            <label class="form-label" for="newEmail">Email Address <span class="req">*</span></label>
-            <input type="email" id="newEmail" name="email" class="clay-input" placeholder="michael@example.com" required>
-          </div>
-          <div class="form-group">
-            <label class="form-label" for="newPhone">Phone Number <span class="req">*</span></label>
-            <input type="tel" id="newPhone" name="phone" class="clay-input" placeholder="+63 900 000 0000" required>
+        <hr class="resident-reg-divider-mid">
+
+        <!-- Grouped Box 1: Occupant Breakdown -->
+        <div class="resident-reg-box">
+          <h3 class="resident-reg-box-title">Occupant Breakdown</h3>
+          <div class="resident-reg-occupant-grid">
+            <div>
+              <label class="resident-reg-sub-label" for="newAdultsCount">Number of Adults</label>
+              <input type="number" id="newAdultsCount" name="adults_count" class="resident-reg-rect-input resident-reg-num-input" min="1" value="1" required>
+            </div>
+            <div>
+              <label class="resident-reg-sub-label" for="newKidsCount">Number of Kids</label>
+              <input type="number" id="newKidsCount" name="kids_count" class="resident-reg-rect-input resident-reg-num-input" min="0" value="0" required>
+            </div>
+            <div class="resident-reg-total-wrap">
+              <label class="resident-reg-sub-label" for="newTotalOccupants" style="font-size: 13px; text-align: center;">Total Number:</label>
+              <input type="text" id="newTotalOccupants" name="total_occupants" class="resident-reg-total-input" value="1" readonly aria-readonly="true">
+            </div>
           </div>
         </div>
 
-        <!-- Requirement: Occupant Breakdown (1 Family per User Account Rule) -->
-        <div style="background: var(--clay-input-bg); border-radius: var(--radius-md); padding: 14px; box-shadow: var(--clay-sunken-shadow); margin-bottom: 16px;">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-            <div style="font-size: 13px; font-weight: 800; color: #0f172a; display: flex; align-items: center; gap: 6px;">
-              <svg fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-6 h-6 text-gray-700" style="width: 18px; height: 18px;">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M15 19.128a9.38 9.38 0 0 0 2.625.372 9.337 9.337 0 0 0 4.121-.952 4.125 4.125 0 0 0-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 0 1 8.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0 1 11.964-3.07M12 6.375a3.375 3.375 0 1 1-6.75 0 3.375 3.375 0 0 1 6.75 0Zm8.25 2.25a2.625 2.625 0 1 1-5.25 0 2.625 2.625 0 0 1 5.25 0Z" />
-              </svg>
-              <span>Occupant Breakdown</span>
-            </div>
-            <span class="clay-badge badge-paid" style="font-size: 10.5px; padding: 2px 8px;">1 Family per Account</span>
-          </div>
-
-          <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;">
-            <div class="form-group" style="margin-bottom: 0;">
-              <label class="form-label" for="newAdultsCount" style="font-size: 11.5px;">Number of Adults <span class="req">*</span></label>
-              <input type="number" id="newAdultsCount" name="adults_count" class="clay-input" min="1" value="1" required>
-            </div>
-            <div class="form-group" style="margin-bottom: 0;">
-              <label class="form-label" for="newKidsCount" style="font-size: 11.5px;">Number of Kids <span class="req">*</span></label>
-              <input type="number" id="newKidsCount" name="kids_count" class="clay-input" min="0" value="0" required>
-            </div>
-            <div class="form-group" style="margin-bottom: 0;">
-              <label class="form-label" for="newTotalOccupants" style="font-size: 11.5px; display: flex; align-items: center; gap: 4px;">
-                <svg fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-6 h-6 text-gray-700" style="width: 14px; height: 14px;">
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M15 19.128a9.38 9.38 0 0 0 2.625.372 9.337 9.337 0 0 0 4.121-.952 4.125 4.125 0 0 0-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 0 1 8.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0 1 11.964-3.07M12 6.375a3.375 3.375 0 1 1-6.75 0 3.375 3.375 0 0 1 6.75 0Zm8.25 2.25a2.625 2.625 0 1 1-5.25 0 2.625 2.625 0 0 1 5.25 0Z" />
-                </svg>
-                <span>Total Occupants <span class="req">*</span></span>
+        <!-- Grouped Box 2: Additional Space Allocation -->
+        <div class="resident-reg-box" id="additionalSpaceAllocationBox">
+          <h3 class="resident-reg-box-title">Additional Space Allocation</h3>
+          <p class="resident-reg-box-desc">Versatile open spaces available for tenant customization (e.g., recreation area, billiards, or personal use).</p>
+          <div class="resident-reg-space-list">
+            <?php foreach ($registrationSpaces as $sp): ?>
+              <?php
+                $spNum = (int)$sp['space_number'];
+                $spId = (int)$sp['id'];
+                $spFee = (float)$sp['monthly_fee'];
+                $spOcc = !empty($sp['is_occupied']);
+              ?>
+              <label class="resident-reg-space-item<?= $spOcc ? ' is-occupied' : '' ?>" for="newSpace<?= $spNum ?>" data-space-id="<?= $spId ?>" data-space-number="<?= $spNum ?>">
+                <input type="checkbox"
+                       id="newSpace<?= $spNum ?>"
+                       name="space_<?= $spNum ?>"
+                       value="<?= $spId ?>"
+                       class="resident-reg-space-checkbox"
+                       data-space-id="<?= $spId ?>"
+                       data-space-number="<?= $spNum ?>"
+                       data-fee="<?= htmlspecialchars(number_format($spFee, 2, '.', ''), ENT_QUOTES, 'UTF-8') ?>"
+                       <?= $spOcc ? 'disabled aria-disabled="true"' : '' ?>>
+                <span class="resident-reg-space-text"><?= htmlspecialchars($sp['space_name']) ?> (₱<?= number_format($spFee, 0) ?>/month)</span>
+                <?php if ($spOcc): ?>
+                  <span class="resident-reg-occupied-tag">Occupied</span>
+                <?php endif; ?>
               </label>
-              <input type="number" id="newTotalOccupants" name="total_occupants" class="clay-input" min="1" value="1" readonly style="background: rgba(226, 232, 240, 0.7); cursor: not-allowed; font-weight: 800; color: #1e293b;">
+            <?php endforeach; ?>
+          </div>
+          <div class="resident-reg-space-summary">
+            <div class="resident-reg-total-rent-preview">
+              Total Monthly Rent: <strong id="newTotalMonthlyRentDisplay">₱0.00</strong>
+            </div>
+            <div class="resident-reg-additional-rent">
+              Additional Rent: <span id="newAdditionalRentDisplay">₱0.00</span>
             </div>
           </div>
         </div>
 
-        <!-- Emergency Contact Details (Separate text boxes for Name, Relationship, and Contact Number) -->
-        <div style="background: var(--clay-input-bg); border-radius: var(--radius-md); padding: 14px; box-shadow: var(--clay-sunken-shadow); margin-bottom: 16px;">
-          <div style="font-size: 13px; font-weight: 800; color: #0f172a; margin-bottom: 10px; display: flex; align-items: center; gap: 6px;">
-            <span>🚨</span> Emergency Contact Details
+        <!-- Grouped Box 3: Emergency Contact Information -->
+        <div class="resident-reg-box" style="margin-bottom: 18px;">
+          <h3 class="resident-reg-box-title">Emergency Contact Information</h3>
+          <div style="margin-bottom: 12px;">
+            <label class="resident-reg-sub-label" for="newEmergencyName">Contact Person's Full Name</label>
+            <input type="text" id="newEmergencyName" name="emergency_contact_name" class="resident-reg-rect-input" required>
           </div>
-
-          <div class="form-group" style="margin-bottom: 10px;">
-            <label class="form-label" for="newEmergencyName" style="font-size: 11.5px;">Contact Person's Full Name <span class="req">*</span></label>
-            <input type="text" id="newEmergencyName" name="emergency_contact_name" class="clay-input" placeholder="e.g. Deloris Jordan" required>
-          </div>
-
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
-            <div class="form-group" style="margin-bottom: 0;">
-              <label class="form-label" for="newEmergencyRel" style="font-size: 11.5px;">Relationship <span class="req">*</span></label>
-              <input type="text" id="newEmergencyRel" name="emergency_contact_relationship" class="clay-input" placeholder="e.g. Mother, Spouse, Guardian" required>
+          <div class="resident-reg-emergency-row">
+            <div>
+              <label class="resident-reg-sub-label" for="newEmergencyRel">Relationship</label>
+              <input type="text" id="newEmergencyRel" name="emergency_contact_relationship" class="resident-reg-rect-input" required>
             </div>
-            <div class="form-group" style="margin-bottom: 0;">
-              <label class="form-label" for="newEmergencyPhone" style="font-size: 11.5px;">Contact Number <span class="req">*</span></label>
-              <input type="tel" id="newEmergencyPhone" name="emergency_contact_phone" class="clay-input" placeholder="+63 900 000 0000" required>
+            <div>
+              <label class="resident-reg-sub-label" for="newEmergencyPhone">Contact Information</label>
+              <input type="tel" id="newEmergencyPhone" name="emergency_contact_phone" class="resident-reg-rect-input" required>
             </div>
           </div>
-        </div>
-
-        <!-- Automated Credentials Notification -->
-        <div style="padding: 10px 14px; background: #e0e7ff; border-radius: var(--radius-md); margin-bottom: 18px; font-size: 12px; color: #3730a3; display: flex; align-items: center; gap: 8px;">
-          <span>🔒</span>
-          <span>Login credentials will be automatically generated in sequential ID format (<strong>RC00X</strong>) with a 6-digit passcode.</span>
         </div>
 
         <!-- Loading & Status State Container -->
-        <div id="tenantCreationStatus" style="display: none; margin-bottom: 16px; padding: 12px 14px; border-radius: var(--radius-md); text-align: center; transition: all 0.25s ease;">
-          <div id="tenantCreationLoading" style="display: flex; align-items: center; justify-content: center; gap: 10px; color: #4338ca; font-weight: 700; font-size: 13px;">
+        <div id="tenantCreationStatus" style="display: none; margin-bottom: 14px; padding: 12px 14px; border-radius: 10px; text-align: center; transition: all 0.25s ease;">
+          <div id="tenantCreationLoading" style="display: flex; align-items: center; justify-content: center; gap: 10px; color: #56380E; font-weight: 700; font-size: 13px;">
             <span class="clay-spinner" style="width: 18px; height: 18px; border-width: 2.5px;"></span>
             <span>Creating tenant account, please wait...</span>
           </div>
           <div id="tenantCreationSuccess" style="display: none; align-items: center; justify-content: center; gap: 8px; color: #047857; font-weight: 700; font-size: 13px;">
-            <svg style="width: 18px; height: 18px; color: #10b981; flex-shrink: 0;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
-            </svg>
+            <i data-lucide="check-circle-2" class="w-4 h-4" style="color: #10b981;" aria-hidden="true"></i>
             <span id="tenantCreationSuccessText">Tenant account created successfully! Account details have been sent to the tenant's email address.</span>
           </div>
           <div id="tenantCreationError" style="display: none; align-items: center; justify-content: center; gap: 8px; color: #b91c1c; font-weight: 700; font-size: 13px;">
-            <svg style="width: 18px; height: 18px; color: #ef4444; flex-shrink: 0;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
+            <i data-lucide="alert-circle" class="w-4 h-4" style="color: #ef4444;" aria-hidden="true"></i>
             <span id="tenantCreationErrorText"></span>
           </div>
         </div>
 
-        <div style="display: flex; gap: 12px;">
-          <button type="button" id="btnCancelCreateTenant" class="clay-btn clay-btn-secondary" style="flex: 1;" onclick="closeAddTenantModal()">Cancel</button>
-          <button type="submit" id="btnSubmitCreateTenant" class="clay-btn clay-btn-primary" style="flex: 2;">Register &amp; Generate Credentials</button>
+        <div class="resident-reg-submit-row">
+          <button type="submit" id="btnSubmitCreateTenant" class="resident-reg-submit-btn">REGISTER</button>
         </div>
       </form>
     </div>
@@ -2000,9 +2446,10 @@ $pendingReviewCount = count($pendingReviewPayments);
        Prominently displays generated username (RC00X) & 6-digit numeric password
        ===================================================================== -->
   <div class="modal-backdrop" id="tenantCredentialsModal">
-    <div class="clay-modal" style="max-width: 480px;">
+    <div class="clay-modal" style="max-width: 480px; position: relative;">
+      <button type="button" class="modal-close-btn btn-remove-file" onclick="closeModal('tenantCredentialsModal')" title="Close" aria-label="Close" style="position: absolute; top: 18px; right: 18px;"><i data-lucide="x" class="w-4 h-4" aria-hidden="true"></i></button>
       <div style="text-align: center; margin-bottom: 18px;">
-        <div style="font-size: 42px; margin-bottom: 6px;">🎉</div>
+        <div style="margin-bottom: 8px; display: flex; justify-content: center; color: #059669;"><i data-lucide="badge-check" class="w-10 h-10" style="width:40px;height:40px;" aria-hidden="true"></i></div>
         <h2 style="font-size: 22px; font-weight: 800; color: #0f172a;">Tenant Account Provisioned!</h2>
         <p style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">
           Credentials have been auto-generated. Please securely copy and share these with the resident.
@@ -2011,7 +2458,7 @@ $pendingReviewCount = count($pendingReviewPayments);
 
       <div class="credentials-box">
         <div style="font-size: 12.5px; color: var(--text-muted); margin-bottom: 12px; font-weight: 700; text-align: center;">
-          Resident: <strong id="credTenantName" style="color: #0f172a;">-</strong> • Unit: <strong id="credUnitNumber" style="color: #4338ca;">-</strong>
+          Resident: <strong id="credTenantName" style="color: #0f172a;">-</strong> • Unit: <strong id="credUnitNumber" style="color: #56380E;">-</strong>
         </div>
         
         <div class="credential-row">
@@ -2019,7 +2466,7 @@ $pendingReviewCount = count($pendingReviewPayments);
             <div class="credential-label">Username</div>
             <div class="credential-value" id="credUsername">RC001</div>
           </div>
-          <button type="button" class="btn-copy-credential" onclick="copyCredField('credUsername', this)">📋 Copy</button>
+          <button type="button" class="btn-copy-credential" onclick="copyCredField('credUsername', this)" style="display:inline-flex;align-items:center;gap:4px;"><i data-lucide="copy" class="w-3.5 h-3.5" aria-hidden="true"></i> Copy</button>
         </div>
 
         <div class="credential-row">
@@ -2027,13 +2474,13 @@ $pendingReviewCount = count($pendingReviewPayments);
             <div class="credential-label">6-Digit Passcode</div>
             <div class="credential-value" id="credPassword">123456</div>
           </div>
-          <button type="button" class="btn-copy-credential" onclick="copyCredField('credPassword', this)">📋 Copy</button>
+          <button type="button" class="btn-copy-credential" onclick="copyCredField('credPassword', this)" style="display:inline-flex;align-items:center;gap:4px;"><i data-lucide="copy" class="w-3.5 h-3.5" aria-hidden="true"></i> Copy</button>
         </div>
       </div>
 
       <div style="display: flex; gap: 12px; margin-top: 20px;">
-        <button type="button" class="clay-btn clay-btn-secondary" style="flex: 1; padding: 12px;" onclick="copyAllCredentials(this)">
-          📋 Copy All Details
+        <button type="button" class="clay-btn clay-btn-secondary" style="flex: 1; padding: 12px; display: inline-flex; align-items: center; justify-content: center; gap: 6px;" onclick="copyAllCredentials(this)">
+          <i data-lucide="copy" class="w-4 h-4" aria-hidden="true"></i> Copy All Details
         </button>
         <button type="button" class="clay-btn clay-btn-primary" style="flex: 1;" onclick="closeCredentialsModalAndReload()">
           Done &amp; View Resident
@@ -2051,7 +2498,7 @@ $pendingReviewCount = count($pendingReviewPayments);
       <!-- Modal Header -->
       <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 18px; border-bottom: 1px solid rgba(166, 180, 204, 0.25); padding-bottom: 14px;">
         <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
-          <span class="clay-badge" id="mdlTicketNumberBadge" style="background: #e0e7ff; color: #4338ca; font-weight: 800; font-size: 13.5px; padding: 4px 11px;">#MT-0000</span>
+          <span class="clay-badge" id="mdlTicketNumberBadge" style="background: #F3E4C6; color: #56380E; border: 1px solid rgba(181, 143, 83, 0.35); font-weight: 800; font-size: 13.5px; padding: 4px 11px;">#MT-0000</span>
           <div>
             <h2 id="mdlTicketTitle" style="font-size: 18px; font-weight: 800; color: #0f172a; margin: 0; line-height: 1.3;">Maintenance Request</h2>
             <p style="font-size: 12px; color: var(--text-muted); margin: 3px 0 0 0;">
@@ -2059,7 +2506,7 @@ $pendingReviewCount = count($pendingReviewPayments);
             </p>
           </div>
         </div>
-        <button type="button" class="btn-remove-file" onclick="closeTicketDetailsModal()" title="Close details (Esc)" style="cursor: pointer; font-size: 18px; padding: 4px 8px; border-radius: 8px; border: none; background: transparent; color: var(--text-muted);">✕</button>
+        <button type="button" class="modal-close-btn btn-remove-file" onclick="closeModal('ticketDetailsModal')" title="Close details (Esc)" aria-label="Close"><i data-lucide="x" class="w-4 h-4" aria-hidden="true"></i></button>
       </div>
 
       <!-- Badges row: Category, Priority, Current Status -->
@@ -2075,11 +2522,11 @@ $pendingReviewCount = count($pendingReviewPayments);
         <!-- 1. Tenant & Unit Info Grid -->
         <div style="background: var(--clay-input-bg, #f8fafc); border-radius: var(--radius-md, 12px); padding: 14px 16px; box-shadow: var(--clay-sunken-shadow);">
           <div style="font-size: 12.5px; font-weight: 800; color: #0f172a; margin-bottom: 10px; display: flex; align-items: center; gap: 6px;">
-            <span>👤</span> Tenant &amp; Unit Information
+            <i data-lucide="user" class="w-4 h-4" aria-hidden="true"></i> Tenant &amp; Unit Information
           </div>
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 13px;">
             <div><strong style="color: var(--text-muted);">Tenant Name:</strong> <span id="mdlTenantName" style="font-weight: 700; color: #0f172a;">-</span></div>
-            <div><strong style="color: var(--text-muted);">Assigned Unit:</strong> <span class="clay-badge" id="mdlUnitBadge" style="background: #e0e7ff; color: #4338ca; font-weight: 800; font-size: 11.5px; padding: 2px 8px;">-</span></div>
+            <div><strong style="color: var(--text-muted);">Assigned Unit:</strong> <span class="clay-badge" id="mdlUnitBadge" style="background: #F3E4C6; color: #56380E; border: 1px solid rgba(181, 143, 83, 0.35); font-weight: 800; font-size: 11.5px; padding: 2px 8px;">-</span></div>
             <div style="grid-column: 1 / -1;"><strong style="color: var(--text-muted);">Email Address:</strong> <span id="mdlTenantEmail" style="font-weight: 600; color: #334155;">-</span></div>
           </div>
         </div>
@@ -2087,7 +2534,7 @@ $pendingReviewCount = count($pendingReviewPayments);
         <!-- 2. Complete Issue Description -->
         <div>
           <div style="font-size: 12.5px; font-weight: 800; color: #0f172a; margin-bottom: 6px; display: flex; align-items: center; gap: 6px;">
-            <span>📝</span> Complete Issue Description
+            <i data-lucide="file-text" class="w-4 h-4" aria-hidden="true"></i> Complete Issue Description
           </div>
           <div style="background: var(--clay-input-bg, #f8fafc); border-radius: var(--radius-md, 12px); padding: 14px 16px; box-shadow: var(--clay-sunken-shadow); min-height: 80px;">
             <p id="mdlDescription" style="font-size: 13.5px; color: #1e293b; line-height: 1.6; white-space: pre-wrap; margin: 0;"></p>
@@ -2097,7 +2544,7 @@ $pendingReviewCount = count($pendingReviewPayments);
         <!-- 3. Attached Images or Supporting Photos -->
         <div>
           <div style="font-size: 12.5px; font-weight: 800; color: #0f172a; margin-bottom: 6px; display: flex; align-items: center; gap: 6px;">
-            <span>📷</span> Attached Images &amp; Supporting Photos
+            <i data-lucide="image" class="w-4 h-4" aria-hidden="true"></i> Attached Images &amp; Supporting Photos
           </div>
           <div id="mdlPhotosContainer" style="display: flex; gap: 12px; flex-wrap: wrap;"></div>
           <div id="mdlNoPhotosNotice" style="display: none; background: #f8fafc; border: 1.5px dashed #cbd5e1; border-radius: var(--radius-md, 12px); padding: 18px; text-align: center; color: var(--text-muted); font-size: 12.5px;">
@@ -2106,9 +2553,9 @@ $pendingReviewCount = count($pendingReviewPayments);
         </div>
 
         <!-- 4. Dedicated Status Update Section Inside the Modal -->
-        <div style="background: #ffffff; border: 1.5px solid rgba(99, 102, 241, 0.35); border-radius: var(--radius-md, 12px); padding: 16px; box-shadow: 0 4px 14px rgba(99, 102, 241, 0.08);">
+        <div style="background: #ffffff; border: 1.5px solid rgba(181, 143, 83, 0.45); border-radius: var(--radius-md, 12px); padding: 16px; box-shadow: 0 4px 14px rgba(86, 56, 14, 0.08);">
           <div style="font-size: 13px; font-weight: 800; color: #0f172a; margin-bottom: 12px; display: flex; align-items: center; gap: 6px;">
-            <span>⚙️</span> Update Maintenance Status
+            <i data-lucide="settings" class="w-4 h-4" aria-hidden="true"></i> Update Maintenance Status
           </div>
           <form id="formModalStatusUpdate" onsubmit="event.preventDefault(); submitModalStatusUpdate();">
             <input type="hidden" id="mdlTicketId" value="">
@@ -2116,9 +2563,9 @@ $pendingReviewCount = count($pendingReviewPayments);
             <div class="form-group" style="margin-bottom: 12px;">
               <label class="form-label" for="mdlSelectStatus" style="font-weight: 700; color: #0f172a; font-size: 12.5px;">Status *</label>
               <select id="mdlSelectStatus" class="clay-select" style="width: 100%; font-weight: 700; font-size: 13.5px; padding: 9px 12px;">
-                <option value="Pending">⏳ Pending</option>
-                <option value="On-Going">🔧 On-Going</option>
-                <option value="Done">✅ Done</option>
+                <option value="Pending">Pending</option>
+                <option value="On-Going">On-Going</option>
+                <option value="Done">Done</option>
               </select>
               <p style="font-size: 11.5px; color: var(--text-muted); margin: 4px 0 0 2px;">
                 Setting status to <strong>Done</strong> automatically moves this ticket to Completed Maintenance.
@@ -2133,7 +2580,7 @@ $pendingReviewCount = count($pendingReviewPayments);
             <div style="display: flex; gap: 10px; justify-content: flex-end;">
               <button type="button" class="clay-btn clay-btn-secondary" onclick="closeTicketDetailsModal()" style="padding: 9px 16px; font-size: 13px;">Cancel</button>
               <button type="submit" id="btnModalSubmitStatus" class="clay-btn clay-btn-primary" style="padding: 9px 20px; font-size: 13px; font-weight: 800;">
-                <span>💾 Save Changes</span>
+                <span style="display:inline-flex;align-items:center;gap:6px;"><i data-lucide="save" class="w-4 h-4" aria-hidden="true"></i> Save Changes</span>
               </button>
             </div>
           </form>
@@ -2144,109 +2591,369 @@ $pendingReviewCount = count($pendingReviewPayments);
   </div>
 
   <!-- =====================================================================
+       MODAL: GENERAL TENANT REPORT DETAILS & OWNER DECISION
+       ===================================================================== -->
+  <div class="modal-backdrop" id="reportDetailsModal" onclick="handleReportModalBackdropClick(event)">
+    <div class="clay-modal" style="max-width: 600px; max-height: 90vh; overflow-y: auto;">
+      <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; border-bottom: 1px solid var(--clay-border); padding-bottom: 14px;">
+        <div style="padding-right: 12px;">
+          <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px;">
+            <span id="mdlReportIdBadge" style="font-size: 12px; font-weight: 800; color: #56380E; background: #F3E4C6; padding: 3px 9px; border-radius: 6px;">#GR-0001</span>
+            <span id="mdlReportCategory" class="report-category-pill">General Inquiry</span>
+            <span id="mdlReportStatusPill" class="report-status-pill report-status-pill--pending">PENDING</span>
+          </div>
+          <h2 id="mdlReportSubject" style="font-size: 19px; font-weight: 800; color: #0f172a; margin: 0;">Report Subject</h2>
+          <p id="mdlReportDate" style="font-size: 12px; color: var(--text-muted); margin: 4px 0 0 0;">Submitted on -</p>
+        </div>
+        <button type="button" class="modal-close-btn btn-icon-close" onclick="closeModal('reportDetailsModal')" title="Close" aria-label="Close"><i data-lucide="x" class="w-4 h-4" aria-hidden="true"></i></button>
+      </div>
+
+      <!-- Tenant & Unit Info -->
+      <div style="display: flex; align-items: center; gap: 14px; background: rgba(248, 250, 252, 0.9); border: 1px solid rgba(166, 180, 204, 0.35); border-radius: 12px; padding: 12px 16px; margin-bottom: 16px;">
+        <div style="width: 40px; height: 40px; border-radius: 50%; background: linear-gradient(135deg, #B58F53, #56380E); color: #fff; font-weight: 800; font-size: 16px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;" id="mdlReportTenantAvatar">
+          T
+        </div>
+        <div style="flex: 1; min-width: 0;">
+          <div style="font-size: 14.5px; font-weight: 700; color: #0f172a;" id="mdlReportTenantName">Tenant Name</div>
+          <div style="font-size: 12px; color: var(--text-muted);" id="mdlReportTenantMeta">Unit - • -</div>
+        </div>
+        <div style="text-align: right; flex-shrink: 0;">
+          <span class="clay-badge" style="background: #F3E4C6; color: #56380E; font-weight: 800; font-size: 12px;" id="mdlReportUnitBadge">Unit</span>
+        </div>
+      </div>
+
+      <!-- Request Details -->
+      <div style="margin-bottom: 16px;">
+        <label style="display: block; font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;">Request Details</label>
+        <div style="background: #FFF9EE; border: 1px solid rgba(181, 143, 83, 0.35); border-radius: 12px; padding: 14px; font-size: 13.5px; color: #1e293b; line-height: 1.55; white-space: pre-wrap;" id="mdlReportDetails"></div>
+      </div>
+
+      <!-- Attachments -->
+      <div id="mdlReportAttachmentsSection" style="margin-bottom: 16px; display: none;">
+        <label style="display: block; font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;">Supporting Documents / Photos</label>
+        <div id="mdlReportAttachmentsContainer" style="display: flex; gap: 10px; flex-wrap: wrap;"></div>
+      </div>
+
+      <!-- Owner Remarks & Decision Form -->
+      <div style="border-top: 1px solid rgba(166, 180, 204, 0.25); padding-top: 16px;">
+        <input type="hidden" id="mdlReportId" value="">
+        <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px;">
+          <label for="mdlReportRemarks" style="font-size: 12px; font-weight: 800; color: #302313;">Owner Remarks / Decision Notes</label>
+          <span id="mdlReportReviewedMeta" style="font-size: 11.5px; color: var(--text-muted); font-weight: 600;">Not yet reviewed</span>
+        </div>
+        <textarea id="mdlReportRemarks" class="clay-input" rows="3" placeholder="Write approval conditions, lease addendum notes, or reason for rejection..." style="width: 100%; resize: vertical; font-size: 13.5px; padding: 10px 12px;"></textarea>
+
+        <div class="report-decision-actions">
+          <button type="button" id="btnReportApprove" class="report-action-btn report-action-btn--approve" onclick="handleReportDecision('Approved')" style="display:inline-flex;align-items:center;justify-content:center;gap:5px;"><i data-lucide="check" class="w-4 h-4" aria-hidden="true"></i> Approve</button>
+          <button type="button" id="btnReportAcknowledge" class="report-action-btn report-action-btn--acknowledge" onclick="handleReportDecision('Acknowledged')" style="display:inline-flex;align-items:center;justify-content:center;gap:5px;"><i data-lucide="eye" class="w-4 h-4" aria-hidden="true"></i> Acknowledge</button>
+          <button type="button" id="btnReportReject" class="report-action-btn report-action-btn--reject" onclick="handleReportDecision('Rejected')" style="display:inline-flex;align-items:center;justify-content:center;gap:5px;"><i data-lucide="x" class="w-4 h-4" aria-hidden="true"></i> Reject</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- =====================================================================
        MODAL: EXPANDED TENANT DETAILS & PRIVACY (LANDLORD UI)
        Displays: Complete Info (Emergency contacts, 1 family occupant breakdown).
        ID Display: Tenant's uploaded Valid ID image is immediately visible.
        STRICT PRIVACY: Live Face Scan photo is strictly excluded from UI.
        ===================================================================== -->
-  <div class="modal-backdrop" id="tenantDetailsModal">
-    <div class="clay-modal" style="max-width: 580px; max-height: 90vh; overflow-y: auto;">
-      <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 18px; border-bottom: 1px solid var(--clay-border); padding-bottom: 14px;">
-        <div style="display: flex; align-items: center; gap: 12px;">
-          <div id="tdAvatar" style="width: 46px; height: 46px; border-radius: 14px; background: linear-gradient(135deg, #a5b4fc, #818cf8); color: #fff; font-weight: 800; font-size: 20px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
-            T
+  <!-- =====================================================================
+       MODAL: TARARENT REBUILT TENANT INFORMATION VIEW (MATCHING IMAGE_56DA2C)
+       ===================================================================== -->
+  <div class="modal-backdrop" id="tenantDetailsModal" onclick="if(event.target === this) closeModal('tenantDetailsModal')">
+    <div class="relative w-full max-w-4xl bg-white rounded-3xl p-6 sm:p-9 shadow-2xl overflow-y-auto max-h-[92vh]" onclick="event.stopPropagation()" style="max-width: 890px; width: 95%; background: #ffffff; border-radius: 26px; padding: 32px 36px; box-shadow: 0 25px 60px rgba(0,0,0,0.25); max-height: 92vh; overflow-y: auto;">
+      
+      <!-- Close "X" Button -->
+      <button type="button" 
+              class="modal-close-btn absolute top-5 right-5 sm:top-6 sm:right-6 w-9 h-9 rounded-full bg-black/5 hover:bg-black/10 text-gray-700 flex items-center justify-center transition-all cursor-pointer border-0 z-50 focus:outline-none"
+              onclick="closeModal('tenantDetailsModal')" 
+              title="Close" 
+              aria-label="Close"
+              style="position: absolute; top: 20px; right: 20px; width: 38px; height: 38px; border-radius: 9999px; background: rgba(0,0,0,0.08); color: #1a120b; border: 1px solid rgba(0,0,0,0.12); display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 100;">
+        <i data-lucide="x" class="w-5 h-5 text-gray-700" style="pointer-events: none;" aria-hidden="true"></i>
+      </button>
+
+      <!-- 1. HEADER & OCCUPANCY STATUS LAYOUT -->
+      <div class="flex justify-between items-start mb-6 pr-10" style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 22px; padding-right: 40px;">
+        <div>
+          <!-- Large, bold, sans-serif Unit Number -->
+          <h1 id="tdModalUnitNumber" class="text-4xl sm:text-5xl font-black text-black tracking-tight leading-none uppercase font-sans" style="font-size: 38px; font-weight: 900; color: #000000; line-height: 1; letter-spacing: -0.5px; margin: 0; text-transform: uppercase;">
+            UNIT 1
+          </h1>
+          <!-- Subunit details directly below it -->
+          <p id="tdModalUnitDetails" class="text-lg sm:text-xl font-normal text-black mt-1.5 font-serif sm:font-sans" style="font-size: 18px; color: #111827; margin: 6px 0 0 0;">
+            1 BR | 1 CR
+          </p>
+        </div>
+        <!-- Bright Green OCCUPIED Badge with solid black border & soft shadow -->
+        <div>
+          <span id="tdModalOccupancyBadge" 
+                class="inline-block bg-[#6ee7b7] text-black font-extrabold text-sm sm:text-base px-6 py-2 rounded-lg border-2 border-black shadow-[2px_3px_0px_rgba(0,0,0,1)] uppercase tracking-wider"
+                style="display: inline-block; background-color: #6ee7b7; color: #000000; font-weight: 800; font-size: 14px; padding: 8px 24px; border-radius: 8px; border: 2px solid #000000; box-shadow: 2px 3px 0px rgba(0,0,0,1); text-transform: uppercase; letter-spacing: 0.05em;">
+            OCCUPIED
+          </span>
+        </div>
+      </div>
+
+      <!-- 2. TOP CARD: TENANT INFORMATION (FULL WIDTH) -->
+      <div class="mb-6" style="margin-bottom: 24px;">
+        <!-- Section Title above Card -->
+        <div class="text-xs sm:text-sm font-bold text-gray-500 uppercase tracking-widest mb-2 font-sans" style="font-size: 13px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px;">
+          TENANT INFORMATION
+        </div>
+
+        <!-- Full-Width Brown Container -->
+        <div class="relative w-full bg-[#9A7B4F] text-black rounded-2xl p-5 sm:p-6 shadow-[0_10px_25px_rgba(0,0,0,0.18)]" style="position: relative; width: 100%; background-color: #9A7B4F; color: #000000; border-radius: 18px; padding: 22px 26px; box-shadow: 0 10px 25px rgba(0,0,0,0.18); box-sizing: border-box;">
+          <!-- Top Right (Move-in Date) -->
+          <div class="absolute top-4 right-5 sm:top-5 sm:right-6 text-right" style="position: absolute; top: 18px; right: 24px; text-align: right;">
+            <div id="tdModalMoveInDate" class="text-base sm:text-lg font-bold text-[#1a120b] leading-tight" style="font-size: 17px; font-weight: 800; color: #1a120b; line-height: 1.1;">
+              08/11/2026
+            </div>
+            <div class="text-[11px] sm:text-xs text-[#3b2a1a] font-medium lowercase" style="font-size: 11px; color: #3b2a1a; font-weight: 600;">
+              date of move in
+            </div>
           </div>
-          <div>
-            <h2 id="tdName" style="font-size: 20px; font-weight: 800; color: #0f172a; margin: 0; line-height: 1.2;">Tenant Name</h2>
-            <div style="display: flex; align-items: center; gap: 8px; margin-top: 4px; flex-wrap: wrap;">
-              <span id="tdUsername" style="font-size: 12px; font-weight: 700; color: var(--clay-primary-dark); background: #e0e7ff; padding: 2px 7px; border-radius: 5px;">@RC001</span>
-              <span id="tdUnitBadge" class="clay-badge badge-pending" style="font-size: 11px;">Unit 101</span>
-              <span id="tdVerificationBadge" class="clay-badge badge-verified" style="font-size: 11px;">Verified</span>
+
+          <div class="grid grid-cols-1 md:grid-cols-[1.25fr_auto_1.2fr] items-start gap-5 pr-20 sm:pr-24 md:pr-0" style="display: grid; grid-template-columns: 1.25fr auto 1.2fr; align-items: start; gap: 20px;">
+            <!-- Left Column: Profile & Contact -->
+            <div class="flex flex-col gap-3" style="display: flex; flex-direction: column; gap: 12px;">
+              <!-- Avatar & Name/Role -->
+              <div class="flex items-center gap-3.5" style="display: flex; align-items: center; gap: 14px;">
+                <!-- Square Avatar Placeholder -->
+                <div id="tdModalAvatarBox" class="w-14 h-14 sm:w-16 sm:h-16 bg-[#d1d5db] rounded-sm flex items-center justify-center overflow-hidden flex-shrink-0 border border-black/10" style="width: 60px; height: 60px; background-color: #d1d5db; border-radius: 4px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; overflow: hidden; border: 1px solid rgba(0,0,0,0.1);">
+                  <span id="tdModalAvatarInitial" class="text-xl sm:text-2xl font-bold text-gray-700 uppercase" style="font-size: 22px; font-weight: 800; color: #374151;">T</span>
+                </div>
+                <div>
+                  <h2 id="tdModalTenantName" class="text-2xl sm:text-3xl font-extrabold text-[#1a120b] uppercase tracking-wide leading-none font-serif sm:font-sans" style="font-size: 24px; font-weight: 800; color: #1a120b; margin: 0; line-height: 1.1; text-transform: uppercase;">
+                    JANE DOE
+                  </h2>
+                  <div class="text-base sm:text-lg italic font-normal text-[#2e1f10] lowercase mt-0.5 font-serif sm:font-sans" style="font-size: 16px; font-style: italic; color: #2e1f10; margin-top: 3px;">
+                    tenant
+                  </div>
+                </div>
+              </div>
+
+              <!-- Contact Information List -->
+              <div class="space-y-1 text-xs sm:text-sm text-[#2e1f10] font-serif sm:font-sans mt-1" style="font-size: 13.5px; color: #2e1f10; line-height: 1.5; margin-top: 4px;">
+                <div><strong class="font-bold" style="font-weight: 700;">Birthday:</strong> <span id="tdModalBirthday" class="font-normal font-sans ml-1" style="margin-left: 4px;">-</span></div>
+                <div><strong class="font-bold" style="font-weight: 700;">Phone No.:</strong> <span id="tdModalPhone" class="font-normal font-sans ml-1" style="margin-left: 4px;">-</span></div>
+                <div><strong class="font-bold" style="font-weight: 700;">Email Address:</strong> <span id="tdModalEmail" class="font-normal font-sans ml-1" style="margin-left: 4px;">-</span></div>
+              </div>
+            </div>
+
+            <!-- Center Divider: Vertical White Line -->
+            <div class="hidden md:block w-px border-l-2 border-white self-stretch my-1" style="width: 2px; border-left: 2px solid #ffffff; align-self: stretch; margin: 4px 10px;"></div>
+
+            <!-- Middle Column: Emergency Contact -->
+            <div class="flex flex-col text-xs sm:text-sm text-[#2e1f10] font-serif sm:font-sans" style="font-size: 13.5px; color: #2e1f10;">
+              <h3 class="text-sm sm:text-base font-normal text-[#2e1f10] mb-2 font-serif sm:font-sans" style="font-size: 15px; font-weight: 600; color: #2e1f10; margin: 0 0 8px 0;">
+                Emergency contact
+              </h3>
+              <div class="space-y-1.5 font-serif sm:font-sans" style="line-height: 1.6;">
+                <div><strong class="font-bold uppercase" style="font-weight: 700;">NAME:</strong> <span id="tdModalEmergencyName" class="font-normal font-sans ml-1" style="margin-left: 4px;">-</span></div>
+                <div><strong class="font-bold uppercase" style="font-weight: 700;">RELATIONSHIP:</strong> <span id="tdModalEmergencyRel" class="font-normal font-sans ml-1" style="margin-left: 4px;">-</span></div>
+                <div><strong class="font-bold uppercase" style="font-weight: 700;">CONTACT NO.:</strong> <span id="tdModalEmergencyPhone" class="font-normal font-sans ml-1" style="margin-left: 4px;">-</span></div>
+              </div>
             </div>
           </div>
         </div>
-        <button type="button" class="btn-remove-file" onclick="closeTenantDetailsModal()">✕</button>
       </div>
 
-      <!-- 1. Occupant Breakdown (1 Family per Account Rule) -->
-      <div style="background: var(--clay-input-bg); border-radius: var(--radius-md); padding: 14px; box-shadow: var(--clay-sunken-shadow); margin-bottom: 16px;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-          <div style="font-size: 13px; font-weight: 800; color: #0f172a; display: flex; align-items: center; gap: 6px;">
-            <span>👨‍👩‍👧‍👦</span> Occupant Breakdown
+      <!-- 3. BOTTOM CARDS: SPLIT GRID LAYOUT (IDENTIFICATION & BILLING) -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-4" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 24px; margin-bottom: 20px;">
+        
+        <!-- LEFT CARD: TENANT IDENTIFICATION INFORMATION -->
+        <div>
+          <div class="text-xs sm:text-sm font-bold text-gray-500 uppercase tracking-widest mb-2 font-sans" style="font-size: 13px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px;">
+            TENANT IDENTIFICATION INFORMATION
           </div>
-          <span class="clay-badge badge-paid" style="font-size: 10.5px; padding: 2px 8px;">1 Family per Account</span>
-        </div>
-        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; text-align: center;">
-          <div style="background: #ffffff; padding: 8px 10px; border-radius: var(--radius-sm); border: 1px solid var(--clay-border);">
-            <div style="font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Total Occupants</div>
-            <div style="display: flex; align-items: center; justify-content: center; gap: 6px; margin-top: 2px;">
-              <svg fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-6 h-6 text-gray-700">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M15 19.128a9.38 9.38 0 0 0 2.625.372 9.337 9.337 0 0 0 4.121-.952 4.125 4.125 0 0 0-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 0 1 8.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0 1 11.964-3.07M12 6.375a3.375 3.375 0 1 1-6.75 0 3.375 3.375 0 0 1 6.75 0Zm8.25 2.25a2.625 2.625 0 1 1-5.25 0 2.625 2.625 0 0 1 5.25 0Z" />
-              </svg>
-              <span id="tdTotalOccupants" style="font-size: 18px; font-weight: 800; color: #0f172a;">1</span>
+          <div class="bg-[#9A7B4F] text-black rounded-2xl p-5 sm:p-6 shadow-[0_10px_25px_rgba(0,0,0,0.18)] min-h-[175px] flex flex-col justify-between" style="background-color: #9A7B4F; color: #000000; border-radius: 18px; padding: 22px 24px; box-shadow: 0 10px 25px rgba(0,0,0,0.18); min-height: 180px; display: flex; flex-direction: column; justify-content: space-between; box-sizing: border-box;">
+            <!-- Status Row -->
+            <div class="flex items-center justify-center gap-3" style="display: flex; align-items: center; justify-content: center; gap: 12px;">
+              <span class="text-base sm:text-lg font-bold text-[#1a120b] uppercase font-sans" style="font-size: 16px; font-weight: 800; color: #1a120b;">STATUS:</span>
+              <span id="tdModalIdStatusBadge" class="bg-[#22c55e] text-black font-extrabold text-xs sm:text-sm px-5 py-1 rounded-md border border-black shadow-sm uppercase tracking-wider" style="background-color: #22c55e; color: #000000; font-weight: 800; font-size: 13px; padding: 5px 18px; border-radius: 6px; border: 1.5px solid #000000; text-transform: uppercase; letter-spacing: 0.05em;">
+                VERIFIED
+              </span>
+            </div>
+
+            <!-- Dynamic ID Details Container (Conditional Rendering with Unverified Privacy Masking) -->
+            <div id="tdModalIdDetailsContainer">
+              <?php if (!empty($tenant) && (int)($tenant['is_verified'] ?? 0) === 1): ?>
+                <!-- ID Icon, Type, and [view id] Link -->
+                <div id="tdModalVerifiedIdSection" class="flex items-center justify-center gap-4 mt-4" style="display: flex; align-items: center; justify-content: center; gap: 16px; margin-top: 14px;">
+                  <!-- Illustrated ID Card Icon -->
+                  <svg class="w-16 h-12 flex-shrink-0 drop-shadow-sm" viewBox="0 0 72 52" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="width: 64px; height: 46px; flex-shrink: 0;">
+                    <rect x="2" y="2" width="68" height="48" rx="8" fill="#F8E5E5" stroke="#1A120B" stroke-width="2.5"/>
+                    <rect x="2" y="2" width="68" height="14" rx="8" fill="#F47272" stroke="#1A120B" stroke-width="2.5"/>
+                    <rect x="8" y="20" width="20" height="24" rx="4" fill="#FFFFFF" stroke="#1A120B" stroke-width="2"/>
+                    <circle cx="18" cy="27" r="3.5" fill="#1A120B"/>
+                    <path d="M11 40c0-3.5 3-5 7-5s7 1.5 7 5" stroke="#1A120B" stroke-width="2" stroke-linecap="round" fill="#1A120B"/>
+                    <text x="33" y="28" font-family="sans-serif" font-weight="900" font-size="9" fill="#1A120B">ID</text>
+                    <line x1="45" y1="26" x2="62" y2="26" stroke="#1A120B" stroke-width="2" stroke-linecap="round"/>
+                    <line x1="33" y1="34" x2="62" y2="34" stroke="#1A120B" stroke-width="2" stroke-linecap="round"/>
+                    <line x1="33" y1="40" x2="54" y2="40" stroke="#1A120B" stroke-width="2" stroke-linecap="round"/>
+                  </svg>
+
+                  <!-- ID Type and [view id] clickable link -->
+                  <div>
+                    <div id="tdModalIdType" class="text-lg sm:text-xl font-extrabold text-[#1a120b] uppercase font-sans leading-tight" style="font-size: 18px; font-weight: 800; color: #1a120b; text-transform: uppercase;">
+                      <?= htmlspecialchars($tenant['id_type'] ?? 'PhilSys ID') ?>
+                    </div>
+                    <button type="button" 
+                            id="tdModalBtnViewId" 
+                            onclick="viewTenantIdImage()" 
+                            class="text-xs sm:text-sm font-normal text-[#1a120b] hover:text-black hover:underline underline cursor-pointer mt-0.5 bg-transparent border-0 p-0 text-left font-sans focus:outline-none"
+                            style="font-size: 13px; color: #1a120b; text-decoration: underline; cursor: pointer; background: transparent; border: none; padding: 0; margin-top: 4px; display: block;">
+                      [view id]
+                    </button>
+                  </div>
+                </div>
+              <?php else: ?>
+                <!-- Unverified Fallback Placeholder (No <a> tags, no modal triggers) -->
+                <div id="tdModalUnverifiedIdSection" class="flex flex-col items-center justify-center text-center mt-3 py-3.5 px-4 bg-black/10 rounded-xl border border-dashed border-black/20 text-[#2e1f10]" style="display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; margin-top: 12px; padding: 14px 16px; background: rgba(0,0,0,0.08); border-radius: 12px; border: 1.5px dashed rgba(0,0,0,0.25); color: #2e1f10;">
+                  <div class="flex items-center gap-2 text-sm sm:text-base font-extrabold text-[#2e1f10] opacity-85" style="display: flex; align-items: center; gap: 8px; font-size: 14.5px; font-weight: 800; color: #2e1f10;">
+                    <span style="font-size: 16px;">🔒</span>
+                    <span id="tdModalHiddenIdPlaceholder">ID Hidden (Pending Verification)</span>
+                  </div>
+                  <p class="text-[11.5px] sm:text-xs text-[#45321f] mt-1 font-medium m-0 opacity-75" style="font-size: 11.5px; color: #45321f; margin: 4px 0 0 0; font-weight: 500;">
+                    Identification documents are locked until account verification is complete.
+                  </p>
+                </div>
+              <?php endif; ?>
             </div>
           </div>
-          <div style="background: #ffffff; padding: 8px 10px; border-radius: var(--radius-sm); border: 1px solid var(--clay-border);">
-            <div style="font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Adults</div>
-            <div id="tdAdultsCount" style="font-size: 18px; font-weight: 800; color: var(--clay-primary-dark); margin-top: 2px;">1</div>
+        </div>
+
+        <!-- RIGHT CARD: BILLING INFORMATION -->
+        <div>
+          <div class="text-xs sm:text-sm font-bold text-gray-500 uppercase tracking-widest mb-2 font-sans" style="font-size: 13px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px;">
+            BILLING INFORMATION
           </div>
-          <div style="background: #ffffff; padding: 8px 10px; border-radius: var(--radius-sm); border: 1px solid var(--clay-border);">
-            <div style="font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Kids</div>
-            <div id="tdKidsCount" style="font-size: 18px; font-weight: 800; color: #059669; margin-top: 2px;">0</div>
+          <div class="bg-[#9A7B4F] text-black rounded-2xl p-5 sm:p-6 shadow-[0_10px_25px_rgba(0,0,0,0.18)] min-h-[175px]" style="background-color: #9A7B4F; color: #000000; border-radius: 18px; padding: 22px 24px; box-shadow: 0 10px 25px rgba(0,0,0,0.18); min-height: 180px; box-sizing: border-box;">
+            <!-- Top Row: Payment Status & Deposit Status -->
+            <div class="flex flex-col gap-2 mb-3" style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px;">
+              <div class="flex items-center justify-between sm:justify-start sm:gap-6" style="display: flex; align-items: center; gap: 14px;">
+                <span class="text-xs sm:text-sm font-bold text-[#1a120b] uppercase font-sans" style="font-size: 12.5px; font-weight: 800; color: #1a120b;">PAYMENT STATUS:</span>
+                <span id="tdModalPaymentStatusBadge" class="bg-[#22c55e] text-black font-extrabold text-xs px-4 py-0.5 rounded-md border border-black uppercase tracking-wider" style="background-color: #22c55e; color: #000000; font-weight: 800; font-size: 11px; padding: 2px 14px; border-radius: 4px; border: 1.5px solid #000000; text-transform: uppercase;">
+                  PAID
+                </span>
+              </div>
+              <div class="flex items-center justify-between sm:justify-start sm:gap-6" style="display: flex; align-items: center; gap: 14px;">
+                <span id="tdModalDepositLabel" class="text-xs sm:text-sm font-bold text-[#1a120b] uppercase font-sans" style="font-size: 12.5px; font-weight: 800; color: #1a120b;">
+                  DEPOSIT: PHP 3000
+                </span>
+                <span id="tdModalDepositStatusBadge" class="bg-[#22c55e] text-black font-extrabold text-xs px-4 py-0.5 rounded-md border border-black uppercase tracking-wider" style="background-color: #22c55e; color: #000000; font-weight: 800; font-size: 11px; padding: 2px 14px; border-radius: 4px; border: 1.5px solid #000000; text-transform: uppercase;">
+                  DONE
+                </span>
+              </div>
+            </div>
+
+            <!-- Divider: Dotted horizontal line -->
+            <div class="border-b border-dotted border-gray-400 my-3" style="border-bottom: 1.5px dotted rgba(255,255,255,0.6); margin: 12px 0;"></div>
+
+            <!-- Bottom Rows Grid -->
+            <div class="grid grid-cols-2 gap-3 text-[#1a120b] font-sans" style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+              <!-- DUE DATE -->
+              <div>
+                <div class="text-[10.5px] sm:text-xs font-bold text-red-500 uppercase tracking-tight" style="font-size: 11px; font-weight: 800; color: #ef4444; text-transform: uppercase;">
+                  DUE DATE:
+                </div>
+                <div id="tdModalDueDate" class="text-lg sm:text-2xl font-black text-[#1a120b] tracking-tight leading-snug" style="font-size: 20px; font-weight: 900; color: #1a120b;">
+                  08/11/26
+                </div>
+              </div>
+
+              <!-- PAID ON -->
+              <div>
+                <div class="text-[10.5px] sm:text-xs font-bold text-[#1a120b] uppercase tracking-tight" style="font-size: 11px; font-weight: 800; color: #1a120b; text-transform: uppercase;">
+                  PAID ON:
+                </div>
+                <div id="tdModalPaidOnDate" class="text-lg sm:text-2xl font-black text-[#1a120b] tracking-tight leading-snug" style="font-size: 20px; font-weight: 900; color: #1a120b;">
+                  08/11/26
+                </div>
+              </div>
+
+              <!-- TOTAL AMOUNT -->
+              <div>
+                <div class="text-[10.5px] sm:text-xs font-bold text-[#1a120b] uppercase tracking-tight" style="font-size: 11px; font-weight: 800; color: #1a120b; text-transform: uppercase;">
+                  TOTAL AMOUNT:
+                </div>
+                <div id="tdModalTotalAmount" class="text-sm sm:text-base font-bold text-[#1a120b] mt-0.5" style="font-size: 14.5px; font-weight: 800; color: #1a120b; margin-top: 2px;">
+                  PHP 3,000.00
+                </div>
+              </div>
+
+              <!-- PROOF OF PAYMENT THUMBNAIL BOX -->
+              <div>
+                <div class="text-[10.5px] sm:text-xs font-bold text-[#1a120b] uppercase tracking-tight mb-1" style="font-size: 11px; font-weight: 800; color: #1a120b; text-transform: uppercase; margin-bottom: 4px;">
+                  PROOF OF PAYMENT:
+                </div>
+                <div id="tdModalReceiptThumbnail" 
+                     onclick="viewTenantReceiptPhoto()" 
+                     class="w-28 sm:w-32 h-10 sm:h-11 bg-white/95 hover:bg-white border border-gray-400 rounded-sm flex items-center justify-center gap-1.5 cursor-pointer shadow-sm transition-all group"
+                     title="View Proof of Payment Photo"
+                     style="width: 115px; height: 42px; background: rgba(255, 255, 255, 0.95); border: 1.5px solid #d1d5db; border-radius: 4px; display: flex; align-items: center; justify-content: center; gap: 6px; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.06);">
+                  <i data-lucide="eye" class="w-4 h-4 text-black" aria-hidden="true" style="width: 15px; height: 15px; color: #000000;"></i>
+                  <span class="text-[9.5px] sm:text-[10px] font-black tracking-wider uppercase text-black" style="font-size: 9.5px; font-weight: 900; letter-spacing: 0.05em; color: #000000;">VIEW PHOTO</span>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
 
-      <!-- 2. Personal & Contact Details -->
-      <div style="background: var(--clay-input-bg); border-radius: var(--radius-md); padding: 14px; box-shadow: var(--clay-sunken-shadow); margin-bottom: 16px;">
-        <div style="font-size: 13px; font-weight: 800; color: #0f172a; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
-          <div style="display: flex; align-items: center; gap: 6px;">
-            <span>📋</span> Personal &amp; Contact Information
-          </div>
-          <span id="tdRentalStatusBadge" class="clay-badge badge-paid" style="font-size: 11px; padding: 2px 8px;">Active Resident</span>
-        </div>
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 13px;">
-          <div><strong style="color: var(--text-muted);">Birthday:</strong> <span id="tdBirthday" style="font-weight: 700; color: #0f172a;">N/A</span></div>
-          <div><strong style="color: var(--text-muted);">Moved In:</strong> <span id="tdMoveIn" style="font-weight: 700; color: #0f172a;">N/A</span></div>
-          <div style="grid-column: 1 / -1;"><strong style="color: var(--text-muted);">Email Address:</strong> <span id="tdEmail" style="font-weight: 700; color: #0f172a;">email@example.com</span></div>
-          <div style="grid-column: 1 / -1;"><strong style="color: var(--text-muted);">Phone Number:</strong> <span id="tdPhone" style="font-weight: 700; color: #0f172a;">+63 900 000 0000</span></div>
-        </div>
-        <div id="tdMovedOutNotice" style="display: none; margin-top: 10px; padding: 10px 12px; background: #fef3c7; border: 1px solid #fde68a; border-radius: 8px; font-size: 12px; color: #92400e;">
-          <strong>⚠️ Move-Out Status:</strong> This tenant is officially marked as Moved Out. Unpaid bills or pending payment proofs remain. The account and payment records will stay active until all balances are fully settled.
-        </div>
-      </div>
-
-      <!-- 3. Emergency Contact Details -->
-      <div style="background: var(--clay-input-bg); border-radius: var(--radius-md); padding: 14px; box-shadow: var(--clay-sunken-shadow); margin-bottom: 16px;">
-        <div style="font-size: 13px; font-weight: 800; color: #0f172a; margin-bottom: 10px; display: flex; align-items: center; gap: 6px;">
-          <span>🚨</span> Emergency Contact
-        </div>
-        <div style="font-size: 13px;">
-          <div><strong style="color: var(--text-muted);">Contact Name:</strong> <span id="tdEmergencyName" style="font-weight: 700; color: #0f172a;">None listed</span></div>
-          <div style="margin-top: 4px;"><strong style="color: var(--text-muted);">Relationship:</strong> <span id="tdEmergencyRel" style="font-weight: 700; color: #0f172a;">N/A</span></div>
-          <div style="margin-top: 4px;"><strong style="color: var(--text-muted);">Contact Number:</strong> <span id="tdEmergencyPhone" style="font-weight: 700; color: #0f172a;">N/A</span></div>
-        </div>
-      </div>
-
-      <!-- 4. Uploaded Valid ID (Directly Visible, No Extra Click Needed; Strict Face Privacy: Live Scan Excluded) -->
-      <div style="background: var(--clay-input-bg); border-radius: var(--radius-md); padding: 14px; box-shadow: var(--clay-sunken-shadow); margin-bottom: 16px;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-          <div style="font-size: 13px; font-weight: 800; color: #0f172a; display: flex; align-items: center; gap: 6px;">
-            <span>📄</span> Uploaded Valid ID Image
-          </div>
-          <span id="tdIdType" style="font-size: 11.5px; font-weight: 700; color: var(--clay-primary-dark);">Government ID</span>
-        </div>
-        <div id="tdIdContainer" style="text-align: center; margin-top: 8px;">
-          <!-- Directly displays ID image or clean fallback -->
-        </div>
-      </div>
-
-      <!-- Actions -->
-      <div style="display: flex; gap: 10px; margin-top: 14px;">
-        <button type="button" class="clay-btn clay-btn-secondary" style="flex: 1;" onclick="closeTenantDetailsModal()">Close</button>
-        <button type="button" id="tdBtnDelete" class="btn-moveout-delete" style="flex: 1.5; padding: 12px; margin-top: 0;">
-          🗑️ Delete Account (Moved Out)
+      <!-- Footer Actions: Retain Move-Out / Settlement and Close Buttons -->
+      <div class="flex items-center justify-end gap-3 pt-4 border-t border-gray-200" style="display: flex; align-items: center; justify-content: flex-end; gap: 12px; padding-top: 16px; border-top: 1px solid #e2e8f0;">
+        <button type="button" class="clay-btn clay-btn-secondary px-5 py-2.5 text-xs font-bold" onclick="closeModal('tenantDetailsModal')" style="padding: 10px 20px; font-size: 12.5px; font-weight: 700;">
+          Close
         </button>
+        <button type="button" id="tdBtnDelete" class="btn-moveout-delete py-2.5 px-5 text-xs font-bold inline-flex items-center gap-2 m-0" style="padding: 10px 20px; font-size: 12.5px; font-weight: 700; margin: 0; display: inline-flex; align-items: center; gap: 8px;">
+          <i data-lucide="log-out" class="w-4 h-4" aria-hidden="true"></i>
+          <span>Mark as Moved Out</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- LIGHTBOX MODAL: FULL VALID ID IMAGE PREVIEW -->
+  <div class="modal-backdrop" id="viewIdImageModal" onclick="if(event.target === this) closeModal('viewIdImageModal')" style="display: none; align-items: center; justify-content: center; z-index: 99999;">
+    <div class="relative max-w-2xl w-[95%] bg-white rounded-2xl p-5 sm:p-6 shadow-2xl" onclick="event.stopPropagation()" style="background: #ffffff; border-radius: 20px; max-width: 620px; width: 95%; padding: 24px; box-shadow: 0 25px 60px rgba(0,0,0,0.3);">
+      <div class="flex justify-between items-center mb-4 pb-3 border-b border-gray-200" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid #e2e8f0;">
+        <h3 id="viewIdModalTitle" class="text-base sm:text-lg font-bold text-gray-900 flex items-center gap-2" style="font-size: 16px; font-weight: 800; color: #0f172a; margin: 0; display: flex; align-items: center; gap: 8px;">
+          <i data-lucide="id-card" class="w-5 h-5 text-gray-700"></i>
+          <span>Uploaded Valid ID Image</span>
+        </h3>
+        <button type="button" class="modal-close-btn text-gray-400 hover:text-gray-700 w-9 h-9 rounded-full flex items-center justify-center cursor-pointer border-0" onclick="closeModal('viewIdImageModal')" title="Close" aria-label="Close">
+          <i data-lucide="x" class="w-5 h-5" aria-hidden="true"></i>
+        </button>
+      </div>
+      <div id="viewIdModalBody" class="text-center p-2">
+        <img id="viewIdModalImg" src="" alt="Valid ID" class="max-w-full max-h-[70vh] rounded-lg mx-auto object-contain shadow-sm" style="max-width: 100%; max-height: 70vh; border-radius: 12px; margin: 0 auto; display: block;">
+        <div id="viewIdModalEmpty" class="hidden py-10 text-gray-400 text-sm font-medium" style="display: none; padding: 40px 0; color: #94a3b8; font-size: 14px;">
+          No valid ID photo uploaded yet.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- LIGHTBOX MODAL: FULL PROOF OF PAYMENT RECEIPT PREVIEW -->
+  <div class="modal-backdrop" id="viewReceiptImageModal" onclick="if(event.target === this) closeModal('viewReceiptImageModal')" style="display: none; align-items: center; justify-content: center; z-index: 99999;">
+    <div class="relative max-w-2xl w-[95%] bg-white rounded-2xl p-5 sm:p-6 shadow-2xl" onclick="event.stopPropagation()" style="background: #ffffff; border-radius: 20px; max-width: 620px; width: 95%; padding: 24px; box-shadow: 0 25px 60px rgba(0,0,0,0.3);">
+      <div class="flex justify-between items-center mb-4 pb-3 border-b border-gray-200" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid #e2e8f0;">
+        <h3 id="viewReceiptModalTitle" class="text-base sm:text-lg font-bold text-gray-900 flex items-center gap-2" style="font-size: 16px; font-weight: 800; color: #0f172a; margin: 0; display: flex; align-items: center; gap: 8px;">
+          <i data-lucide="receipt" class="w-5 h-5 text-gray-700"></i>
+          <span>Proof of Payment Receipt</span>
+        </h3>
+        <button type="button" class="modal-close-btn text-gray-400 hover:text-gray-700 w-9 h-9 rounded-full flex items-center justify-center cursor-pointer border-0" onclick="closeModal('viewReceiptImageModal')" title="Close" aria-label="Close">
+          <i data-lucide="x" class="w-5 h-5" aria-hidden="true"></i>
+        </button>
+      </div>
+      <div id="viewReceiptModalBody" class="text-center p-2">
+        <img id="viewReceiptModalImg" src="" alt="Proof of Payment" class="max-w-full max-h-[70vh] rounded-lg mx-auto object-contain shadow-sm" style="max-width: 100%; max-height: 70vh; border-radius: 12px; margin: 0 auto; display: block;">
+        <div id="viewReceiptModalEmpty" class="hidden py-10 text-gray-400 text-sm font-medium" style="display: none; padding: 40px 0; color: #94a3b8; font-size: 14px;">
+          No receipt photo on file for this billing record.
+        </div>
       </div>
     </div>
   </div>
@@ -2267,25 +2974,25 @@ $pendingReviewCount = count($pendingReviewPayments);
           <div>
             <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
               <h2 id="archivedModalName" style="font-size: 20px; font-weight: 800; color: #0f172a; margin: 0; line-height: 1.2;">Archived Tenant Name</h2>
-              <span id="archivedModalUsernameBadge" style="font-size: 12px; font-weight: 700; color: var(--clay-primary-dark); background: #e0e7ff; padding: 2px 8px; border-radius: 6px;">@RC001</span>
+              <span id="archivedModalUsernameBadge" style="font-size: 12px; font-weight: 700; color: #56380E; background: #F3E4C6; border: 1px solid rgba(181, 143, 83, 0.35); padding: 2px 8px; border-radius: 6px;">@RC001</span>
               <span class="clay-badge" style="background: #fee2e2; color: #991b1b; font-size: 11px; font-weight: 800; padding: 3px 10px;">ARCHIVED</span>
             </div>
-            <p id="archivedModalDeletedDate" style="font-size: 12.5px; color: var(--text-muted); margin: 4px 0 0 0;">Account deleted and archived on -</p>
+            <p id="archivedModalDeletedDate" style="font-size: 12.5px; color: var(--text-muted); margin: 4px 0 0 0;">Account archived on -</p>
           </div>
         </div>
-        <button type="button" class="btn-remove-file" onclick="closeArchivedTenantModal()" title="Close (Esc)" style="cursor: pointer; font-size: 18px; padding: 4px 8px; border-radius: 8px; border: none; background: transparent; color: var(--text-muted);">✕</button>
+        <button type="button" class="modal-close-btn btn-remove-file" onclick="closeModal('archivedTenantDetailsModal')" title="Close (Esc)" aria-label="Close"><i data-lucide="x" class="w-4 h-4" aria-hidden="true"></i></button>
       </div>
 
       <!-- Scrollable content sections -->
       <div style="display: flex; flex-direction: column; gap: 18px;">
 
         <!-- 1. PERSONAL INFORMATION & RENTAL INFORMATION (2 Columns) -->
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+        <div class="archived-info-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
           
           <!-- Card A: Personal Information -->
           <div style="background: var(--clay-input-bg, #f8fafc); border-radius: var(--radius-md, 12px); padding: 16px; box-shadow: var(--clay-sunken-shadow);">
             <div style="font-size: 12.5px; font-weight: 800; color: #0f172a; margin-bottom: 12px; display: flex; align-items: center; gap: 6px;">
-              <span>👤</span> Personal Information
+              <i data-lucide="user" class="w-4 h-4" aria-hidden="true"></i> Personal &amp; Contact Information
             </div>
             <div style="display: flex; flex-direction: column; gap: 8px; font-size: 13px;">
               <div><span style="color: var(--text-muted);">Full Name:</span> <strong id="archivedPersonalName" style="color: #0f172a;">-</strong></div>
@@ -2293,20 +3000,25 @@ $pendingReviewCount = count($pendingReviewPayments);
               <div><span style="color: var(--text-muted);">Contact Number:</span> <span id="archivedPersonalPhone" style="color: #334155; font-weight: 600;">-</span></div>
               <div><span style="color: var(--text-muted);">Complete Address:</span> <span id="archivedPersonalAddress" style="color: #334155; font-weight: 600;">-</span></div>
               <div><span style="color: var(--text-muted);">Date of Birth:</span> <strong id="archivedPersonalBirthday" style="color: #0f172a;">-</strong></div>
+              <div><span style="color: var(--text-muted);">Emergency Contact:</span> <span id="archivedPersonalEmergency" style="color: #334155; font-weight: 600;">-</span></div>
+              <div><span style="color: var(--text-muted);">Household Occupants:</span> <span id="archivedPersonalOccupants" style="color: #334155; font-weight: 600;">-</span></div>
             </div>
           </div>
 
           <!-- Card B: Rental Information -->
           <div style="background: var(--clay-input-bg, #f8fafc); border-radius: var(--radius-md, 12px); padding: 16px; box-shadow: var(--clay-sunken-shadow);">
             <div style="font-size: 12.5px; font-weight: 800; color: #0f172a; margin-bottom: 12px; display: flex; align-items: center; gap: 6px;">
-              <span>🏠</span> Rental Information
+              <i data-lucide="home" class="w-4 h-4" aria-hidden="true"></i> Rental &amp; Move-Out Information
             </div>
             <div style="display: flex; flex-direction: column; gap: 8px; font-size: 13px;">
-              <div><span style="color: var(--text-muted);">Assigned Unit:</span> <span class="clay-badge" id="archivedRentalUnit" style="background: #e0e7ff; color: #4338ca; font-weight: 800; font-size: 11.5px; padding: 2px 8px;">-</span></div>
-              <div><span style="color: var(--text-muted);">Date of Moving In:</span> <strong id="archivedRentalMoveIn" style="color: #0f172a;">-</strong></div>
+              <div><span style="color: var(--text-muted);">Assigned Unit:</span> <span class="clay-badge" id="archivedRentalUnit" style="background: #F3E4C6; color: #56380E; border: 1px solid rgba(181, 143, 83, 0.35); font-weight: 800; font-size: 11.5px; padding: 2px 8px;">-</span></div>
+              <div><span style="color: var(--text-muted);">Unit Assignment History:</span> <strong id="archivedRentalUnitHistory" style="color: #334155;">-</strong></div>
+              <div><span style="color: var(--text-muted);">Rented Spaces:</span> <span id="archivedRentalSpaces" style="color: #334155; font-weight: 600;">None</span></div>
               <div><span style="color: var(--text-muted);">Monthly Rent:</span> <strong id="archivedRentalMonthlyRent" style="color: #0f172a;">₱3,000.00 / mo</strong></div>
               <div><span style="color: var(--text-muted);">Advance Deposit:</span> <strong id="archivedRentalDeposit" style="color: #047857;">₱3,000.00</strong></div>
               <div><span style="color: var(--text-muted);">Account Created:</span> <span id="archivedRentalCreatedAt" style="color: #334155; font-weight: 600;">-</span></div>
+              <div><span style="color: var(--text-muted);">Date of Moving In:</span> <strong id="archivedRentalMoveIn" style="color: #0f172a;">-</strong></div>
+              <div><span style="color: var(--text-muted);">Move-Out Date:</span> <strong id="archivedRentalMoveOut" style="color: #92400e;">-</strong></div>
               <div><span style="color: var(--text-muted);">Date Archived:</span> <span id="archivedRentalDeletedAt" style="color: #be123c; font-weight: 700;">-</span></div>
             </div>
           </div>
@@ -2321,7 +3033,7 @@ $pendingReviewCount = count($pendingReviewPayments);
           </div>
           <div>
             <div style="font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Account Status</div>
-            <span class="clay-badge" style="background: #fee2e2; color: #991b1b; font-weight: 800; font-size: 11.5px; padding: 3px 10px;">Archived (Moved Out)</span>
+            <span class="clay-badge" id="archivedAccountRentalStatus" style="background: #fee2e2; color: #991b1b; font-weight: 800; font-size: 11.5px; padding: 3px 10px;">Archived (Moved Out)</span>
           </div>
           <div>
             <div style="font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">ID Verification</div>
@@ -2329,11 +3041,11 @@ $pendingReviewCount = count($pendingReviewPayments);
           </div>
         </div>
 
-        <!-- 3. PAYMENT RECORDS (Historical Payments) -->
+        <!-- 3. PAYMENT RECORDS (Historical Payments & Advance Deposit) -->
         <div>
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
             <div style="font-size: 13px; font-weight: 800; color: #0f172a; display: flex; align-items: center; gap: 6px;">
-              <span>💳</span> Previous Payment History &amp; Billing Records
+              <i data-lucide="credit-card" class="w-4 h-4" aria-hidden="true"></i> Previous Payment History &amp; Billing Records
             </div>
             <span id="archivedPaymentCountBadge" class="clay-badge" style="font-size: 11px; background: #f1f5f9; color: #475569; font-weight: 700;">
               0 Records
@@ -2345,18 +3057,19 @@ $pendingReviewCount = count($pendingReviewPayments);
               <table style="width: 100%; border-collapse: collapse; font-size: 12.5px; text-align: left;">
                 <thead style="position: sticky; top: 0; z-index: 10;">
                   <tr style="border-bottom: 1.5px solid rgba(166, 180, 204, 0.3); background: #f1f5f9; color: var(--text-muted); font-weight: 700;">
-                    <th style="padding: 10px 14px;">Billing Month</th>
-                    <th style="padding: 10px 14px;">Amount Due</th>
-                    <th style="padding: 10px 14px;">Amount Paid</th>
-                    <th style="padding: 10px 14px;">Payment Date</th>
-                    <th style="padding: 10px 14px;">Payment Method</th>
-                    <th style="padding: 10px 14px;">Status</th>
-                    <th style="padding: 10px 14px; text-align: center;">Receipt / Proof</th>
+                    <th style="padding: 9px 10px;">Billing Month</th>
+                    <th style="padding: 9px 10px;">Type / Unit</th>
+                    <th style="padding: 9px 10px;">Amount Due</th>
+                    <th style="padding: 9px 10px;">Amount Paid</th>
+                    <th style="padding: 9px 10px;">Payment Date</th>
+                    <th style="padding: 9px 10px;">Payment Method</th>
+                    <th style="padding: 9px 10px;">Status</th>
+                    <th style="padding: 9px 10px; text-align: center; white-space: nowrap;">Receipt / Proof</th>
                   </tr>
                 </thead>
                 <tbody id="archivedPaymentsList">
                   <tr>
-                    <td colspan="7" style="text-align: center; padding: 24px 14px; color: var(--text-muted);">
+                    <td colspan="8" style="text-align: center; padding: 24px 14px; color: var(--text-muted);">
                       Loading payment records...
                     </td>
                   </tr>
@@ -2366,11 +3079,29 @@ $pendingReviewCount = count($pendingReviewPayments);
           </div>
         </div>
 
-        <!-- 4. MODAL FOOTER & ARCHIVED TENANT FUNCTIONS -->
+        <!-- 4. MAINTENANCE TICKETS HISTORY -->
+        <div>
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+            <div style="font-size: 13px; font-weight: 800; color: #0f172a; display: flex; align-items: center; gap: 6px;">
+              <i data-lucide="wrench" class="w-4 h-4" aria-hidden="true"></i> Previous Maintenance Tickets
+            </div>
+            <span id="archivedTicketCountBadge" class="clay-badge" style="font-size: 11px; background: #f1f5f9; color: #475569; font-weight: 700;">
+              0 Tickets
+            </span>
+          </div>
+
+          <div id="archivedTicketsList" style="background: var(--clay-input-bg, #f8fafc); border-radius: var(--radius-md, 12px); padding: 12px; box-shadow: var(--clay-sunken-shadow); border: 1px solid rgba(166, 180, 204, 0.2); max-height: 240px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px;">
+            <div style="text-align: center; padding: 18px 12px; color: var(--text-muted); font-size: 12.5px;">
+              Loading maintenance tickets...
+            </div>
+          </div>
+        </div>
+
+        <!-- 5. MODAL FOOTER & ARCHIVED TENANT FUNCTIONS -->
         <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid rgba(166, 180, 204, 0.25); padding-top: 16px; margin-top: 6px; flex-wrap: wrap; gap: 12px;">
           <div>
-            <button type="button" id="btnPermanentDeleteArchived" class="btn-moveout-delete" style="padding: 9px 16px; font-size: 12.5px; margin: 0;" onclick="submitPermanentDeleteArchived()">
-              🗑️ Permanently Delete Account
+            <button type="button" id="btnPermanentDeleteArchived" class="btn-moveout-delete" style="padding: 9px 16px; font-size: 12.5px; margin: 0; display: inline-flex; align-items: center; gap: 6px;" onclick="submitPermanentDeleteArchived()">
+              <i data-lucide="trash-2" class="w-4 h-4" aria-hidden="true"></i> Permanently Delete Account
             </button>
           </div>
           <div style="display: flex; gap: 10px; align-items: center;">
@@ -2378,7 +3109,7 @@ $pendingReviewCount = count($pendingReviewPayments);
               Close
             </button>
             <button type="button" id="btnRestoreArchivedAccount" class="clay-btn clay-btn-primary" style="padding: 10px 22px; font-size: 13px; font-weight: 800; background: linear-gradient(135deg, #059669, #047857); border-color: #047857;" onclick="submitRestoreArchivedAccount()">
-              <span>♻️ Restore Account</span>
+              <span style="display:inline-flex;align-items:center;gap:6px;"><i data-lucide="rotate-ccw" class="w-4 h-4" aria-hidden="true"></i> Restore Account</span>
             </button>
           </div>
         </div>
@@ -2394,15 +3125,15 @@ $pendingReviewCount = count($pendingReviewPayments);
     <div class="owner-delete-modal-box" onclick="event.stopPropagation()">
       <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 16px;">
         <div style="display: flex; align-items: center; gap: 12px;">
-          <div style="width: 44px; height: 44px; border-radius: 14px; background: linear-gradient(135deg, #ffe4e6, #fecdd3); color: #be123c; display: flex; align-items: center; justify-content: center; font-size: 20px; flex-shrink: 0; box-shadow: var(--clay-button-shadow);">
-            🔐
+          <div style="width: 44px; height: 44px; border-radius: 14px; background: linear-gradient(135deg, #ffe4e6, #fecdd3); color: #be123c; display: flex; align-items: center; justify-content: center; flex-shrink: 0; box-shadow: var(--clay-button-shadow);">
+            <i data-lucide="shield-alert" class="w-5 h-5" aria-hidden="true"></i>
           </div>
           <div>
             <h2 id="ownerDeleteModalTitle" style="font-size: 18px; font-weight: 800; color: #0f172a; margin: 0; line-height: 1.25;">Confirm Tenant Account Deletion</h2>
             <p style="font-size: 12.5px; color: var(--text-muted); margin: 2px 0 0 0;">Owner password verification is required before proceeding</p>
           </div>
         </div>
-        <button type="button" class="btn-remove-file" onclick="closeOwnerDeleteConfirmModal()" title="Close (Esc)" style="cursor: pointer; font-size: 18px; padding: 4px 8px; border-radius: 8px; border: none; background: transparent; color: var(--text-muted);">✕</button>
+        <button type="button" class="modal-close-btn btn-remove-file" onclick="closeModal('ownerDeleteConfirmModal')" title="Close (Esc)" aria-label="Close"><i data-lucide="x" class="w-4 h-4" aria-hidden="true"></i></button>
       </div>
 
       <!-- Target Tenant Context Box -->
@@ -2416,7 +3147,7 @@ $pendingReviewCount = count($pendingReviewPayments);
 
       <!-- Permanent Action Warning -->
       <div style="background: #fff1f2; border: 1.5px solid #fecdd3; border-radius: 12px; padding: 12px 14px; margin-bottom: 16px; display: flex; align-items: flex-start; gap: 10px;">
-        <span style="font-size: 17px; line-height: 1.2; flex-shrink: 0;">⚠️</span>
+        <span style="line-height: 1.2; flex-shrink: 0; color: #be123c;"><i data-lucide="alert-triangle" class="w-4 h-4" aria-hidden="true"></i></span>
         <p id="ownerDeleteWarningText" style="margin: 0; font-size: 12.5px; color: #881337; line-height: 1.45; font-weight: 600;">
           Deleting this tenant account is a permanent action and cannot be undone.
         </p>
@@ -2440,8 +3171,8 @@ $pendingReviewCount = count($pendingReviewPayments);
                     onclick="toggleOwnerDeletePasswordVisibility()"
                     aria-label="Show password"
                     title="Show / Hide Password"
-                    style="position: absolute; right: 10px; background: transparent; border: none; color: #64748b; cursor: pointer; font-size: 14px; padding: 4px 6px; font-weight: 700;">
-              👁️
+                    style="position: absolute; right: 10px; background: transparent; border: none; color: #64748b; cursor: pointer; padding: 4px 6px; display: inline-flex; align-items: center;">
+              <i data-lucide="eye" class="w-4 h-4" aria-hidden="true"></i>
             </button>
           </div>
         </div>
@@ -2453,7 +3184,128 @@ $pendingReviewCount = count($pendingReviewPayments);
             Cancel
           </button>
           <button type="submit" id="btnConfirmOwnerDelete" class="clay-btn clay-btn-primary" style="flex: 1.4; padding: 11px; background: linear-gradient(135deg, #e11d48, #be123c); border-color: #be123c; color: #ffffff; font-weight: 800; box-shadow: 0 6px 16px rgba(225, 29, 72, 0.3);">
-            <span>🗑️ Confirm Delete</span>
+            <span style="display:inline-flex;align-items:center;gap:6px;"><i data-lucide="trash-2" class="w-4 h-4" aria-hidden="true"></i> Confirm Delete</span>
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- =====================================================================
+       MODAL: CONFIRM TENANT MOVE-OUT & AUTOMATIC ARCHIVING AUDIT
+       ===================================================================== -->
+  <div class="modal-backdrop" id="moveOutConfirmModal" onclick="handleMoveOutBackdropClick(event)">
+    <div class="moveout-modal-box" onclick="event.stopPropagation()">
+      <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 16px;">
+        <div style="display: flex; align-items: center; gap: 12px;">
+          <div style="width: 44px; height: 44px; border-radius: 14px; background: linear-gradient(135deg, #F5D99E, #D8BD94); color: #56380E; display: flex; align-items: center; justify-content: center; flex-shrink: 0; box-shadow: var(--clay-button-shadow); border: 1px solid rgba(181, 143, 83, 0.4);">
+            <i data-lucide="log-out" class="w-5 h-5" aria-hidden="true"></i>
+          </div>
+          <div>
+            <h2 id="moModalTitle" style="font-size: 18px; font-weight: 800; color: #302313; margin: 0; line-height: 1.25;">Confirm Tenant Move-Out</h2>
+            <p style="font-size: 12.5px; color: var(--text-muted); margin: 2px 0 0 0;">Verify payment settlement before automatic transfer to Archived Tenants</p>
+          </div>
+        </div>
+        <button type="button" class="modal-close-btn btn-remove-file" onclick="closeModal('moveOutConfirmModal')" title="Close (Esc)" aria-label="Close"><i data-lucide="x" class="w-4 h-4" aria-hidden="true"></i></button>
+      </div>
+
+      <!-- Target Tenant & Assigned Unit Context -->
+      <div style="background: var(--clay-input-bg, #f8fafc); border: 1px solid rgba(181, 143, 83, 0.3); border-radius: 14px; padding: 14px 16px; margin-bottom: 14px;">
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;">
+          <div>
+            <div style="font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.4px; color: var(--text-muted); margin-bottom: 3px;">Tenant &amp; Assigned Unit</div>
+            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+              <span id="moTenantName" style="font-size: 16px; font-weight: 800; color: #0f172a;">Tenant Name</span>
+              <span id="moTenantUsername" style="font-size: 11.5px; font-weight: 700; color: #56380E; background: #F3E4C6; border: 1px solid rgba(181, 143, 83, 0.35); padding: 2px 8px; border-radius: 6px;">@RC000</span>
+            </div>
+          </div>
+          <span id="moUnitBadge" class="clay-badge" style="background: #F3E4C6; color: #56380E; border: 1px solid rgba(181, 143, 83, 0.4); font-size: 12px; font-weight: 800; padding: 5px 12px;">Unit N/A</span>
+        </div>
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; padding-top: 10px; border-top: 1px dashed rgba(181, 143, 83, 0.28); flex-wrap: wrap;">
+          <div style="font-size: 12px; color: var(--text-muted);">
+            Move-In Date: <strong id="moMoveInDate" style="color: #0f172a;">—</strong>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <label for="moMoveOutDate" style="font-size: 12px; font-weight: 700; color: #56380E; margin: 0;">Official Move-Out Date:</label>
+            <input type="date" id="moMoveOutDate" class="clay-input" style="padding: 5px 10px; font-size: 12.5px; width: auto; height: auto;" required>
+          </div>
+        </div>
+      </div>
+
+      <!-- Loading Audit Indicator -->
+      <div id="moLoadingState" style="display: flex; align-items: center; justify-content: center; gap: 10px; padding: 22px 12px; color: var(--text-muted); font-size: 13px;">
+        <span class="clay-spinner" style="width: 18px; height: 18px; border-width: 2px;"></span>
+        <span>Auditing outstanding bills and pending payment verifications...</span>
+      </div>
+
+      <!-- Settlement Audit Content -->
+      <div id="moSettlementContainer" style="display: none;">
+        <div style="font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.4px; color: #56380E; margin-bottom: 8px;">
+          Financial &amp; Verification Status
+        </div>
+
+        <div class="moveout-audit-grid">
+          <div style="background: #FFF9EE; border: 1px solid rgba(181, 143, 83, 0.35); border-radius: 12px; padding: 10px 12px; text-align: center;">
+            <div style="font-size: 11px; color: var(--text-muted); font-weight: 700;">Unpaid / Overdue Bills</div>
+            <div id="moUnpaidCount" style="font-size: 18px; font-weight: 800; color: #302313; margin-top: 2px;">0</div>
+          </div>
+          <div style="background: #FFF9EE; border: 1px solid rgba(181, 143, 83, 0.35); border-radius: 12px; padding: 10px 12px; text-align: center;">
+            <div style="font-size: 11px; color: var(--text-muted); font-weight: 700;">Pending Verifications</div>
+            <div id="moPendingCount" style="font-size: 18px; font-weight: 800; color: #302313; margin-top: 2px;">0</div>
+          </div>
+          <div style="background: #FFF9EE; border: 1px solid rgba(181, 143, 83, 0.35); border-radius: 12px; padding: 10px 12px; text-align: center;">
+            <div style="font-size: 11px; color: var(--text-muted); font-weight: 700;">Outstanding Balance</div>
+            <div id="moOutstandingBalance" style="font-size: 17px; font-weight: 800; color: #302313; margin-top: 2px;">₱0.00</div>
+          </div>
+        </div>
+
+        <!-- Itemized Unsettled Obligations List -->
+        <div id="moUnsettledListWrap" style="display: none; background: #fff; border: 1px solid #fecdd3; border-radius: 12px; overflow: hidden; margin-bottom: 12px;">
+          <div style="background: #fff1f2; padding: 8px 12px; font-size: 11.5px; font-weight: 800; color: #9f1239; border-bottom: 1px solid #fecdd3;">
+            Unsettled Bills &amp; Pending Receipts
+          </div>
+          <div id="moUnsettledList" style="max-height: 150px; overflow-y: auto; font-size: 12.5px;"></div>
+        </div>
+
+        <!-- Settlement Status / Warning Banner -->
+        <div id="moWarningBanner" style="border-radius: 12px; padding: 12px 14px; margin-bottom: 14px; display: flex; align-items: flex-start; gap: 10px;">
+          <span id="moWarningIcon" style="line-height: 1.2; flex-shrink: 0;"><i data-lucide="check-circle-2" class="w-4 h-4" aria-hidden="true"></i></span>
+          <p id="moWarningText" style="margin: 0; font-size: 12.5px; line-height: 1.45; font-weight: 600;">
+            Checking settlement...
+          </p>
+        </div>
+      </div>
+
+      <form id="moveOutConfirmForm" onsubmit="event.preventDefault(); submitMoveOutConfirmation();">
+        <label style="display: flex; align-items: flex-start; gap: 10px; background: #FFFDF8; border: 1.5px solid rgba(181, 143, 83, 0.4); border-radius: 12px; padding: 12px 14px; cursor: pointer; margin-bottom: 12px;">
+          <input type="checkbox" id="moSettlementConfirmCheckbox" style="margin-top: 2px; width: 16px; height: 16px; accent-color: #B58F53; flex-shrink: 0;">
+          <span style="font-size: 12.5px; color: #302313; font-weight: 600; line-height: 1.45;">
+            I confirm that the tenant is moving out on the selected date and I have checked whether all outstanding bills and pending payments have been fully settled.
+          </span>
+        </label>
+
+        <!-- Landlord Password Verification Field -->
+        <div class="form-group" style="margin-bottom: 14px;">
+          <label class="form-label" for="moOwnerPasswordInput" style="font-size: 12.5px; font-weight: 800; color: #56380E; display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+            <span>Authorize Move-Out (Landlord Password) <span style="color: #b91c1c;">*</span></span>
+            <span style="font-size: 11px; font-weight: 600; color: var(--text-muted);">Required for authorization</span>
+          </label>
+          <div style="position: relative; display: flex; align-items: center;">
+            <input type="password" id="moOwnerPasswordInput" name="owner_password" class="clay-input" placeholder="Enter your Landlord account password" autocomplete="current-password" required style="padding-right: 46px; width: 100%;">
+            <button type="button" id="btnToggleMoOwnerPass" onclick="toggleMoPasswordVisibility()" aria-label="Show password" title="Show / Hide Password" style="position: absolute; right: 10px; background: transparent; border: none; color: #64748b; cursor: pointer; padding: 4px 6px; display: inline-flex; align-items: center;">
+              <i data-lucide="eye" class="w-4 h-4" aria-hidden="true"></i>
+            </button>
+          </div>
+        </div>
+
+        <div id="moErrorAlert" style="display: none; background: #fef2f2; border: 1px solid #fecaca; color: #b91c1c; border-radius: 10px; padding: 10px 12px; font-size: 12.5px; font-weight: 700; margin-bottom: 12px; line-height: 1.45;"></div>
+
+        <div style="display: flex; gap: 10px; margin-top: 14px;">
+          <button type="button" id="btnCancelMoveOut" class="clay-btn clay-btn-secondary" style="flex: 1; padding: 11px;" onclick="closeModal('moveOutConfirmModal')">
+            Cancel
+          </button>
+          <button type="submit" id="btnConfirmMoveOut" class="clay-btn clay-btn-primary" style="flex: 1.5; padding: 11px; font-weight: 800;">
+            <span style="display:inline-flex;align-items:center;gap:6px;"><i data-lucide="check-circle-2" class="w-4 h-4" aria-hidden="true"></i> Confirm Move-Out</span>
           </button>
         </div>
       </form>
@@ -2464,10 +3316,10 @@ $pendingReviewCount = count($pendingReviewPayments);
     <div class="clay-modal" style="max-width: 560px;">
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
         <div>
-          <h2 style="font-size: 20px; font-weight: 800; color: #0f172a;">📢 Send Rent Due Announcement</h2>
+          <h2 style="font-size: 20px; font-weight: 800; color: #0f172a; display: flex; align-items: center; gap: 8px;"><i data-lucide="megaphone" class="w-5 h-5" aria-hidden="true"></i> Send Rent Due Announcement</h2>
           <p style="font-size: 12.5px; color: var(--text-muted); margin-top: 2px;">Broadcast rental reminders and instructions to tenants via email</p>
         </div>
-        <button type="button" class="btn-remove-file" onclick="closeAnnouncementModal()">✕</button>
+        <button type="button" class="modal-close-btn btn-remove-file" onclick="closeModal('announcementModal')" title="Close" aria-label="Close"><i data-lucide="x" class="w-4 h-4" aria-hidden="true"></i></button>
       </div>
 
       <form id="announcementForm" onsubmit="event.preventDefault(); submitAnnouncement();">
@@ -2524,7 +3376,7 @@ $pendingReviewCount = count($pendingReviewPayments);
 
   <!-- Clay Toast Notification -->
   <div class="clay-toast" id="clayToast">
-    <span class="toast-icon" id="toastIcon">✨</span>
+    <span class="toast-icon" id="toastIcon"><i data-lucide="check-circle-2" class="w-4 h-4" aria-hidden="true"></i></span>
     <span class="toast-message" id="toastMessage">Done</span>
   </div>
 
@@ -2532,34 +3384,81 @@ $pendingReviewCount = count($pendingReviewPayments);
   <script>
     function showToast(msg, type = 'success') {
       const t = document.getElementById('clayToast');
+      const iconEl = document.getElementById('toastIcon');
+      if (iconEl) {
+        if (type === 'error') {
+          iconEl.innerHTML = window.rcIcon('alert-triangle', 'w-4 h-4');
+          iconEl.style.color = '#dc2626';
+        } else if (type === 'info') {
+          iconEl.innerHTML = window.rcIcon('info', 'w-4 h-4');
+          iconEl.style.color = '#0284c7';
+        } else {
+          iconEl.innerHTML = window.rcIcon('check-circle-2', 'w-4 h-4');
+          iconEl.style.color = '#059669';
+        }
+      }
       document.getElementById('toastMessage').textContent = msg;
       t.classList.add('show');
       setTimeout(() => t.classList.remove('show'), 3500);
     }
 
-    // Single Unified Retractable Sidebar Toggle System (Strictly 1 Toggle in DOM)
-    function toggleSidebar() {
-      const sidebar = document.getElementById('appSidebar');
-      const overlay = document.querySelector('.sidebar-overlay');
-      if (window.innerWidth <= 960) {
-        sidebar.classList.toggle('mobile-open');
-        if (overlay) overlay.classList.toggle('active');
-      } else {
-        sidebar.classList.toggle('retracted');
+    // Global Modal Controller: Open & Close Modal with Hidden State
+    function openModal(modalId) {
+      const modal = typeof modalId === 'string' ? document.getElementById(modalId) : modalId;
+      if (!modal) return;
+      modal.classList.remove('hidden');
+      modal.classList.add('open');
+      modal.style.display = 'flex';
+      modal.style.pointerEvents = 'auto';
+      if (window.lucide && typeof window.lucide.createIcons === 'function') {
+        window.lucide.createIcons();
       }
     }
+    window.openModal = openModal;
 
-    function closeSidebarMobile() {
-      const sidebar = document.getElementById('appSidebar');
-      const overlay = document.querySelector('.sidebar-overlay');
-      if (sidebar) sidebar.classList.remove('mobile-open');
-      if (overlay) overlay.classList.remove('active');
+    function closeModal(modalId) {
+      const modal = typeof modalId === 'string' ? document.getElementById(modalId) : modalId;
+      if (!modal) return;
+      modal.classList.add('hidden');
+      modal.classList.remove('open', 'active');
+      modal.style.display = 'none';
+      modal.style.pointerEvents = 'none';
+      document.body.style.overflow = '';
+
+      const id = modal.id;
+      if (id === 'paymentDetailsModal' && typeof closePaymentDetailsModal === 'function') closePaymentDetailsModal(true);
+      else if (id === 'configureRentModal' && typeof closeConfigureRentModal === 'function') closeConfigureRentModal(true);
+      else if (id === 'addTenantModal' && typeof closeAddTenantModal === 'function') closeAddTenantModal(true);
+      else if (id === 'tenantCredentialsModal' && typeof closeCredentialsModalAndReload === 'function') closeCredentialsModalAndReload();
+      else if (id === 'ticketDetailsModal' && typeof closeTicketDetailsModal === 'function') closeTicketDetailsModal(true);
+      else if (id === 'reportDetailsModal' && typeof closeReportDetailsModal === 'function') closeReportDetailsModal(true);
+      else if (id === 'tenantDetailsModal' && typeof closeTenantDetailsModal === 'function') closeTenantDetailsModal(true);
+      else if (id === 'archivedTenantDetailsModal' && typeof closeArchivedTenantModal === 'function') closeArchivedTenantModal(true);
+      else if (id === 'ownerDeleteConfirmModal' && typeof closeOwnerDeleteConfirmModal === 'function') closeOwnerDeleteConfirmModal(true);
+      else if (id === 'moveOutConfirmModal' && typeof closeMoveOutConfirmModal === 'function') closeMoveOutConfirmModal(true);
+      else if (id === 'announcementModal' && typeof closeAnnouncementModal === 'function') closeAnnouncementModal(true);
     }
+    window.closeModal = closeModal;
+
+    // Universal Close Button Click Listener (Capturing phase guarantees all "X" buttons work)
+    document.addEventListener('click', function(e) {
+      const closeBtn = e.target.closest('.modal-close-btn, .btn-remove-file, .btn-icon-close, .resident-reg-close, .tararent-modal-close-btn, [data-modal-close], button[aria-label="Close"], button[title*="Close"]');
+      if (closeBtn) {
+        if (closeBtn.id === 'btnRemoveFile') return;
+        const modal = closeBtn.closest('.modal-backdrop');
+        if (modal && modal.id && typeof window.closeModal === 'function') {
+          e.preventDefault();
+          e.stopPropagation();
+          window.closeModal(modal.id);
+        }
+      }
+    }, true);
+
+    // Sidebar Toggle & Active-State Controller provided by assets/js/sidebar.js
 
     // Sidebar Section Switching:
     // 1. Fully Clickable: Navigates smoothly to the target section and activates the clicked sidebar tab.
-    // 2. Persistent Sidebar State: When these sidebar tabs or buttons are clicked, the sidebar must NOT auto-collapse.
-    //    The sidebar strictly remains open and only collapses or hides when the main toggle button (☰) is explicitly clicked.
+    // 2. Persistent Sidebar State: Desktop collapse state strictly changes only when the toggle button is clicked.
     function switchSection(sectionId, btn, updateUrl = true) {
       if (!sectionId) return;
 
@@ -2576,39 +3475,42 @@ $pendingReviewCount = count($pendingReviewPayments);
       }
 
       document.querySelectorAll('.app-view-section').forEach(s => s.classList.remove('active-section'));
-      document.querySelectorAll('.sidebar-nav-item').forEach(b => b.classList.remove('active'));
 
       const target = document.getElementById(sectionId);
       if (target) {
         target.classList.add('active-section');
       }
 
-      let activeBtn = btn;
-      if (!activeBtn) {
-        activeBtn = document.querySelector(`.sidebar-nav-item[data-section="${sectionId}"]`) ||
-                    document.querySelector(`.sidebar-nav-item[onclick*="${sectionId}"]`);
-      }
-      if (activeBtn) {
-        activeBtn.classList.add('active');
+      if (typeof window.setActiveSidebarNavItem === 'function') {
+        window.setActiveSidebarNavItem(sectionId, btn);
       }
 
       if (sectionId === 'sectionAnalytics') {
         loadDashboardAnalytics();
+      } else if (sectionId === 'sectionDirectory' && typeof fetchActiveDirectoryUnits === 'function') {
+        fetchActiveDirectoryUnits();
+      } else if (sectionId === 'sectionTickets' && typeof fetchMaintenanceTickets === 'function') {
+        fetchMaintenanceTickets(true);
+      } else if (sectionId === 'sectionReports' && typeof fetchTenantReports === 'function') {
+        fetchTenantReports(true);
       }
 
-      // Hide Settings button when leaving profile section
+      // Synchronize profile name elements
       updateProfileSettingsVisibility(false);
 
       // Universal Contextual Routing: update URL to reflect current sidebar category
       if (updateUrl && window.history && window.history.replaceState) {
-        history.replaceState(null, '', `admin_dashboard.php?section=${sectionId}`);
+        try {
+          history.replaceState(null, '', `admin_dashboard.php?section=${sectionId}`);
+        } catch (err) {}
       }
 
       closeSettingsMenu();
+      closeGlobalSearchDropdown();
 
-      // Persistent Sidebar State:
-      // The sidebar must NOT auto-collapse on navigation.
-      // It remains open and strictly only collapses when the main toggle button (☰) is explicitly clicked.
+      if (window.innerWidth <= 960) {
+        closeSidebarMobile();
+      }
     }
 
     // Synchronize user profile information and settings state
@@ -2636,6 +3538,7 @@ $pendingReviewCount = count($pendingReviewPayments);
       if (typeof closeNotificationPanel === 'function') {
         closeNotificationPanel();
       }
+      closeGlobalSearchDropdown();
       const d = document.getElementById('settingsDropdown');
       if (d) d.classList.toggle('show');
     }
@@ -2643,6 +3546,11 @@ $pendingReviewCount = count($pendingReviewPayments);
     function closeSettingsMenu() {
       const d = document.getElementById('settingsDropdown');
       if (d) d.classList.remove('show');
+    }
+
+    function closeGlobalSearchDropdown() {
+      const dd = document.getElementById('globalSearchDropdown');
+      if (dd) dd.classList.remove('open');
     }
 
     document.addEventListener('click', (e) => {
@@ -2654,8 +3562,12 @@ $pendingReviewCount = count($pendingReviewPayments);
           !e.target.closest('#notificationDropdown')) {
         closeSettingsMenu();
       }
+      if (!e.target.closest('.top-nav-search-wrap')) {
+        closeGlobalSearchDropdown();
+      }
     });
 
+    // Profile View & Internal Sub-Sidebar Navigation
     // Profile View & Internal Sub-Sidebar Navigation (Sidebar strictly remains open and persistent)
     function openProfileView(tab = 'accountInfo', updateUrl = true) {
       document.querySelectorAll('.app-view-section').forEach(s => s.classList.remove('active-section'));
@@ -2776,27 +3688,144 @@ $pendingReviewCount = count($pendingReviewPayments);
       }
     });
 
-    // Folder View Controls (Tenant Directory 3 Folders Interface)
-    function openUnitFolder(unitId) {
-      document.getElementById('directoryFoldersView').style.display = 'none';
-      document.getElementById('directoryFolderDetailView').style.display = 'block';
-      document.querySelectorAll('.unit-folder-content').forEach(el => el.style.display = 'none');
-      const target = document.getElementById('unit-detail-folder-' + unitId);
-      if (target) {
-        target.style.display = 'block';
+    // =========================================================================
+    // TENANT DIRECTORY: UNIT CARDS GRID & REAL-TIME PAYMENT SETTLEMENT STATUS
+    // =========================================================================
+    window.directoryUnitsData = <?= json_encode(array_values($unitsWithTenants), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+    let isDirectoryUnitsFetching = false;
+
+    function formatBathCount(val) {
+      const n = parseFloat(val);
+      if (Number.isNaN(n) || n <= 0) return '1';
+      return Number.isInteger(n) ? String(n) : String(n).replace(/\.0+$/, '');
+    }
+
+    function renderDirectoryUnitsGrid(units = window.directoryUnitsData) {
+      const gridEl = document.getElementById('directoryUnitsGrid');
+      const counterEl = document.getElementById('directoryActiveUnitsCounter');
+      const tabBadgeEl = document.getElementById('directoryActiveCountBadge');
+      const list = Array.isArray(units) ? units : [];
+
+      const activeUnitsCount = list.filter(u => Array.isArray(u.tenants) && u.tenants.length > 0).length;
+      if (counterEl) {
+        counterEl.textContent = `${activeUnitsCount} active unit${activeUnitsCount === 1 ? '' : 's'}`;
       }
-      history.replaceState(null, '', `admin_dashboard.php?section=sectionDirectory&unit_id=${unitId}`);
+      if (tabBadgeEl) {
+        tabBadgeEl.textContent = String(activeUnitsCount);
+      }
+
+      if (!gridEl) return;
+
+      gridEl.innerHTML = list.map(u => {
+        const uId = parseInt(u.unit_id || u.id, 10);
+        const tenants = Array.isArray(u.tenants) ? u.tenants : [];
+        const isOccupied = tenants.length > 0;
+        const primary = isOccupied ? tenants[0] : null;
+        const isPaidUp = isOccupied ? !!(typeof u.is_paid_up === 'boolean' ? u.is_paid_up : (primary && primary.is_paid_up)) : false;
+        const cardClass = isOccupied ? 'unit-dir-card--occupied' : 'unit-dir-card--available';
+        const pillClass = !isOccupied
+          ? 'unit-dir-status-pill--available'
+          : (isPaidUp ? 'unit-dir-status-pill--paid' : 'unit-dir-status-pill--unpaid');
+        const pillText = isOccupied ? 'OCCUPIED' : 'AVAILABLE';
+        const cardState = !isOccupied ? 'available' : (isPaidUp ? 'occupied_paid' : 'occupied_unpaid');
+        const brCount = parseInt(u.bedrooms, 10) || 1;
+        const crCount = formatBathCount(u.bathrooms);
+        const unitLabel = String(u.unit_number || ('Unit ' + uId)).toUpperCase();
+        const isMovedOutPending = !!(primary && (primary.rental_status || 'active') === 'moved_out');
+
+        return `
+          <article class="unit-dir-card ${cardClass}"
+                   id="unit-directory-card-${uId}"
+                   data-unit-id="${uId}"
+                   data-card-state="${cardState}"
+                   tabindex="0"
+                   role="button"
+                   aria-label="${escapeHtml(String(u.unit_number || 'Unit'))} - ${pillText}"
+                   onclick="handleUnitCardClick(${uId})"
+                   onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();handleUnitCardClick(${uId});}">
+            <div class="unit-dir-header">
+              <h2 class="unit-dir-title">${escapeHtml(unitLabel)}</h2>
+              <div class="unit-dir-specs">${brCount} BR | ${escapeHtml(crCount)} CR</div>
+              ${isOccupied && primary ? `
+                <div class="unit-dir-occupant">OCCUPANT: ${escapeHtml(String(primary.name || 'Tenant').toUpperCase())}</div>
+                ${isMovedOutPending ? '<span class="unit-dir-movedout-tag">Moved Out (Pending Settlement)</span>' : ''}
+              ` : ''}
+            </div>
+            ${isOccupied ? '<div class="unit-dir-divider"></div>' : ''}
+            <div class="unit-dir-footer">
+              <span class="unit-dir-status-pill ${pillClass}" id="unit-folder-badge-${uId}">${pillText}</span>
+            </div>
+          </article>
+        `;
+      }).join('');
+    }
+
+    async function fetchActiveDirectoryUnits() {
+      if (isDirectoryUnitsFetching) return;
+      isDirectoryUnitsFetching = true;
+      try {
+        const res = await fetch('api/tenant_directory_api.php?action=list_active', { cache: 'no-store' });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data && data.status === 'success' && Array.isArray(data.units)) {
+          window.directoryUnitsData = data.units;
+          if (Array.isArray(data.occupied_unit_ids)) {
+            occupiedUnitIds = data.occupied_unit_ids.map(id => parseInt(id, 10));
+          }
+          const flatTenants = [];
+          data.units.forEach(u => {
+            (u.tenants || []).forEach(t => {
+              flatTenants.push({ ...t, unit_id: u.unit_id || u.id, unit_number: u.unit_number });
+            });
+          });
+          if (typeof OWNER_SEARCH_TENANTS !== 'undefined' && Array.isArray(OWNER_SEARCH_TENANTS)) {
+            OWNER_SEARCH_TENANTS.splice(0, OWNER_SEARCH_TENANTS.length, ...flatTenants);
+          }
+          renderDirectoryUnitsGrid(window.directoryUnitsData);
+        }
+      } catch (err) {
+      } finally {
+        isDirectoryUnitsFetching = false;
+      }
+    }
+
+    function handleUnitCardClick(unitId) {
+      const uId = parseInt(unitId, 10);
+      const unitObj = (window.directoryUnitsData || []).find(u => parseInt(u.unit_id || u.id, 10) === uId);
+      if (unitObj && Array.isArray(unitObj.tenants) && unitObj.tenants.length > 0) {
+        const primaryTenant = unitObj.tenants[0];
+        openTenantDetailsModal(primaryTenant, unitObj.unit_number || UNIT_LABELS[String(uId)] || '', uId);
+      } else {
+        openAddTenantModal(uId);
+      }
+    }
+
+    function openUnitFolder(unitId) {
+      const uId = parseInt(unitId, 10);
+      if (typeof switchDirectoryTab === 'function') {
+        switchDirectoryTab('active');
+      }
+      document.querySelectorAll('.unit-dir-card--highlighted').forEach(el => el.classList.remove('unit-dir-card--highlighted'));
+      const cardEl = document.getElementById(`unit-directory-card-${uId}`);
+      if (cardEl) {
+        cardEl.classList.add('unit-dir-card--highlighted');
+        cardEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+      try {
+        history.replaceState(null, '', `admin_dashboard.php?section=sectionDirectory&unit_id=${uId}`);
+      } catch (err) {}
     }
 
     function closeUnitFolder() {
-      document.getElementById('directoryFolderDetailView').style.display = 'none';
-      document.getElementById('directoryFoldersView').style.display = 'block';
-      document.querySelectorAll('.unit-folder-content').forEach(el => el.style.display = 'none');
-      history.replaceState(null, '', `admin_dashboard.php?section=sectionDirectory`);
+      document.querySelectorAll('.unit-dir-card--highlighted').forEach(el => el.classList.remove('unit-dir-card--highlighted'));
+      try {
+        history.replaceState(null, '', `admin_dashboard.php?section=sectionDirectory`);
+      } catch (err) {}
     }
 
     // List of occupied unit IDs for strict 1 account per unit limit
     let occupiedUnitIds = <?= json_encode(array_values(array_map(fn($u) => (int)$u['id'], array_filter($unitsWithTenants, fn($u) => !empty($u['tenants']))))) ?>;
+    const UNIT_LABELS = <?= json_encode(array_column($units, 'unit_number', 'id'), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
     let isSubmittingTenant = false;
 
     function resetAddTenantModalState() {
@@ -2811,7 +3840,7 @@ $pendingReviewCount = count($pendingReviewPayments);
       if (submitBtn) {
         submitBtn.disabled = false;
         submitBtn.classList.remove('btn-loading-state');
-        submitBtn.innerHTML = 'Register &amp; Generate Credentials';
+        submitBtn.innerHTML = 'REGISTER';
       }
       if (cancelBtn) {
         cancelBtn.disabled = false;
@@ -2827,6 +3856,13 @@ $pendingReviewCount = count($pendingReviewPayments);
         moveInInput.min = todayStr;
         moveInInput.value = todayStr;
       }
+
+      document.querySelectorAll('#addTenantModal .resident-reg-space-checkbox').forEach((cb) => {
+        if (!cb.disabled) {
+          cb.checked = false;
+        }
+      });
+      updateRegistrationRentPreview();
     }
 
     // =========================================================================
@@ -2874,18 +3910,25 @@ $pendingReviewCount = count($pendingReviewPayments);
 
     // Modal Control
     function openAddTenantModal(preselectedUnitId = null) {
+      const sel = document.getElementById('newUnitId');
       if (preselectedUnitId) {
         const uId = parseInt(preselectedUnitId, 10);
         if (occupiedUnitIds.includes(uId)) {
           showToast("This unit is already occupied and has an existing tenant account. Only one tenant account is allowed per unit.", "error");
           return;
         }
-        const sel = document.getElementById('newUnitId');
         if (sel) sel.value = preselectedUnitId;
+      } else if (sel && sel.options.length > 0) {
+        const currentOpt = sel.options[sel.selectedIndex];
+        if (!currentOpt || currentOpt.disabled) {
+          const firstAvail = Array.from(sel.options).find(opt => !opt.disabled);
+          if (firstAvail) sel.value = firstAvail.value;
+        }
       }
       resetAddTenantModalState();
       initMoveInDatePicker();
       calculateTotalOccupants();
+      updateRegistrationRentPreview();
       document.getElementById('addTenantModal').classList.add('open');
     }
 
@@ -2910,6 +3953,73 @@ $pendingReviewCount = count($pendingReviewPayments);
       totalInput.value = total > 0 ? total : 1;
     }
 
+    // Real-time Calculation for Additional Space Allocation & Total Monthly Rent Preview
+    function formatPesoAmount(amount) {
+      const safeNum = Number.isFinite(amount) ? amount : 0;
+      return safeNum.toLocaleString('en-PH', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+      });
+    }
+
+    function updateRegistrationRentPreview() {
+      const unitSelect = document.getElementById('newUnitId');
+      const extraDisplay = document.getElementById('newAdditionalRentDisplay');
+      const totalDisplay = document.getElementById('newTotalMonthlyRentDisplay');
+
+      let baseRent = 0;
+      if (unitSelect && unitSelect.selectedIndex >= 0) {
+        const selectedOpt = unitSelect.options[unitSelect.selectedIndex];
+        if (selectedOpt) {
+          const parsedBase = parseFloat(selectedOpt.dataset.monthlyRent || '0');
+          if (!isNaN(parsedBase) && parsedBase > 0) {
+            baseRent = parsedBase;
+          }
+        }
+      }
+
+      let additionalRent = 0;
+      document.querySelectorAll('#addTenantModal .resident-reg-space-checkbox').forEach((cb) => {
+        if (cb.checked && !cb.disabled) {
+          const spaceFee = parseFloat(cb.dataset.fee || '1500');
+          additionalRent += (!isNaN(spaceFee) && spaceFee > 0) ? spaceFee : 1500;
+        }
+      });
+
+      const totalMonthlyRent = baseRent + additionalRent;
+      if (extraDisplay) {
+        extraDisplay.textContent = '₱' + formatPesoAmount(additionalRent);
+      }
+      if (totalDisplay) {
+        totalDisplay.textContent = '₱' + formatPesoAmount(totalMonthlyRent);
+      }
+    }
+
+    function markRegisteredSpacesOccupied(spaceNumbers = [], spaceIds = []) {
+      const numSet = new Set((spaceNumbers || []).map(n => parseInt(n, 10)));
+      const idSet = new Set((spaceIds || []).map(id => parseInt(id, 10)));
+      document.querySelectorAll('#addTenantModal .resident-reg-space-checkbox').forEach((cb) => {
+        const cbNum = parseInt(cb.dataset.spaceNumber || '0', 10);
+        const cbId = parseInt(cb.dataset.spaceId || cb.value || '0', 10);
+        if (numSet.has(cbNum) || idSet.has(cbId)) {
+          cb.checked = false;
+          cb.disabled = true;
+          cb.setAttribute('aria-disabled', 'true');
+          const label = cb.closest('.resident-reg-space-item');
+          if (label) {
+            label.classList.add('is-occupied');
+            if (!label.querySelector('.resident-reg-occupied-tag')) {
+              const badge = document.createElement('span');
+              badge.className = 'resident-reg-occupied-tag';
+              badge.textContent = 'Occupied';
+              label.appendChild(badge);
+            }
+          }
+        }
+      });
+      updateRegistrationRentPreview();
+    }
+
     // Attach Vanilla JS event listeners for real-time recalculation
     const adultsEl = document.getElementById('newAdultsCount');
     const kidsEl = document.getElementById('newKidsCount');
@@ -2923,6 +4033,14 @@ $pendingReviewCount = count($pendingReviewPayments);
       kidsEl.addEventListener('change', calculateTotalOccupants);
       kidsEl.addEventListener('keyup', calculateTotalOccupants);
     }
+
+    const regUnitSelectEl = document.getElementById('newUnitId');
+    if (regUnitSelectEl) {
+      regUnitSelectEl.addEventListener('change', updateRegistrationRentPreview);
+    }
+    document.querySelectorAll('#addTenantModal .resident-reg-space-checkbox').forEach((cb) => {
+      cb.addEventListener('change', updateRegistrationRentPreview);
+    });
 
     // Handle Tenant Creation with Auto-Generated Credentials & Animated Loading State
     let currentGeneratedCreds = null;
@@ -2976,10 +4094,43 @@ $pendingReviewCount = count($pendingReviewPayments);
       if (successEl) successEl.style.display = 'none';
       if (errorEl) errorEl.style.display = 'none';
 
+      const firstNameVal = document.getElementById('newFirstName') ? document.getElementById('newFirstName').value.trim() : '';
+      const middleNameVal = document.getElementById('newMiddleName') ? document.getElementById('newMiddleName').value.trim() : '';
+      const lastNameVal = document.getElementById('newLastName') ? document.getElementById('newLastName').value.trim() : '';
+      const fullNameVal = [firstNameVal, middleNameVal, lastNameVal].filter(Boolean).join(' ');
+
+      if (!firstNameVal || !lastNameVal) {
+        isSubmittingTenant = false;
+        if (submitBtn) {
+          submitBtn.disabled = false;
+          submitBtn.classList.remove('btn-loading-state');
+          submitBtn.innerHTML = 'REGISTER';
+        }
+        if (cancelBtn) cancelBtn.disabled = false;
+        if (statusContainer) statusContainer.style.display = 'none';
+        showToast("First Name and Last Name are required.", "error");
+        return;
+      }
+
+      const space1Cb = document.getElementById('newSpace1');
+      const space2Cb = document.getElementById('newSpace2');
+      const selectedSpaceIds = [];
+      document.querySelectorAll('#addTenantModal .resident-reg-space-checkbox').forEach((cb) => {
+        if (cb.checked && !cb.disabled) {
+          const parsedId = parseInt(cb.dataset.spaceId || cb.value || '0', 10);
+          if (!isNaN(parsedId) && parsedId > 0) {
+            selectedSpaceIds.push(parsedId);
+          }
+        }
+      });
+
       const payload = {
         action: 'create',
         unit_id: unitId,
-        name: document.getElementById('newName').value.trim(),
+        name: fullNameVal,
+        first_name: firstNameVal,
+        middle_name: middleNameVal,
+        last_name: lastNameVal,
         move_in_date: moveInVal,
         birthday: document.getElementById('newBirthday').value,
         email: document.getElementById('newEmail').value.trim(),
@@ -2987,9 +4138,12 @@ $pendingReviewCount = count($pendingReviewPayments);
         emergency_contact_name: document.getElementById('newEmergencyName').value.trim(),
         emergency_contact_relationship: document.getElementById('newEmergencyRel').value.trim(),
         emergency_contact_phone: document.getElementById('newEmergencyPhone').value.trim(),
-        total_occupants: parseInt(document.getElementById('newTotalOccupants').value) || 1,
-        adults_count: parseInt(document.getElementById('newAdultsCount').value) || 1,
-        kids_count: parseInt(document.getElementById('newKidsCount').value) || 0
+        total_occupants: parseInt(document.getElementById('newTotalOccupants').value, 10) || 1,
+        adults_count: parseInt(document.getElementById('newAdultsCount').value, 10) || 1,
+        kids_count: parseInt(document.getElementById('newKidsCount').value, 10) || 0,
+        space_1: Boolean(space1Cb && space1Cb.checked && !space1Cb.disabled),
+        space_2: Boolean(space2Cb && space2Cb.checked && !space2Cb.disabled),
+        additional_space_ids: selectedSpaceIds
       };
 
       try {
@@ -3016,6 +4170,11 @@ $pendingReviewCount = count($pendingReviewPayments);
         }
 
         if (res.ok && result.status === 'success') {
+          markRegisteredSpacesOccupied(
+            result.assigned_space_numbers || [],
+            result.assigned_space_ids || selectedSpaceIds
+          );
+
           // Smooth transition: hide spinner, display success message
           if (loadingEl) loadingEl.style.display = 'none';
           if (successEl) {
@@ -3037,6 +4196,7 @@ $pendingReviewCount = count($pendingReviewPayments);
             closeAddTenantModal();
             document.getElementById('createTenantForm').reset();
             calculateTotalOccupants();
+            updateRegistrationRentPreview();
 
             if (result.credentials) {
               result.credentials.unit_id = unitId;
@@ -3052,7 +4212,7 @@ $pendingReviewCount = count($pendingReviewPayments);
           if (submitBtn) {
             submitBtn.disabled = false;
             submitBtn.classList.remove('btn-loading-state');
-            submitBtn.innerHTML = 'Register &amp; Generate Credentials';
+            submitBtn.innerHTML = 'REGISTER';
           }
           if (cancelBtn) {
             cancelBtn.disabled = false;
@@ -3077,7 +4237,7 @@ $pendingReviewCount = count($pendingReviewPayments);
         if (submitBtn) {
           submitBtn.disabled = false;
           submitBtn.classList.remove('btn-loading-state');
-          submitBtn.innerHTML = 'Register &amp; Generate Credentials';
+          submitBtn.innerHTML = 'REGISTER';
         }
         if (cancelBtn) {
           cancelBtn.disabled = false;
@@ -3126,9 +4286,9 @@ $pendingReviewCount = count($pendingReviewPayments);
     function copyCredField(elemId, btn) {
       const val = document.getElementById(elemId).textContent;
       navigator.clipboard.writeText(val).then(() => {
-        const orig = btn.textContent;
-        btn.textContent = '✓ Copied!';
-        setTimeout(() => btn.textContent = orig, 1800);
+        const orig = btn.innerHTML;
+        btn.innerHTML = `<span style="display:inline-flex;align-items:center;gap:4px;">${window.rcIcon('check', 'w-3.5 h-3.5')} Copied!</span>`;
+        setTimeout(() => btn.innerHTML = orig, 1800);
         showToast('Copied: ' + val, 'success');
       });
     }
@@ -3137,9 +4297,9 @@ $pendingReviewCount = count($pendingReviewPayments);
       if (!currentGeneratedCreds) return;
       const text = `TaraRent Resident Account\nResident: ${currentGeneratedCreds.name}\nUnit: ${currentGeneratedCreds.unit_number}\nUsername: ${currentGeneratedCreds.username}\nPassword: ${currentGeneratedCreds.password}`;
       navigator.clipboard.writeText(text).then(() => {
-        const orig = btn.textContent;
-        btn.textContent = '✓ All Copied!';
-        setTimeout(() => btn.textContent = orig, 1800);
+        const orig = btn.innerHTML;
+        btn.innerHTML = `<span style="display:inline-flex;align-items:center;gap:6px;">${window.rcIcon('check', 'w-4 h-4')} All Copied!</span>`;
+        setTimeout(() => btn.innerHTML = orig, 1800);
         showToast('All login details copied to clipboard!', 'success');
       });
     }
@@ -3147,147 +4307,426 @@ $pendingReviewCount = count($pendingReviewPayments);
     // =========================================================================
     // EXPANDED TENANT DETAILS & DIRECT ID PREVIEW (LANDLORD UI)
     // - Immediately displays uploaded Valid ID image without extra clicks.
-    // - STRICT PRIVACY: Live face scan photo is completely excluded.
     // =========================================================================
+    // MODAL CONTROLLERS & DATA BINDING: TENANT DETAILS & DIRECTORY
+    // Rebuilt to strictly match image_56da2c.png layout and styling.
+    // - Header: UNIT 1 with 1 BR | 1 CR and OCCUPIED badge.
+    // - Top Card: Tenant Information (Full width, brown bg, divider, emergency contact, move-in date).
+    // - Bottom Cards: Tenant Identification Information & Billing Information.
+    // =========================================================================
+    window.currentActiveTenantIdPhoto = null;
+    window.currentActiveTenantReceiptPhoto = null;
+
+    function viewTenantIdImage() {
+      if (!window.currentActiveTenantIdPhoto || window.currentActiveTenantIdPhoto.trim() === '') {
+        showToast('Identification document is locked until account verification is complete.', 'warning');
+        return;
+      }
+      const m = document.getElementById('viewIdImageModal');
+      const img = document.getElementById('viewIdModalImg');
+      const empty = document.getElementById('viewIdModalEmpty');
+      if (!m || !img) return;
+      img.src = 'uploads/id_verifications/' + encodeURIComponent(window.currentActiveTenantIdPhoto);
+      img.style.display = 'block';
+      if (empty) empty.style.display = 'none';
+      openModal('viewIdImageModal');
+      if (window.lucide && typeof window.lucide.createIcons === 'function') window.lucide.createIcons();
+    }
+
+    function viewTenantReceiptPhoto() {
+      const m = document.getElementById('viewReceiptImageModal');
+      const img = document.getElementById('viewReceiptModalImg');
+      const empty = document.getElementById('viewReceiptModalEmpty');
+      if (!m || !img) return;
+      if (window.currentActiveTenantReceiptPhoto && window.currentActiveTenantReceiptPhoto.trim() !== '') {
+        img.src = 'uploads/receipts/' + encodeURIComponent(window.currentActiveTenantReceiptPhoto);
+        img.style.display = 'block';
+        if (empty) empty.style.display = 'none';
+      } else {
+        img.src = '';
+        img.style.display = 'none';
+        if (empty) empty.style.display = 'block';
+      }
+      openModal('viewReceiptImageModal');
+      if (window.lucide && typeof window.lucide.createIcons === 'function') window.lucide.createIcons();
+    }
+
     function openTenantDetailsModal(t, unitNumber, unitId) {
       if (!t) return;
-      document.getElementById('tdAvatar').textContent = (t.name || 'T').charAt(0).toUpperCase();
-      document.getElementById('tdName').textContent = t.name || 'Resident';
-      document.getElementById('tdUsername').textContent = '@' + (t.username || 'resident');
-      document.getElementById('tdUnitBadge').textContent = unitNumber || ('Unit ' + (t.unit_id || ''));
-      
-      // Verification status badge
-      const vBadge = document.getElementById('tdVerificationBadge');
-      const vStatus = t.verification_status || 'unverified';
-      if (vBadge) {
-        if (vStatus === 'verified') {
-          vBadge.className = 'clay-badge badge-verified';
-          vBadge.textContent = '✓ Verified';
-        } else if (vStatus === 'pending') {
-          vBadge.className = 'clay-badge badge-pending';
-          vBadge.textContent = '⏳ ID Review Pending';
-        } else if (vStatus === 'rejected') {
-          vBadge.className = 'clay-badge badge-rejected';
-          vBadge.textContent = '✕ Rejected';
-        } else {
-          vBadge.className = 'clay-badge badge-unverified';
-          vBadge.textContent = '⚠️ Unverified';
-        }
-      }
 
-      // Occupant Breakdown
-      const adultsVal = parseInt(t.adults_count, 10) || 1;
-      const kidsVal = parseInt(t.kids_count, 10) || 0;
-      const totalOcc = parseInt(t.total_occupants, 10) || (adultsVal + kidsVal);
-      document.getElementById('tdTotalOccupants').textContent = totalOcc;
-      document.getElementById('tdAdultsCount').textContent = adultsVal;
-      document.getElementById('tdKidsCount').textContent = kidsVal;
+      // Cache files for lightbox viewers
+      window.currentActiveTenantIdPhoto = t.id_photo_filename || null;
+      window.currentActiveTenantReceiptPhoto = null;
 
-      // Personal details
-      document.getElementById('tdBirthday').textContent = t.birthday ? new Date(t.birthday.includes('T') ? t.birthday : t.birthday + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'N/A';
-      document.getElementById('tdMoveIn').textContent = t.move_in_date ? new Date(t.move_in_date.includes('T') ? t.move_in_date : t.move_in_date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'N/A';
-      document.getElementById('tdEmail').textContent = t.email || 'N/A';
-      document.getElementById('tdPhone').textContent = t.phone || 'N/A';
+      // 1. Resolve Unit information (Unit Number, Subunit 1 BR | 1 CR, Occupancy)
+      const uId = parseInt(unitId || (t ? t.unit_id : 0), 10);
+      const unitObj = (window.directoryUnitsData || []).find(u => parseInt(u.unit_id || u.id, 10) === uId);
 
-      // Emergency contact
-      document.getElementById('tdEmergencyName').textContent = t.emergency_contact_name || t.emergency_contact || 'None listed';
-      document.getElementById('tdEmergencyRel').textContent = t.emergency_contact_relationship || 'N/A';
-      document.getElementById('tdEmergencyPhone').textContent = t.emergency_contact_phone || 'N/A';
+      const uNumRaw = (unitObj && unitObj.unit_number) ? unitObj.unit_number : (unitNumber || 'UNIT ' + (uId || '1'));
+      const unitHeading = uNumRaw.toLowerCase().startsWith('unit') ? uNumRaw.toUpperCase() : ('UNIT ' + uNumRaw.toUpperCase());
+      const uNumEl = document.getElementById('tdModalUnitNumber');
+      if (uNumEl) uNumEl.textContent = unitHeading;
 
-      // Uploaded Valid ID Image directly displayed (NO EXTRA CLICK NEEDED)
-      // STRICT PRIVACY: live_photo_filename is NEVER rendered or used here.
-      const idContainer = document.getElementById('tdIdContainer');
-      const idTypeLabel = document.getElementById('tdIdType');
-      if (idTypeLabel) idTypeLabel.textContent = t.id_type || 'Government ID';
+      const br = (unitObj && unitObj.bedrooms) ? unitObj.bedrooms : 1;
+      const cr = (unitObj && unitObj.bathrooms) ? Math.round(unitObj.bathrooms) : 1;
+      const uDetEl = document.getElementById('tdModalUnitDetails');
+      if (uDetEl) uDetEl.textContent = `${br} BR | ${cr} CR`;
 
-      if (idContainer) {
-        if (t.id_photo_filename) {
-          idContainer.innerHTML = `
-            <div style="background: rgba(15, 23, 42, 0.03); border: 1.5px solid #cbd5e1; border-radius: 14px; padding: 12px; margin-top: 6px;">
-              <img src="uploads/id_verifications/${encodeURIComponent(t.id_photo_filename)}" 
-                   alt="Uploaded Valid ID" 
-                   style="max-width: 100%; max-height: 280px; object-fit: contain; border-radius: 10px; display: block; margin: 0 auto; box-shadow: 0 4px 14px rgba(0,0,0,0.08);"
-                   onerror="this.parentElement.innerHTML='<div style=\\'color: var(--text-muted); font-size: 13px; padding: 20px;\\'>⚠️ ID image file not found on disk.</div>'">
-            </div>
-          `;
-        } else {
-          idContainer.innerHTML = `
-            <div style="padding: 24px; text-align: center; color: var(--text-muted); background: #f8fafc; border: 1.5px dashed #cbd5e1; border-radius: 12px; margin-top: 6px;">
-              <div style="font-size: 32px; margin-bottom: 6px;">📄</div>
-              <div style="font-size: 13px; font-weight: 700; color: #0f172a;">No Valid ID uploaded yet</div>
-              <div style="font-size: 11.5px; color: var(--text-light); margin-top: 2px;">The resident has not completed ID verification.</div>
-            </div>
-          `;
-        }
-      }
-
-      // Rental / Move-out status display
+      // Occupancy Badge
       const isMovedOut = (t.rental_status === 'moved_out');
-      const statusBadge = document.getElementById('tdRentalStatusBadge');
-      const noticeBox = document.getElementById('tdMovedOutNotice');
-      const delBtn = document.getElementById('tdBtnDelete');
-
-      if (statusBadge) {
-        if (isMovedOut) {
-          statusBadge.className = 'clay-badge';
-          statusBadge.style.background = '#fef3c7';
-          statusBadge.style.color = '#92400e';
-          statusBadge.textContent = 'Moved Out (Pending Settlement)';
+      const occBadge = document.getElementById('tdModalOccupancyBadge');
+      if (occBadge) {
+        if (!isMovedOut) {
+          occBadge.textContent = 'OCCUPIED';
+          occBadge.style.backgroundColor = '#6ee7b7';
+          occBadge.style.color = '#000000';
         } else {
-          statusBadge.className = 'clay-badge badge-paid';
-          statusBadge.style.background = '';
-          statusBadge.style.color = '';
-          statusBadge.textContent = 'Active Resident';
+          occBadge.textContent = 'MOVED OUT';
+          occBadge.style.backgroundColor = '#fef08a';
+          occBadge.style.color = '#713f12';
         }
       }
 
-      if (noticeBox) {
-        noticeBox.style.display = isMovedOut ? 'block' : 'none';
+      // 2. Tenant Information (Profile, Contact, Emergency, Move-in Date)
+      const tNameEl = document.getElementById('tdModalTenantName');
+      if (tNameEl) tNameEl.textContent = (t.name || 'Resident').toUpperCase();
+
+      const avatarInit = document.getElementById('tdModalAvatarInitial');
+      if (avatarInit) avatarInit.textContent = (t.name || 'T').charAt(0).toUpperCase();
+
+      // Format Date Helper (MM/DD/YYYY)
+      const fmtDate = (dStr) => {
+        if (!dStr) return '-';
+        const d = new Date(dStr.includes('T') ? dStr : dStr + 'T00:00:00');
+        if (isNaN(d.getTime())) return dStr;
+        const mm = String(d.getMonth() + 1).padStart(2, '0');
+        const dd = String(d.getDate()).padStart(2, '0');
+        const yyyy = d.getFullYear();
+        return `${mm}/${dd}/${yyyy}`;
+      };
+
+      // Format Short Date (MM/DD/YY)
+      const fmtShortDate = (dStr) => {
+        if (!dStr) return '--/--/--';
+        const d = new Date(dStr.includes('T') ? dStr : dStr + 'T00:00:00');
+        if (isNaN(d.getTime())) return dStr;
+        const mm = String(d.getMonth() + 1).padStart(2, '0');
+        const dd = String(d.getDate()).padStart(2, '0');
+        const yy = String(d.getFullYear()).slice(-2);
+        return `${mm}/${dd}/${yy}`;
+      };
+
+      const moveInDateEl = document.getElementById('tdModalMoveInDate');
+      if (moveInDateEl) moveInDateEl.textContent = fmtDate(t.move_in_date || t.created_at);
+
+      const bdayEl = document.getElementById('tdModalBirthday');
+      if (bdayEl) bdayEl.textContent = t.birthday ? fmtDate(t.birthday) : 'N/A';
+
+      const phoneEl = document.getElementById('tdModalPhone');
+      if (phoneEl) phoneEl.textContent = t.phone || 'N/A';
+
+      const emailEl = document.getElementById('tdModalEmail');
+      if (emailEl) emailEl.textContent = t.email || 'N/A';
+
+      const emNameEl = document.getElementById('tdModalEmergencyName');
+      if (emNameEl) emNameEl.textContent = t.emergency_contact_name || t.emergency_contact || 'None listed';
+
+      const emRelEl = document.getElementById('tdModalEmergencyRel');
+      if (emRelEl) emRelEl.textContent = t.emergency_contact_relationship || 'N/A';
+
+      const emPhoneEl = document.getElementById('tdModalEmergencyPhone');
+      if (emPhoneEl) emPhoneEl.textContent = t.emergency_contact_phone || 'N/A';
+
+      // 3. Tenant Identification Information & Privacy Masking
+      const isVerified = (parseInt(t.is_verified, 10) === 1) && ((t.verification_status || '').toLowerCase() === 'verified');
+      const vStatus = (t.verification_status || 'unverified').toLowerCase();
+      
+      const idStatusBadge = document.getElementById('tdModalIdStatusBadge');
+      const idDetailsContainer = document.getElementById('tdModalIdDetailsContainer');
+
+      if (idStatusBadge) {
+        if (isVerified) {
+          idStatusBadge.textContent = 'VERIFIED';
+          idStatusBadge.style.backgroundColor = '#22c55e';
+          idStatusBadge.style.color = '#000000';
+        } else if (vStatus === 'pending' || vStatus === 'pending_liveness') {
+          idStatusBadge.textContent = 'PENDING';
+          idStatusBadge.style.backgroundColor = '#facc15';
+          idStatusBadge.style.color = '#000000';
+        } else {
+          idStatusBadge.textContent = 'UNVERIFIED';
+          idStatusBadge.style.backgroundColor = '#ef4444';
+          idStatusBadge.style.color = '#ffffff';
+        }
       }
 
-      // Bind Move-Out / Settlement button
+      if (idDetailsContainer) {
+        if (isVerified && t.id_type && t.id_photo_filename) {
+          // Verified: Display ID Icon, ID Type text, and clickable [view id] link
+          idDetailsContainer.innerHTML = `
+            <div id="tdModalVerifiedIdSection" class="flex items-center justify-center gap-4 mt-4" style="display: flex; align-items: center; justify-content: center; gap: 16px; margin-top: 14px;">
+              <svg class="w-16 h-12 flex-shrink-0 drop-shadow-sm" viewBox="0 0 72 52" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="width: 64px; height: 46px; flex-shrink: 0;">
+                <rect x="2" y="2" width="68" height="48" rx="8" fill="#F8E5E5" stroke="#1A120B" stroke-width="2.5"/>
+                <rect x="2" y="2" width="68" height="14" rx="8" fill="#F47272" stroke="#1A120B" stroke-width="2.5"/>
+                <rect x="8" y="20" width="20" height="24" rx="4" fill="#FFFFFF" stroke="#1A120B" stroke-width="2"/>
+                <circle cx="18" cy="27" r="3.5" fill="#1A120B"/>
+                <path d="M11 40c0-3.5 3-5 7-5s7 1.5 7 5" stroke="#1A120B" stroke-width="2" stroke-linecap="round" fill="#1A120B"/>
+                <text x="33" y="28" font-family="sans-serif" font-weight="900" font-size="9" fill="#1A120B">ID</text>
+                <line x1="45" y1="26" x2="62" y2="26" stroke="#1A120B" stroke-width="2" stroke-linecap="round"/>
+                <line x1="33" y1="34" x2="62" y2="34" stroke="#1A120B" stroke-width="2" stroke-linecap="round"/>
+                <line x1="33" y1="40" x2="54" y2="40" stroke="#1A120B" stroke-width="2" stroke-linecap="round"/>
+              </svg>
+              <div>
+                <div id="tdModalIdType" class="text-lg sm:text-xl font-extrabold text-[#1a120b] uppercase font-sans leading-tight" style="font-size: 18px; font-weight: 800; color: #1a120b; text-transform: uppercase;">
+                  ${t.id_type.toUpperCase()}
+                </div>
+                <button type="button" 
+                        id="tdModalBtnViewId" 
+                        onclick="viewTenantIdImage()" 
+                        class="text-xs sm:text-sm font-normal text-[#1a120b] hover:text-black hover:underline underline cursor-pointer mt-0.5 bg-transparent border-0 p-0 text-left font-sans focus:outline-none"
+                        style="font-size: 13px; color: #1a120b; text-decoration: underline; cursor: pointer; background: transparent; border: none; padding: 0; margin-top: 4px; display: block;">
+                  [view id]
+                </button>
+              </div>
+            </div>
+          `;
+          window.currentActiveTenantIdPhoto = t.id_photo_filename;
+        } else {
+          // Unverified / Pending Fallback: Grayed-out placeholder, NO <a> tags, NO triggers
+          const placeholderText = (vStatus === 'pending' || vStatus === 'pending_liveness')
+            ? 'ID Hidden (Pending Verification)'
+            : 'ID Hidden (Unverified Account)';
+          idDetailsContainer.innerHTML = `
+            <div id="tdModalUnverifiedIdSection" class="flex flex-col items-center justify-center text-center mt-3 py-3.5 px-4 bg-black/10 rounded-xl border border-dashed border-black/20 text-[#2e1f10]" style="display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; margin-top: 12px; padding: 14px 16px; background: rgba(0,0,0,0.08); border-radius: 12px; border: 1.5px dashed rgba(0,0,0,0.25); color: #2e1f10;">
+              <div class="flex items-center gap-2 text-sm sm:text-base font-extrabold text-[#2e1f10] opacity-85" style="display: flex; align-items: center; gap: 8px; font-size: 14.5px; font-weight: 800; color: #2e1f10;">
+                <span style="font-size: 16px;">🔒</span>
+                <span id="tdModalHiddenIdPlaceholder">${placeholderText}</span>
+              </div>
+              <p class="text-[11.5px] sm:text-xs text-[#45321f] mt-1 font-medium m-0 opacity-75" style="font-size: 11.5px; color: #45321f; margin: 4px 0 0 0; font-weight: 500;">
+                Identification documents are locked until account verification is complete.
+              </p>
+            </div>
+          `;
+          window.currentActiveTenantIdPhoto = null;
+        }
+      }
+
+      // 4. Billing Information (Initial Fallbacks)
+      const baseRent = parseFloat(t.monthly_rent || (unitObj ? unitObj.monthly_rent : 3000)) || 3000;
+      const depLabel = document.getElementById('tdModalDepositLabel');
+      if (depLabel) depLabel.textContent = `DEPOSIT: PHP ${Math.round(baseRent)}`;
+
+      const depBadge = document.getElementById('tdModalDepositStatusBadge');
+      if (depBadge) {
+        depBadge.textContent = 'DONE';
+        depBadge.style.backgroundColor = '#22c55e';
+        depBadge.style.color = '#000000';
+      }
+
+      const payBadge = document.getElementById('tdModalPaymentStatusBadge');
+      if (payBadge) {
+        payBadge.textContent = (t.is_paid_up ? 'PAID' : 'PENDING');
+        payBadge.style.backgroundColor = t.is_paid_up ? '#22c55e' : '#facc15';
+        payBadge.style.color = '#000000';
+      }
+
+      const dueEl = document.getElementById('tdModalDueDate');
+      if (dueEl) dueEl.textContent = fmtShortDate(new Date().toISOString());
+
+      const paidEl = document.getElementById('tdModalPaidOnDate');
+      if (paidEl) paidEl.textContent = t.is_paid_up ? fmtShortDate(new Date().toISOString()) : '--/--/--';
+
+      const totEl = document.getElementById('tdModalTotalAmount');
+      if (totEl) totEl.textContent = `PHP ${baseRent.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+      // 5. Asynchronously Fetch Real-Time Billing & Receipt Data
+      if (t.id) {
+        fetch(`api/tenant_directory_api.php?action=get_tenant_billing&tenant_id=${encodeURIComponent(t.id)}`)
+          .then(res => res.json())
+          .then(data => {
+            if (data && data.status === 'success') {
+              if (data.tenant) {
+                const liveVerified = (parseInt(data.tenant.is_verified, 10) === 1) && ((data.tenant.verification_status || '').toLowerCase() === 'verified');
+                if (liveVerified && data.tenant.id_photo_filename && data.tenant.id_type) {
+                  window.currentActiveTenantIdPhoto = data.tenant.id_photo_filename;
+                  if (idDetailsContainer) {
+                    idDetailsContainer.innerHTML = `
+                      <div id="tdModalVerifiedIdSection" class="flex items-center justify-center gap-4 mt-4" style="display: flex; align-items: center; justify-content: center; gap: 16px; margin-top: 14px;">
+                        <svg class="w-16 h-12 flex-shrink-0 drop-shadow-sm" viewBox="0 0 72 52" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="width: 64px; height: 46px; flex-shrink: 0;">
+                          <rect x="2" y="2" width="68" height="48" rx="8" fill="#F8E5E5" stroke="#1A120B" stroke-width="2.5"/>
+                          <rect x="2" y="2" width="68" height="14" rx="8" fill="#F47272" stroke="#1A120B" stroke-width="2.5"/>
+                          <rect x="8" y="20" width="20" height="24" rx="4" fill="#FFFFFF" stroke="#1A120B" stroke-width="2"/>
+                          <circle cx="18" cy="27" r="3.5" fill="#1A120B"/>
+                          <path d="M11 40c0-3.5 3-5 7-5s7 1.5 7 5" stroke="#1A120B" stroke-width="2" stroke-linecap="round" fill="#1A120B"/>
+                          <text x="33" y="28" font-family="sans-serif" font-weight="900" font-size="9" fill="#1A120B">ID</text>
+                          <line x1="45" y1="26" x2="62" y2="26" stroke="#1A120B" stroke-width="2" stroke-linecap="round"/>
+                          <line x1="33" y1="34" x2="62" y2="34" stroke="#1A120B" stroke-width="2" stroke-linecap="round"/>
+                          <line x1="33" y1="40" x2="54" y2="40" stroke="#1A120B" stroke-width="2" stroke-linecap="round"/>
+                        </svg>
+                        <div>
+                          <div id="tdModalIdType" class="text-lg sm:text-xl font-extrabold text-[#1a120b] uppercase font-sans leading-tight" style="font-size: 18px; font-weight: 800; color: #1a120b; text-transform: uppercase;">
+                            ${data.tenant.id_type.toUpperCase()}
+                          </div>
+                          <button type="button" 
+                                  id="tdModalBtnViewId" 
+                                  onclick="viewTenantIdImage()" 
+                                  class="text-xs sm:text-sm font-normal text-[#1a120b] hover:text-black hover:underline underline cursor-pointer mt-0.5 bg-transparent border-0 p-0 text-left font-sans focus:outline-none"
+                                  style="font-size: 13px; color: #1a120b; text-decoration: underline; cursor: pointer; background: transparent; border: none; padding: 0; margin-top: 4px; display: block;">
+                            [view id]
+                          </button>
+                        </div>
+                      </div>
+                    `;
+                  }
+                  if (idStatusBadge) {
+                    idStatusBadge.textContent = 'VERIFIED';
+                    idStatusBadge.style.backgroundColor = '#22c55e';
+                    idStatusBadge.style.color = '#000000';
+                  }
+                } else {
+                  window.currentActiveTenantIdPhoto = null;
+                  const liveVStatus = (data.tenant.verification_status || 'unverified').toLowerCase();
+                  if (idDetailsContainer) {
+                    const placeholderText = (liveVStatus === 'pending' || liveVStatus === 'pending_liveness')
+                      ? 'ID Hidden (Pending Verification)'
+                      : 'ID Hidden (Unverified Account)';
+                    idDetailsContainer.innerHTML = `
+                      <div id="tdModalUnverifiedIdSection" class="flex flex-col items-center justify-center text-center mt-3 py-3.5 px-4 bg-black/10 rounded-xl border border-dashed border-black/20 text-[#2e1f10]" style="display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; margin-top: 12px; padding: 14px 16px; background: rgba(0,0,0,0.08); border-radius: 12px; border: 1.5px dashed rgba(0,0,0,0.25); color: #2e1f10;">
+                        <div class="flex items-center gap-2 text-sm sm:text-base font-extrabold text-[#2e1f10] opacity-85" style="display: flex; align-items: center; gap: 8px; font-size: 14.5px; font-weight: 800; color: #2e1f10;">
+                          <span style="font-size: 16px;">🔒</span>
+                          <span id="tdModalHiddenIdPlaceholder">${placeholderText}</span>
+                        </div>
+                        <p class="text-[11.5px] sm:text-xs text-[#45321f] mt-1 font-medium m-0 opacity-75" style="font-size: 11.5px; color: #45321f; margin: 4px 0 0 0; font-weight: 500;">
+                          Identification documents are locked until account verification is complete.
+                        </p>
+                      </div>
+                    `;
+                  }
+                  if (idStatusBadge) {
+                    if (liveVStatus === 'pending' || liveVStatus === 'pending_liveness') {
+                      idStatusBadge.textContent = 'PENDING';
+                      idStatusBadge.style.backgroundColor = '#facc15';
+                      idStatusBadge.style.color = '#000000';
+                    } else {
+                      idStatusBadge.textContent = 'UNVERIFIED';
+                      idStatusBadge.style.backgroundColor = '#ef4444';
+                      idStatusBadge.style.color = '#ffffff';
+                    }
+                  }
+                }
+              }
+
+              // Latest Rent Billing
+              if (data.latest_rent) {
+                const lr = data.latest_rent;
+                const rDue = parseFloat(lr.amount_due) || baseRent;
+                const rPaid = parseFloat(lr.amount_paid) || 0;
+                const isPaid = (lr.status === 'approved' || (rDue > 0 && rPaid >= rDue));
+                const isPending = (lr.status === 'pending');
+
+                if (payBadge) {
+                  if (isPaid) {
+                    payBadge.textContent = 'PAID';
+                    payBadge.style.backgroundColor = '#22c55e';
+                    payBadge.style.color = '#000000';
+                  } else if (isPending) {
+                    payBadge.textContent = 'PENDING';
+                    payBadge.style.backgroundColor = '#facc15';
+                    payBadge.style.color = '#000000';
+                  } else {
+                    payBadge.textContent = 'UNPAID';
+                    payBadge.style.backgroundColor = '#ef4444';
+                    payBadge.style.color = '#ffffff';
+                  }
+                }
+
+                if (dueEl && lr.due_date) dueEl.textContent = fmtShortDate(lr.due_date);
+                if (paidEl) paidEl.textContent = lr.payment_date ? fmtShortDate(lr.payment_date) : (isPaid ? fmtShortDate(lr.due_date) : '--/--/--');
+                if (totEl) totEl.textContent = `PHP ${rDue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                if (lr.receipt_filename) {
+                  window.currentActiveTenantReceiptPhoto = lr.receipt_filename;
+                }
+              }
+
+              // Deposit Status
+              if (data.latest_deposit) {
+                const ld = data.latest_deposit;
+                const depAmt = parseFloat(ld.amount_due || ld.amount_paid) || baseRent;
+                if (depLabel) depLabel.textContent = `DEPOSIT: PHP ${Math.round(depAmt)}`;
+                if (depBadge) {
+                  const isDepDone = (ld.status === 'approved' || parseFloat(ld.amount_paid) >= depAmt);
+                  depBadge.textContent = isDepDone ? 'DONE' : (ld.status === 'pending' ? 'PENDING' : 'UNPAID');
+                  depBadge.style.backgroundColor = isDepDone ? '#22c55e' : (ld.status === 'pending' ? '#facc15' : '#ef4444');
+                  depBadge.style.color = isDepDone || ld.status === 'pending' ? '#000000' : '#ffffff';
+                }
+                if (!window.currentActiveTenantReceiptPhoto && ld.receipt_filename) {
+                  window.currentActiveTenantReceiptPhoto = ld.receipt_filename;
+                }
+              }
+            }
+          })
+          .catch(err => console.warn('Could not load tenant billing details:', err));
+      }
+
+      // Bind Move-Out / Settlement confirmation button
+      const delBtn = document.getElementById('tdBtnDelete');
       if (delBtn) {
-        delBtn.innerHTML = isMovedOut ? '⚡ Verify Settlement &amp; Archive' : '🚪 Mark as Moved Out';
-        delBtn.onclick = () => deleteTenantAccount(t.id, t.name, unitNumber, unitId || t.unit_id, isMovedOut);
+        delBtn.innerHTML = isMovedOut
+          ? `<span style="display:inline-flex;align-items:center;gap:6px;">${window.rcIcon('shield-check', 'w-4 h-4')} Verify Settlement &amp; Archive</span>`
+          : `<span style="display:inline-flex;align-items:center;gap:6px;">${window.rcIcon('log-out', 'w-4 h-4')} Mark as Moved Out</span>`;
+        delBtn.onclick = () => openMoveOutConfirmModal({
+          tenantId: parseInt(t.id, 10),
+          tenantName: t.name || 'Tenant',
+          username: t.username || '',
+          unitNumber: uNumRaw,
+          unitId: uId,
+          moveInDate: t.move_in_date || '',
+          alreadyMovedOut: isMovedOut
+        });
       }
 
-      document.getElementById('tenantDetailsModal').classList.add('open');
+      openModal('tenantDetailsModal');
+      if (window.lucide && typeof window.lucide.createIcons === 'function') {
+        window.lucide.createIcons();
+      }
     }
 
-    function closeTenantDetailsModal() {
-      const m = document.getElementById('tenantDetailsModal');
-      if (m) m.classList.remove('open');
+    function closeTenantDetailsModal(fromCloseModal = false) {
+      const modal = document.getElementById('tenantDetailsModal');
+      if (modal) {
+        modal.classList.add('hidden');
+        modal.classList.remove('open', 'active');
+        modal.style.display = 'none';
+        modal.style.pointerEvents = 'none';
+        document.body.style.overflow = '';
+      }
+      if (!fromCloseModal && typeof closeModal === 'function') {
+        closeModal('tenantDetailsModal');
+      }
     }
 
-    // Dynamic UI counter update for unit folder
+    // Dynamic UI counter & unit card sync for tenant directory
     function updateUnitTenantCount(unitId) {
       const uIdNum = parseInt(unitId, 10);
-      const tbody = document.getElementById(`unit-table-body-${unitId}`);
-      const rows = tbody ? tbody.querySelectorAll('.tenant-summary-row') : [];
-      const remaining = rows.length;
+      const unitLabel = UNIT_LABELS[String(unitId)] || `Unit ${unitId}`;
+      let remaining = 0;
 
-      const countText = document.getElementById(`unit-count-text-${unitId}`);
-      if (countText) countText.textContent = remaining;
-
-      const folderBadge = document.getElementById(`unit-folder-badge-${unitId}`);
-      if (folderBadge) {
-        folderBadge.className = `clay-badge ${remaining > 0 ? 'badge-paid' : 'badge-low'}`;
-        folderBadge.textContent = remaining > 0 ? '🔒 Occupied' : '🟢 Available';
+      if (Array.isArray(window.directoryUnitsData)) {
+        const unitObj = window.directoryUnitsData.find(u => parseInt(u.id, 10) === uIdNum);
+        if (unitObj && Array.isArray(unitObj.tenants)) {
+          remaining = unitObj.tenants.filter(t => (t.rental_status || 'active') !== 'archived').length;
+          unitObj.is_occupied = remaining > 0;
+          if (!unitObj.is_occupied) {
+            unitObj.is_paid_up = false;
+            unitObj.card_state = 'available';
+          }
+        }
+        renderDirectoryUnitsGrid(window.directoryUnitsData);
       }
 
       if (remaining === 0) {
         // Release occupancy status for this unit
         occupiedUnitIds = occupiedUnitIds.filter(id => id !== uIdNum);
-
-        // Update button in unit detail view
-        const btnWrapper = document.getElementById(`unit-add-tenant-btn-wrapper-${unitId}`);
-        if (btnWrapper) {
-          btnWrapper.innerHTML = `
-            <button type="button" class="clay-btn clay-btn-primary" onclick="openAddTenantModal(${unitId})">
-              <span>➕ Add Tenant to Unit ${unitId}</span>
-            </button>
-          `;
-        }
 
         // Enable unit in addTenantModal select dropdown
         const selectEl = document.getElementById('newUnitId');
@@ -3296,20 +4735,9 @@ $pendingReviewCount = count($pendingReviewPayments);
           if (opt) {
             opt.disabled = false;
             opt.style.color = '';
-            opt.textContent = `Unit ${unitId} (Available)`;
+            opt.textContent = `${unitLabel} (Available)`;
           }
         }
-      }
-
-      const container = document.getElementById(`unit-tenants-container-${unitId}`);
-      if (remaining === 0 && container) {
-        container.innerHTML = `
-          <div class="clay-card-sm" style="text-align: center; color: var(--text-muted); padding: 54px 24px;">
-            <div style="font-size: 46px; margin-bottom: 12px;">📭</div>
-            <h3 style="font-size: 18px; font-weight: 800; color: #0f172a; margin-bottom: 6px;">No Tenants Assigned to this Unit</h3>
-            <p style="font-size: 13px; max-width: 440px; margin: 0 auto; line-height: 1.5;">This unit currently has no active residents. Click the <strong>"Add Tenant"</strong> button at the top right to provision a new tenant account.</p>
-          </div>
-        `;
       }
     }
 
@@ -3338,11 +4766,11 @@ $pendingReviewCount = count($pendingReviewPayments);
 
       if (pwInput.type === 'password') {
         pwInput.type = 'text';
-        toggleBtn.textContent = '🙈';
+        toggleBtn.innerHTML = window.rcIcon('eye-off', 'w-4 h-4');
         toggleBtn.setAttribute('aria-label', 'Hide password');
       } else {
         pwInput.type = 'password';
-        toggleBtn.textContent = '👁️';
+        toggleBtn.innerHTML = window.rcIcon('eye', 'w-4 h-4');
         toggleBtn.setAttribute('aria-label', 'Show password');
       }
     }
@@ -3365,7 +4793,7 @@ $pendingReviewCount = count($pendingReviewPayments);
       pwInput.value = '';
       pwInput.type = 'password';
       if (toggleBtn) {
-        toggleBtn.textContent = '👁️';
+        toggleBtn.innerHTML = window.rcIcon('eye', 'w-4 h-4');
         toggleBtn.setAttribute('aria-label', 'Show password');
       }
       clearOwnerDeletePasswordError();
@@ -3379,7 +4807,7 @@ $pendingReviewCount = count($pendingReviewPayments);
         if (warningEl) {
           warningEl.textContent = `WARNING: Permanently deleting "${safeName}" will erase their account, payment records, maintenance tickets, and notifications forever. This action is permanent and cannot be undone.`;
         }
-        if (confirmBtn) confirmBtn.innerHTML = '<span>🗑️ Confirm Delete</span>';
+        if (confirmBtn) confirmBtn.innerHTML = `<span style="display:inline-flex;align-items:center;gap:6px;">${window.rcIcon('trash-2', 'w-4 h-4')} Confirm Delete</span>`;
       } else {
         const rawUnit = context.unitNumber ? String(context.unitNumber).trim() : '';
         const unitLabel = rawUnit
@@ -3392,7 +4820,7 @@ $pendingReviewCount = count($pendingReviewPayments);
             ? `Permanent Action Warning: Confirming will verify bill settlement and archive "${safeName}" out of active tenancy. Please enter your owner password to continue.`
             : `Permanent Action Warning: Removing or marking "${safeName}" as Moved Out permanently closes their active tenancy (and archives settled records). Enter your owner password to continue.`;
         }
-        if (confirmBtn) confirmBtn.innerHTML = '<span>🗑️ Confirm Delete</span>';
+        if (confirmBtn) confirmBtn.innerHTML = `<span style="display:inline-flex;align-items:center;gap:6px;">${window.rcIcon('trash-2', 'w-4 h-4')} Confirm Delete</span>`;
       }
 
       modal.classList.add('open', 'active');
@@ -3412,7 +4840,7 @@ $pendingReviewCount = count($pendingReviewPayments);
         pwInput.type = 'password';
       }
       if (toggleBtn) {
-        toggleBtn.textContent = '👁️';
+        toggleBtn.innerHTML = window.rcIcon('eye', 'w-4 h-4');
         toggleBtn.setAttribute('aria-label', 'Show password');
       }
       clearOwnerDeletePasswordError();
@@ -3452,7 +4880,7 @@ $pendingReviewCount = count($pendingReviewPayments);
       clearOwnerDeletePasswordError();
 
       isSubmittingOwnerDelete = true;
-      const origConfirmHtml = confirmBtn ? confirmBtn.innerHTML : '<span>🗑️ Confirm Delete</span>';
+      const origConfirmHtml = confirmBtn ? confirmBtn.innerHTML : `<span style="display:inline-flex;align-items:center;gap:6px;">${window.rcIcon('trash-2', 'w-4 h-4')} Confirm Delete</span>`;
       if (confirmBtn) {
         confirmBtn.disabled = true;
         confirmBtn.style.opacity = '0.75';
@@ -3492,36 +4920,489 @@ $pendingReviewCount = count($pendingReviewPayments);
       }
     }
 
+    let isSubmittingMoveOut = false;
+    let activeMoveOutContext = null;
+
     function deleteTenantAccount(tenantId, tenantName, unitNumber, unitId = null, alreadyMovedOut = false) {
-      if (isDeletingTenant || isSubmittingOwnerDelete) return;
-      openOwnerDeleteConfirmModal({
-        mode: 'mark_moved_out',
+      openMoveOutConfirmModal({
         tenantId: parseInt(tenantId, 10),
         tenantName: tenantName || 'Tenant',
-        unitNumber: unitNumber || '',
+        username: '',
+        unitNumber: unitNumber || UNIT_LABELS[String(unitId)] || 'Assigned Unit',
         unitId: unitId,
+        moveInDate: '',
         alreadyMovedOut: !!alreadyMovedOut
       });
     }
 
-    async function performTenantMoveOutDelete(tenantId, tenantName, unitNumber, unitId = null, alreadyMovedOut = false, ownerPassword = '') {
-      if (isDeletingTenant) return { ok: false, message: 'Deletion is already in progress.' };
+    function formatDisplayDate(dateStr) {
+      if (!dateStr) return 'Not recorded';
+      const parsed = new Date(dateStr + 'T00:00:00');
+      if (isNaN(parsed.getTime())) return dateStr;
+      return parsed.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    }
 
-      isDeletingTenant = true;
-      const delBtn = document.getElementById('tdBtnDelete');
-      const origBtnContent = delBtn ? delBtn.innerHTML : 'Processing...';
+    function renderMoveOutSettlementAudit(settlement) {
+      const unpaidEl = document.getElementById('moUnpaidCount');
+      const pendingEl = document.getElementById('moPendingCount');
+      const balanceEl = document.getElementById('moOutstandingBalance');
+      const listWrap = document.getElementById('moUnsettledListWrap');
+      const listEl = document.getElementById('moUnsettledList');
+      const bannerEl = document.getElementById('moWarningBanner');
+      const iconEl = document.getElementById('moWarningIcon');
+      const textEl = document.getElementById('moWarningText');
+      const confirmBtn = document.getElementById('btnConfirmMoveOut');
 
-      // Display loading state & disable button
-      if (delBtn) {
-        delBtn.disabled = true;
-        delBtn.style.opacity = '0.75';
-        delBtn.style.cursor = 'not-allowed';
-        delBtn.innerHTML = `
-          <span class="clay-spinner" style="width: 15px; height: 15px; border-width: 2px; vertical-align: middle; margin-right: 6px;"></span>
-          <span>Processing move-out &amp; settlement...</span>
-        `;
+      const pendingCount = parseInt(settlement?.pending_count ?? 0, 10) || 0;
+      const unpaidCount = parseInt(settlement?.unpaid_count ?? 0, 10) || 0;
+      const balanceFormatted = settlement?.unpaid_balance_formatted || '₱0.00';
+      const isSettled = !!(settlement && settlement.is_settled);
+      const items = Array.isArray(settlement?.unsettled_items) ? settlement.unsettled_items : [];
+
+      if (unpaidEl) {
+        unpaidEl.textContent = String(unpaidCount);
+        unpaidEl.style.color = unpaidCount > 0 ? '#be123c' : '#047857';
+      }
+      if (pendingEl) {
+        pendingEl.textContent = String(pendingCount);
+        pendingEl.style.color = pendingCount > 0 ? '#b45309' : '#047857';
+      }
+      if (balanceEl) {
+        balanceEl.textContent = balanceFormatted;
+        balanceEl.style.color = parseFloat(settlement?.unpaid_balance ?? 0) > 0.01 ? '#be123c' : '#047857';
       }
 
+      if (listWrap && listEl) {
+        if (items.length > 0) {
+          listWrap.style.display = 'block';
+          listEl.innerHTML = items.map(item => {
+            const st = String(item.status || 'unpaid');
+            const badgeStyle = st === 'pending'
+              ? 'background: #fef3c7; color: #92400e;'
+              : 'background: #fee2e2; color: #991b1b;';
+            const cycleLabel = item.billing_cycle_formatted && item.billing_cycle_formatted !== '—'
+              ? `${item.payment_type || 'Rent'} · ${item.billing_cycle_formatted}`
+              : (item.payment_type || 'Billing Item');
+            return `
+              <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 12px; border-bottom: 1px solid #f1f5f9;">
+                <div>
+                  <div style="font-weight: 700; color: #0f172a;">${escapeHtml(cycleLabel)}</div>
+                  <div style="font-size: 11px; color: var(--text-muted);">Due: ${escapeHtml(item.due_date_formatted || '—')}</div>
+                </div>
+                <div style="text-align: right;">
+                  <div style="font-weight: 800; color: #9f1239;">${escapeHtml(item.balance_formatted || item.amount_due_formatted || '₱0.00')}</div>
+                  <span class="clay-badge" style="font-size: 10px; padding: 2px 7px; ${badgeStyle}">${escapeHtml(item.status_label || st)}</span>
+                </div>
+              </div>
+            `;
+          }).join('');
+        } else {
+          listWrap.style.display = 'none';
+          listEl.innerHTML = '';
+        }
+      }
+
+      if (bannerEl && iconEl && textEl) {
+        if (isSettled) {
+          bannerEl.style.background = '#ecfdf5';
+          bannerEl.style.border = '1.5px solid #a7f3d0';
+          bannerEl.style.color = '#065f46';
+          iconEl.innerHTML = window.rcIcon('check-circle-2', 'w-4 h-4');
+          textEl.textContent = 'All rental bills and payment receipts are settled and verified. Confirming will record the official move-out date and automatically transfer all tenant records to Archived Tenants.';
+        } else {
+          bannerEl.style.background = '#fff1f2';
+          bannerEl.style.border = '1.5px solid #fecdd3';
+          bannerEl.style.color = '#881337';
+          iconEl.innerHTML = window.rcIcon('alert-triangle', 'w-4 h-4');
+          textEl.textContent = `Cannot archive yet: ${settlement?.reason_text || 'Outstanding or pending payments remain'}. Owner confirmation cannot override unpaid balances or unverified receipts. Confirming will mark Moved Out only while keeping records active until settled.`;
+        }
+      }
+
+      if (confirmBtn && !isSubmittingMoveOut) {
+        confirmBtn.innerHTML = isSettled
+          ? `<span style="display:inline-flex;align-items:center;gap:6px;">${window.rcIcon('check-circle-2', 'w-4 h-4')} Confirm Move-Out &amp; Archive</span>`
+          : `<span style="display:inline-flex;align-items:center;gap:6px;">${window.rcIcon('log-out', 'w-4 h-4')} Confirm Move-Out Check</span>`;
+      }
+    }
+
+    async function openMoveOutConfirmModal(context) {
+      if (isDeletingTenant || isSubmittingMoveOut || isSubmittingOwnerDelete) return;
+
+      const modal = document.getElementById('moveOutConfirmModal');
+      if (!modal) return;
+
+      const tenantId = parseInt(context.tenantId, 10);
+      const rawUnit = context.unitNumber ? String(context.unitNumber).trim() : '';
+      const unitLabel = rawUnit || UNIT_LABELS[String(context.unitId)] || 'Assigned Unit';
+
+      activeMoveOutContext = {
+        tenantId,
+        tenantName: context.tenantName || 'Tenant',
+        username: context.username || '',
+        unitNumber: unitLabel,
+        unitId: context.unitId ? parseInt(context.unitId, 10) : null,
+        moveInDate: context.moveInDate || '',
+        alreadyMovedOut: !!context.alreadyMovedOut
+      };
+
+      const titleEl = document.getElementById('moModalTitle');
+      const nameEl = document.getElementById('moTenantName');
+      const userEl = document.getElementById('moTenantUsername');
+      const unitBadge = document.getElementById('moUnitBadge');
+      const moveInEl = document.getElementById('moMoveInDate');
+      const moveOutInput = document.getElementById('moMoveOutDate');
+      const checkboxEl = document.getElementById('moSettlementConfirmCheckbox');
+      const errEl = document.getElementById('moErrorAlert');
+      const loadingEl = document.getElementById('moLoadingState');
+      const auditContainer = document.getElementById('moSettlementContainer');
+      const confirmBtn = document.getElementById('btnConfirmMoveOut');
+
+      if (titleEl) {
+        titleEl.textContent = activeMoveOutContext.alreadyMovedOut
+          ? 'Verify Settlement & Archive Tenant'
+          : 'Confirm Tenant Move-Out';
+      }
+      if (nameEl) nameEl.textContent = activeMoveOutContext.tenantName;
+      if (userEl) {
+        userEl.textContent = activeMoveOutContext.username ? `@${activeMoveOutContext.username}` : `ID #${tenantId}`;
+      }
+      if (unitBadge) unitBadge.textContent = unitLabel;
+      if (moveInEl) moveInEl.textContent = formatDisplayDate(activeMoveOutContext.moveInDate);
+
+      const todayStr = typeof getManilaTodayStr === 'function'
+        ? getManilaTodayStr()
+        : new Date().toISOString().slice(0, 10);
+      if (moveOutInput) moveOutInput.value = todayStr;
+      if (checkboxEl) checkboxEl.checked = false;
+      if (errEl) {
+        errEl.style.display = 'none';
+        errEl.textContent = '';
+      }
+      if (loadingEl) loadingEl.style.display = 'flex';
+      if (auditContainer) auditContainer.style.display = 'none';
+      if (confirmBtn) {
+        confirmBtn.disabled = true;
+        confirmBtn.style.opacity = '0.7';
+      }
+
+      modal.classList.add('open', 'active');
+
+      try {
+        const res = await fetch(`api/tenant_directory_api.php?action=check_settlement&tenant_id=${encodeURIComponent(tenantId)}`);
+        const data = await res.json();
+
+        if (!res.ok || data.status !== 'success') {
+          throw new Error(data.message || 'Unable to verify payment settlement.');
+        }
+
+        if (activeMoveOutContext && activeMoveOutContext.tenantId === tenantId) {
+          if (data.unit_id) activeMoveOutContext.unitId = parseInt(data.unit_id, 10);
+          if (data.unit_number) {
+            activeMoveOutContext.unitNumber = data.unit_number;
+            if (unitBadge) unitBadge.textContent = data.unit_number;
+          }
+          if (data.username && userEl) userEl.textContent = `@${data.username}`;
+          if (data.move_in_date_formatted && moveInEl) moveInEl.textContent = data.move_in_date_formatted;
+          if (data.move_out_date && moveOutInput) moveOutInput.value = data.move_out_date;
+
+          renderMoveOutSettlementAudit(data.settlement || {});
+        }
+      } catch (err) {
+        if (errEl) {
+          errEl.textContent = err.message || 'Network error checking payment settlement.';
+          errEl.style.display = 'block';
+        }
+      } finally {
+        if (loadingEl) loadingEl.style.display = 'none';
+        if (auditContainer) auditContainer.style.display = 'block';
+        if (confirmBtn) {
+          confirmBtn.disabled = false;
+          confirmBtn.style.opacity = '1';
+        }
+      }
+    }
+
+    function closeMoveOutConfirmModal(force = false) {
+      if (isSubmittingMoveOut && !force) return;
+      const modal = document.getElementById('moveOutConfirmModal');
+      const errEl = document.getElementById('moErrorAlert');
+      const checkboxEl = document.getElementById('moSettlementConfirmCheckbox');
+      const pwInput = document.getElementById('moOwnerPasswordInput');
+      const toggleBtn = document.getElementById('btnToggleMoOwnerPass');
+      if (errEl) {
+        errEl.style.display = 'none';
+        errEl.textContent = '';
+      }
+      if (checkboxEl) checkboxEl.checked = false;
+      if (pwInput) {
+        pwInput.value = '';
+        pwInput.type = 'password';
+      }
+      if (toggleBtn && window.rcIcon) {
+        toggleBtn.innerHTML = window.rcIcon('eye', 'w-4 h-4');
+      }
+      activeMoveOutContext = null;
+      if (modal) {
+        modal.classList.add('hidden');
+        modal.classList.remove('open', 'active');
+        modal.style.display = 'none';
+        modal.style.pointerEvents = 'none';
+      }
+    }
+
+    function toggleMoPasswordVisibility() {
+      const pwInput = document.getElementById('moOwnerPasswordInput');
+      const toggleBtn = document.getElementById('btnToggleMoOwnerPass');
+      if (!pwInput || !toggleBtn) return;
+      if (pwInput.type === 'password') {
+        pwInput.type = 'text';
+        toggleBtn.innerHTML = window.rcIcon ? window.rcIcon('eye-off', 'w-4 h-4') : '👁';
+        toggleBtn.setAttribute('aria-label', 'Hide password');
+      } else {
+        pwInput.type = 'password';
+        toggleBtn.innerHTML = window.rcIcon ? window.rcIcon('eye', 'w-4 h-4') : '👁';
+        toggleBtn.setAttribute('aria-label', 'Show password');
+      }
+    }
+
+    function handleMoveOutBackdropClick(event) {
+      if (event.target === document.getElementById('moveOutConfirmModal')) {
+        closeMoveOutConfirmModal();
+      }
+    }
+
+    function markRowAsMovedOutPendingSettlement(tenantId) {
+      const idNum = parseInt(tenantId, 10);
+      if (Array.isArray(window.directoryUnitsData)) {
+        window.directoryUnitsData.forEach(u => {
+          (u.tenants || []).forEach(t => {
+            if (parseInt(t.id, 10) === idNum) {
+              t.rental_status = 'moved_out';
+            }
+          });
+        });
+        if (typeof renderDirectoryUnitsGrid === 'function') {
+          renderDirectoryUnitsGrid(window.directoryUnitsData);
+        }
+      }
+
+      const statusBadge = document.getElementById('tdRentalStatusBadge');
+      const noticeBox = document.getElementById('tdMovedOutNotice');
+      const delBtn = document.getElementById('tdBtnDelete');
+      if (statusBadge) {
+        statusBadge.className = 'clay-badge';
+        statusBadge.style.background = '#fef3c7';
+        statusBadge.style.color = '#92400e';
+        statusBadge.textContent = 'Moved Out (Pending Settlement)';
+      }
+      if (noticeBox) noticeBox.style.display = 'block';
+      if (delBtn) delBtn.innerHTML = `${window.rcIcon('shield-check', 'w-4 h-4')} Verify Settlement &amp; Archive`;
+    }
+
+    function syncDashboardAfterTenantArchived(result) {
+      const tenantId = parseInt(result.tenant_id || 0, 10);
+      const resolvedUnitId = parseInt(result.unit_id || activeMoveOutContext?.unitId || 0, 10);
+
+      // 1. Remove archived tenant from unit card state & release unit occupancy
+      if (Array.isArray(window.directoryUnitsData)) {
+        window.directoryUnitsData.forEach(u => {
+          const prevLen = (u.tenants || []).length;
+          u.tenants = (u.tenants || []).filter(t => parseInt(t.id, 10) !== tenantId);
+          if (prevLen > 0 && u.tenants.length === 0) {
+            u.is_occupied = false;
+            u.is_paid_up = null;
+            u.card_state = 'available';
+          }
+        });
+        if (typeof renderDirectoryUnitsGrid === 'function') {
+          renderDirectoryUnitsGrid(window.directoryUnitsData);
+        }
+      }
+      if (resolvedUnitId) {
+        updateUnitTenantCount(resolvedUnitId);
+      }
+
+      // 2. Remove archived tenant rows from active Payment Verification table
+      document.querySelectorAll(`#paymentRecordsTableBody .payment-record-row[data-tenant-id="${tenantId}"]`).forEach(pRow => {
+        pRow.remove();
+      });
+
+      // 3. Synchronize client-side search & payment caches
+      if (Array.isArray(OWNER_SEARCH_TENANTS)) {
+        OWNER_SEARCH_TENANTS = OWNER_SEARCH_TENANTS.filter(t => parseInt(t.id, 10) !== tenantId);
+      }
+      if (Array.isArray(OWNER_SEARCH_PAYMENTS)) {
+        OWNER_SEARCH_PAYMENTS = OWNER_SEARCH_PAYMENTS.filter(p => parseInt(p.tenant_id, 10) !== tenantId);
+      }
+      if (Array.isArray(allPaymentsData)) {
+        allPaymentsData = allPaymentsData.filter(p => parseInt(p.tenant_id, 10) !== tenantId);
+      }
+
+      // 4. Immediately update Overview cards & directory badges
+      const activeResEl = document.getElementById('tenantSummaryText');
+      if (activeResEl && Array.isArray(OWNER_SEARCH_TENANTS)) {
+        activeResEl.textContent = String(OWNER_SEARCH_TENANTS.length);
+      }
+
+      const unitsValEl = document.getElementById('overviewUnitsValue');
+      if (unitsValEl) {
+        const totalUnits = Object.keys(UNIT_LABELS).length || 3;
+        const remainingOccupied = resolvedUnitId
+          ? occupiedUnitIds.filter(id => id !== resolvedUnitId).length
+          : occupiedUnitIds.length;
+        const availableUnits = Math.max(0, totalUnits - remainingOccupied);
+        unitsValEl.textContent = `${availableUnits} of ${totalUnits}`;
+      }
+
+      const archOvEl = document.getElementById('overviewArchivedTenants');
+      if (archOvEl) {
+        const curArch = parseInt(archOvEl.textContent || '0', 10) || 0;
+        archOvEl.textContent = String(curArch + 1);
+      }
+      const archDirEl = document.getElementById('directoryArchivedCountBadge');
+      if (archDirEl) {
+        const curDir = parseInt(archDirEl.textContent || '0', 10) || 0;
+        archDirEl.textContent = String(curDir + 1);
+      }
+
+      // 5. Refresh Archived Tenants folder from database & analytics
+      cachedArchivedTenants = [];
+      ownerSearchArchivedLoaded = false;
+      loadArchivedTenants();
+      if (typeof loadDashboardAnalytics === 'function') {
+        loadDashboardAnalytics();
+      }
+    }
+
+    async function submitMoveOutConfirmation() {
+      if (isSubmittingMoveOut || !activeMoveOutContext) return;
+
+      const checkboxEl = document.getElementById('moSettlementConfirmCheckbox');
+      const moveOutInput = document.getElementById('moMoveOutDate');
+      const errEl = document.getElementById('moErrorAlert');
+      const confirmBtn = document.getElementById('btnConfirmMoveOut');
+      const cancelBtn = document.getElementById('btnCancelMoveOut');
+
+      if (errEl) {
+        errEl.style.display = 'none';
+        errEl.textContent = '';
+      }
+
+      if (!checkboxEl || !checkboxEl.checked) {
+        if (errEl) {
+          errEl.textContent = 'Please tick the confirmation box confirming you checked outstanding bills and pending payments before proceeding.';
+          errEl.style.display = 'block';
+        }
+        return;
+      }
+
+      const moveOutDate = moveOutInput ? moveOutInput.value : '';
+      if (!moveOutDate) {
+        if (errEl) {
+          errEl.textContent = 'Please select the official move-out date.';
+          errEl.style.display = 'block';
+        }
+        if (moveOutInput) moveOutInput.focus();
+        return;
+      }
+
+      const pwInput = document.getElementById('moOwnerPasswordInput');
+      const ownerPassword = pwInput ? pwInput.value.trim() : '';
+      if (!ownerPassword) {
+        if (errEl) {
+          errEl.textContent = 'Please enter your Landlord password to authorize this move-out.';
+          errEl.style.display = 'block';
+        }
+        if (pwInput) pwInput.focus();
+        return;
+      }
+
+      isSubmittingMoveOut = true;
+      const origConfirmHtml = confirmBtn ? confirmBtn.innerHTML : '<span>Confirm</span>';
+      if (confirmBtn) {
+        confirmBtn.disabled = true;
+        confirmBtn.style.opacity = '0.75';
+        confirmBtn.style.cursor = 'not-allowed';
+        confirmBtn.innerHTML = '<span class="clay-spinner" style="width: 14px; height: 14px; border-width: 2px; vertical-align: middle; margin-right: 6px;"></span><span>Processing...</span>';
+      }
+      if (cancelBtn) cancelBtn.disabled = true;
+
+      try {
+        const res = await fetch('api/tenant_directory_api.php', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'mark_moved_out',
+            tenant_id: activeMoveOutContext.tenantId,
+            confirm_settlement: true,
+            move_out_date: moveOutDate,
+            owner_password: ownerPassword
+          })
+        });
+        const result = await res.json();
+
+        if (res.ok && result.status === 'success' && result.archived) {
+          showToast(result.message || 'Tenant moved out and automatically archived.');
+          closeMoveOutConfirmModal(true);
+          closeTenantDetailsModal();
+          syncDashboardAfterTenantArchived(result);
+        } else if (res.ok && result.status === 'success' && !result.archived) {
+          // Decoupled Move-Out with unpaid balance: unit is immediately available, account stays active until settled
+          showToast(result.message || 'Tenant marked as moved out. Unit is now available; account will remain active until balance is settled.', 'info');
+          closeMoveOutConfirmModal(true);
+          closeTenantDetailsModal();
+          markRowAsMovedOutPendingSettlement(activeMoveOutContext.tenantId);
+          if (typeof loadDashboardAnalytics === 'function') loadDashboardAnalytics();
+          if (typeof loadTenantDirectory === 'function') loadTenantDirectory();
+        } else if (res.ok && result.status === 'pending_settlement' && !result.archived) {
+          if (result.settlement) {
+            renderMoveOutSettlementAudit(result.settlement);
+          }
+          if (errEl) {
+            errEl.textContent = result.message || 'Cannot archive tenant while unpaid bills or pending verifications remain.';
+            errEl.style.display = 'block';
+          }
+          markRowAsMovedOutPendingSettlement(activeMoveOutContext.tenantId);
+          showToast(result.message || 'Outstanding or pending payments must be settled before archiving.', 'warning');
+        } else if (res.status === 409) {
+          showToast(result.message || 'This tenant account has already been archived.', 'warning');
+          closeMoveOutConfirmModal(true);
+          closeTenantDetailsModal();
+          syncDashboardAfterTenantArchived({ tenant_id: activeMoveOutContext.tenantId, unit_id: activeMoveOutContext.unitId });
+        } else {
+          const errMsg = result.message || 'Failed to process move-out.';
+          if (errEl) {
+            errEl.textContent = errMsg;
+            errEl.style.display = 'block';
+          }
+          if (result && result.settlement) {
+            renderMoveOutSettlementAudit(result.settlement);
+          }
+          showToast(errMsg, 'error');
+        }
+      } catch (e) {
+        const netMsg = 'Network error while confirming move-out. Please try again.';
+        if (errEl) {
+          errEl.textContent = netMsg;
+          errEl.style.display = 'block';
+        }
+        showToast(netMsg, 'error');
+      } finally {
+        if (pwInput) pwInput.value = '';
+        isSubmittingMoveOut = false;
+        if (confirmBtn) {
+          confirmBtn.disabled = false;
+          confirmBtn.style.opacity = '1';
+          confirmBtn.style.cursor = 'pointer';
+          confirmBtn.innerHTML = origConfirmHtml;
+        }
+        if (cancelBtn) cancelBtn.disabled = false;
+      }
+    }
+
+    async function performTenantMoveOutDelete(tenantId, tenantName, unitNumber, unitId = null, alreadyMovedOut = false, ownerPassword = '') {
+      if (isDeletingTenant) return { ok: false, message: 'Deletion is already in progress.' };
+      isDeletingTenant = true;
       let outcome = { ok: true, message: '' };
 
       try {
@@ -3539,31 +5420,11 @@ $pendingReviewCount = count($pendingReviewPayments);
         if (res.ok && result.status === 'success' && result.archived) {
           showToast(result.message || 'Tenant account officially archived successfully.');
           closeTenantDetailsModal();
-
-          const resolvedUnitId = unitId || result.unit_id;
-
-          // Smoothly remove summary row from the DOM while remaining in unit folder
-          const row = document.getElementById(`tenant-row-${tenantId}`);
-          if (row) {
-            row.style.transition = 'all 0.3s ease';
-            row.style.opacity = '0';
-            row.style.transform = 'scale(0.95)';
-            setTimeout(() => {
-              row.remove();
-              if (resolvedUnitId) updateUnitTenantCount(resolvedUnitId);
-            }, 300);
-          } else {
-            // Stay inside the unit folder
-            setTimeout(() => {
-              window.location.href = `admin_dashboard.php?section=sectionDirectory&unit_id=${resolvedUnitId}`;
-            }, 800);
-          }
+          syncDashboardAfterTenantArchived({ ...result, unit_id: result.unit_id || unitId });
         } else if (result.status === 'pending_settlement') {
           showToast(result.message, 'warning');
-          closeTenantDetailsModal();
-          setTimeout(() => {
-            window.location.reload();
-          }, 1200);
+          markRowAsMovedOutPendingSettlement(tenantId);
+          outcome = { ok: false, message: result.message };
         } else {
           outcome = { ok: false, message: result.message || 'Error processing move-out.' };
           showToast(outcome.message, 'error');
@@ -3573,12 +5434,6 @@ $pendingReviewCount = count($pendingReviewPayments);
         showToast(outcome.message, 'error');
       } finally {
         isDeletingTenant = false;
-        if (delBtn) {
-          delBtn.disabled = false;
-          delBtn.style.opacity = '1';
-          delBtn.style.cursor = 'pointer';
-          delBtn.innerHTML = origBtnContent;
-        }
       }
 
       return outcome;
@@ -3586,6 +5441,41 @@ $pendingReviewCount = count($pendingReviewPayments);
 
     // Restore active section, unit folder, or profile tab on page load
     document.addEventListener('DOMContentLoaded', () => {
+      if (window.lucide && typeof window.lucide.createIcons === 'function') {
+        window.lucide.createIcons();
+      }
+      if (typeof window.initSharedSidebar === 'function') {
+        window.initSharedSidebar();
+      }
+
+      // Universal Modal Backdrop Click-to-Close for Landlord Modals
+      try {
+        ['paymentDetailsModal', 'configureRentModal', 'addTenantModal', 'tenantCredentialsModal', 'ticketDetailsModal', 'reportDetailsModal', 'tenantDetailsModal', 'archivedTenantDetailsModal', 'ownerDeleteConfirmModal', 'moveOutConfirmModal', 'announcementModal', 'viewIdImageModal', 'viewReceiptImageModal'].forEach(mId => {
+          const m = document.getElementById(mId);
+          if (m) {
+            m.addEventListener('click', (e) => {
+              if (e.target === m) closeModal(mId);
+            });
+          }
+        });
+      } catch (e) {
+        console.warn('Landlord modal backdrop listener notice:', e);
+      }
+
+      const profileTrigger = document.getElementById('headerProfileTrigger');
+      if (profileTrigger) {
+        profileTrigger.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            toggleSettingsMenu(e);
+          }
+        });
+      }
+
+      if (typeof initGlobalOwnerSearch === 'function') {
+        initGlobalOwnerSearch();
+      }
+
       initMoveInDatePicker();
 
       const moveInInput = document.getElementById('newMoveInDate');
@@ -3606,6 +5496,10 @@ $pendingReviewCount = count($pendingReviewPayments);
       // Initialize Settings button visibility based on whether Profile section is active
       updateProfileSettingsVisibility(targetSection === 'sectionProfile');
 
+      if (typeof renderReportsFolderViews === 'function') {
+        renderReportsFolderViews();
+      }
+
       if (targetSection === 'sectionArchivedTenants') {
         const navBtn = document.getElementById('navTenantDirectory');
         if (navBtn) switchSection('sectionDirectory', navBtn, false);
@@ -3622,6 +5516,13 @@ $pendingReviewCount = count($pendingReviewPayments);
         const targetTicketId = urlParams.get('ticket_id');
         if (targetTicketId) {
           window.openTicketDetailsById(targetTicketId);
+        }
+      } else if (targetSection === 'sectionReports') {
+        const navBtn = document.getElementById('navTenantReports');
+        if (navBtn) switchSection('sectionReports', navBtn, false);
+        const targetReportId = urlParams.get('report_id');
+        if (targetReportId && typeof window.openReportDetailsById === 'function') {
+          window.openReportDetailsById(targetReportId);
         }
       } else if (targetSection === 'sectionPayments') {
         const navBtn = document.getElementById('navPaymentVerification');
@@ -3657,16 +5558,31 @@ $pendingReviewCount = count($pendingReviewPayments);
       const archivedView = document.getElementById('directoryArchivedView');
 
       if (tab === 'archived') {
-        if (activeBtn) activeBtn.classList.remove('active');
-        if (archivedBtn) archivedBtn.classList.add('active');
+        if (activeBtn) {
+          activeBtn.classList.remove('active');
+          activeBtn.setAttribute('aria-selected', 'false');
+        }
+        if (archivedBtn) {
+          archivedBtn.classList.add('active');
+          archivedBtn.setAttribute('aria-selected', 'true');
+        }
         if (activeView) activeView.style.display = 'none';
         if (archivedView) archivedView.style.display = 'block';
         loadArchivedTenants();
       } else {
-        if (archivedBtn) archivedBtn.classList.remove('active');
-        if (activeBtn) activeBtn.classList.add('active');
+        if (archivedBtn) {
+          archivedBtn.classList.remove('active');
+          archivedBtn.setAttribute('aria-selected', 'false');
+        }
+        if (activeBtn) {
+          activeBtn.classList.add('active');
+          activeBtn.setAttribute('aria-selected', 'true');
+        }
         if (archivedView) archivedView.style.display = 'none';
         if (activeView) activeView.style.display = 'block';
+        if (typeof fetchActiveDirectoryUnits === 'function') {
+          fetchActiveDirectoryUnits();
+        }
       }
     }
 
@@ -3703,6 +5619,10 @@ $pendingReviewCount = count($pendingReviewPayments);
 
           if (countBadge) countBadge.textContent = `${count} Archived Record${count === 1 ? '' : 's'}`;
           if (dirBadge) dirBadge.textContent = count;
+          if (!searchQuery) {
+            const ovArch = document.getElementById('overviewArchivedTenants');
+            if (ovArch) ovArch.textContent = String(count);
+          }
 
           renderArchivedTenantsTable(cachedArchivedTenants);
         } else {
@@ -3740,6 +5660,37 @@ $pendingReviewCount = count($pendingReviewPayments);
       }, 300);
     }
 
+    function exportArchivedTenantsToCSV() {
+      const records = cachedArchivedTenants || [];
+      if (records.length === 0) {
+        showToast('No archived tenant records available to export.', 'warning');
+        return;
+      }
+      const headers = ['Tenant Name', 'Unit Number', 'Email Address', 'Contact Number', 'Date of Moving In', 'Move-Out Date', 'Date Archived'];
+      const rows = records.map(t => [
+        t.name || '',
+        t.archived_unit_number || '',
+        t.email || '',
+        t.phone || '',
+        t.formatted_move_in || '',
+        t.formatted_move_out || '',
+        t.formatted_deleted_at || ''
+      ]);
+
+      const csvContent = 'data:text/csv;charset=utf-8,\uFEFF'
+        + headers.map(h => `"${h.replace(/"/g, '""')}"`).join(',') + '\n'
+        + rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
+
+      const encodedUri = encodeURI(csvContent);
+      const link = document.createElement('a');
+      link.setAttribute('href', encodedUri);
+      link.setAttribute('download', `tararent_archived_tenants_${new Date().toISOString().slice(0, 10)}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      showToast('Archived tenants successfully exported to CSV.', 'success');
+    }
+
     function renderArchivedTenantsTable(tenants) {
       const tbody = document.getElementById('archivedTenantsTableBody');
       if (!tbody) return;
@@ -3747,10 +5698,10 @@ $pendingReviewCount = count($pendingReviewPayments);
       if (!tenants || tenants.length === 0) {
         tbody.innerHTML = `
           <tr>
-            <td colspan="6" style="text-align: center; padding: 42px 14px; color: var(--text-muted); font-size: 13.5px;">
-              <div style="font-size: 28px; margin-bottom: 8px;">📁</div>
+            <td colspan="8" style="text-align: center; padding: 42px 14px; color: var(--text-muted); font-size: 13.5px;">
+              <div style="margin-bottom: 8px; display: flex; justify-content: center; color: #94a3b8;">${window.rcIcon('folder-open', 'w-7 h-7')}</div>
               <strong>No archived tenant accounts found.</strong>
-              <div style="font-size: 12px; color: #94a3b8; margin-top: 4px;">Deleted and moved-out tenant records will appear here with full historical logs.</div>
+              <div style="font-size: 12px; color: #94a3b8; margin-top: 4px;">Moved-out and settled tenant records will appear here with full historical logs.</div>
             </td>
           </tr>
         `;
@@ -3777,21 +5728,31 @@ $pendingReviewCount = count($pendingReviewPayments);
               </div>
             </td>
             <td style="padding: 14px 16px; white-space: nowrap;">
-              <span class="clay-badge" style="background: #e0e7ff; color: #4338ca; font-weight: 800; font-size: 11.5px; padding: 3px 9px;">
+              <span class="clay-badge" style="background: #F3E4C6; color: #56380E; border: 1px solid rgba(181, 143, 83, 0.35); font-weight: 800; font-size: 11.5px; padding: 3px 9px;">
                 ${escapeHtml(t.archived_unit_number || 'Unit N/A')}
               </span>
             </td>
             <td style="padding: 14px 16px; color: #334155; font-size: 13px;">${escapeHtml(t.email || '—')}</td>
             <td style="padding: 14px 16px; color: #334155; font-size: 13px; white-space: nowrap;">${escapeHtml(t.phone || '—')}</td>
             <td style="padding: 14px 16px; color: var(--text-muted); font-size: 12.5px; white-space: nowrap;">${escapeHtml(t.formatted_move_in || '—')}</td>
+            <td style="padding: 14px 16px; color: #92400e; font-weight: 700; font-size: 12.5px; white-space: nowrap;">${escapeHtml(t.formatted_move_out || 'Not set')}</td>
             <td style="padding: 14px 16px; color: #be123c; font-weight: 700; font-size: 12.5px; white-space: nowrap;">
               ${escapeHtml(t.formatted_deleted_at || 'Archived')}
+            </td>
+            <td style="padding: 14px 16px; text-align: center; white-space: nowrap;">
+              <button type="button" class="archived-main-action-btn archived-btn-sm" onclick="event.stopPropagation(); openArchivedTenantDetails(${t.id})" title="View Details">
+                <i data-lucide="eye" class="w-4 h-4" aria-hidden="true"></i>
+                <span>View Details</span>
+              </button>
             </td>
           </tr>
         `;
       });
 
       tbody.innerHTML = html;
+      if (window.lucide && typeof window.lucide.createIcons === 'function') {
+        window.lucide.createIcons();
+      }
     }
 
     async function openArchivedTenantDetails(tenantId) {
@@ -3805,10 +5766,14 @@ $pendingReviewCount = count($pendingReviewPayments);
       modal.classList.add('open', 'active');
       document.body.style.overflow = 'hidden';
 
-      // Reset loading state for payments list
+      // Reset loading state for payments and maintenance tickets
       const payList = document.getElementById('archivedPaymentsList');
       if (payList) {
-        payList.innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 24px 14px; color: var(--text-muted);"><span class="clay-spinner" style="width: 16px; height: 16px; border-width: 2px; vertical-align: middle; margin-right: 6px;"></span>Loading payment records...</td></tr>';
+        payList.innerHTML = '<tr><td colspan="8" style="text-align: center; padding: 24px 14px; color: var(--text-muted);"><span class="clay-spinner" style="width: 16px; height: 16px; border-width: 2px; vertical-align: middle; margin-right: 6px;"></span>Loading payment records...</td></tr>';
+      }
+      const ticketList = document.getElementById('archivedTicketsList');
+      if (ticketList) {
+        ticketList.innerHTML = '<div style="text-align: center; padding: 18px 12px; color: var(--text-muted); font-size: 12.5px;"><span class="clay-spinner" style="width: 15px; height: 15px; border-width: 2px; vertical-align: middle; margin-right: 6px;"></span>Loading maintenance tickets...</div>';
       }
 
       try {
@@ -3818,6 +5783,7 @@ $pendingReviewCount = count($pendingReviewPayments);
         if (res.ok && data.status === 'success') {
           const t = data.tenant;
           const payments = data.payments || [];
+          const tickets = data.tickets || [];
 
           // Header
           const nameEl = document.getElementById('archivedModalName');
@@ -3826,7 +5792,9 @@ $pendingReviewCount = count($pendingReviewPayments);
           const usernameBadge = document.getElementById('archivedModalUsernameBadge');
 
           if (nameEl) nameEl.textContent = t.name || 'Archived Tenant';
-          if (dateEl) dateEl.textContent = `Account deleted and archived on ${t.formatted_deleted_at || 'N/A'}`;
+          if (dateEl) {
+            dateEl.textContent = `Moved out on ${t.formatted_move_out || 'N/A'} • Archived on ${t.formatted_deleted_at || 'N/A'}`;
+          }
           if (usernameBadge) usernameBadge.textContent = t.username ? `@${t.username}` : '@RC000';
           if (avatarEl) {
             if (t.profile_picture) {
@@ -3842,23 +5810,42 @@ $pendingReviewCount = count($pendingReviewPayments);
           const pPhone = document.getElementById('archivedPersonalPhone');
           const pAddress = document.getElementById('archivedPersonalAddress');
           const pBirthday = document.getElementById('archivedPersonalBirthday');
+          const pEmergency = document.getElementById('archivedPersonalEmergency');
+          const pOccupants = document.getElementById('archivedPersonalOccupants');
 
           if (pName) pName.textContent = t.name || '-';
           if (pEmail) pEmail.textContent = t.email || '—';
           if (pPhone) pPhone.textContent = t.phone || '—';
           if (pAddress) pAddress.textContent = t.complete_address || '—';
           if (pBirthday) pBirthday.textContent = t.formatted_birthday || 'Not provided';
+          if (pEmergency) {
+            const emParts = [t.emergency_contact_name, t.emergency_contact_relationship ? `(${t.emergency_contact_relationship})` : '', t.emergency_contact_phone]
+              .filter(Boolean);
+            pEmergency.textContent = emParts.length > 0 ? emParts.join(' · ') : (t.emergency_contact || 'Not provided');
+          }
+          if (pOccupants) {
+            const totOcc = parseInt(t.total_occupants || 1, 10) || 1;
+            const adults = parseInt(t.adults_count || 1, 10) || 0;
+            const kids = parseInt(t.kids_count || 0, 10) || 0;
+            pOccupants.textContent = `${totOcc} total (${adults} adult${adults === 1 ? '' : 's'}, ${kids} kid${kids === 1 ? '' : 's'})`;
+          }
 
-          // Rental Information
+          // Rental & Move-Out Information
           const rUnit = document.getElementById('archivedRentalUnit');
+          const rUnitHist = document.getElementById('archivedRentalUnitHistory');
+          const rSpaces = document.getElementById('archivedRentalSpaces');
           const rMoveIn = document.getElementById('archivedRentalMoveIn');
+          const rMoveOut = document.getElementById('archivedRentalMoveOut');
           const rRent = document.getElementById('archivedRentalMonthlyRent');
           const rDeposit = document.getElementById('archivedRentalDeposit');
           const rCreatedAt = document.getElementById('archivedRentalCreatedAt');
           const rDeletedAt = document.getElementById('archivedRentalDeletedAt');
 
           if (rUnit) rUnit.textContent = t.archived_unit_number || 'Unit N/A';
+          if (rUnitHist) rUnitHist.textContent = t.unit_history || t.archived_unit_number || 'Not recorded';
+          if (rSpaces) rSpaces.textContent = t.archived_spaces_text || 'None';
           if (rMoveIn) rMoveIn.textContent = t.formatted_move_in || '—';
+          if (rMoveOut) rMoveOut.textContent = t.formatted_move_out || 'Not recorded';
           if (rRent) rRent.textContent = t.archived_monthly_rent_formatted || '₱3,000.00 / mo';
           if (rDeposit) rDeposit.textContent = t.advance_deposit_formatted || '₱3,000.00';
           if (rCreatedAt) rCreatedAt.textContent = t.formatted_created_at || '—';
@@ -3866,11 +5853,13 @@ $pendingReviewCount = count($pendingReviewPayments);
 
           // Account Information
           const aUser = document.getElementById('archivedAccountUsername');
+          const aStatus = document.getElementById('archivedAccountRentalStatus');
           const aIdStatus = document.getElementById('archivedAccountIdStatus');
 
           if (aUser) aUser.textContent = t.username ? `@${t.username}` : '@RC000';
+          if (aStatus) aStatus.textContent = t.rental_status_label || 'Archived / Moved Out';
           if (aIdStatus) {
-            aIdStatus.textContent = t.id_type ? `${t.id_type} – Verified ID` : 'Verified Account';
+            aIdStatus.textContent = t.id_type ? `${t.id_type} (${t.verification_status || 'verified'})` : 'Verified Account';
           }
 
           // Payment Records
@@ -3879,23 +5868,78 @@ $pendingReviewCount = count($pendingReviewPayments);
 
           if (payList) {
             if (payments.length === 0) {
-              payList.innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 24px 14px; color: var(--text-muted);">No payment records found for this archived account.</td></tr>';
+              payList.innerHTML = '<tr><td colspan="8" style="text-align: center; padding: 24px 14px; color: var(--text-muted);">No payment records found for this archived account.</td></tr>';
             } else {
               payList.innerHTML = payments.map(p => {
                 const receiptLink = p.receipt_filename 
-                  ? `<a href="uploads/receipts/${escapeHtml(p.receipt_filename)}" target="_blank" class="btn-inspect-proof" style="font-size: 11px; padding: 3px 8px; text-decoration: none;">🔍 View Receipt</a>`
+                  ? `<a href="uploads/receipts/${escapeHtml(p.receipt_filename)}" target="_blank" class="btn-inspect-proof" style="font-size: 11px; padding: 3px 8px; text-decoration: none; white-space: nowrap; display: inline-flex; align-items: center; gap: 4px;">${window.rcIcon('file-text', 'w-3.5 h-3.5')} Receipt</a>`
                   : '<span style="color: #94a3b8; font-size: 11px;">None</span>';
                 const methodStr = p.payment_method || 'GCash / Bank Transfer';
+                const typeLabel = p.payment_type || 'Rent';
+                const unitLabel = p.unit_label || t.archived_unit_number || 'Unit';
                 return `
                   <tr style="border-bottom: 1px solid rgba(166, 180, 204, 0.15);">
-                    <td style="padding: 10px 14px; font-weight: 700; color: #0f172a;">${escapeHtml(p.billing_cycle_formatted || '-')}</td>
-                    <td style="padding: 10px 14px; font-weight: 600; color: #475569;">${escapeHtml(p.amount_due_formatted || '₱0.00')}</td>
-                    <td style="padding: 10px 14px; font-weight: 700; color: #047857;">${escapeHtml(p.amount_paid_formatted || '₱0.00')}</td>
-                    <td style="padding: 10px 14px; font-size: 12px; color: var(--text-muted);">${escapeHtml(p.payment_date_formatted || 'Pending')}</td>
-                    <td style="padding: 10px 14px; font-size: 12px; color: #334155; font-weight: 600;">${escapeHtml(methodStr)}</td>
-                    <td style="padding: 10px 14px;"><span class="clay-badge badge-${escapeHtml(p.status)}">${escapeHtml(String(p.status).toUpperCase())}</span></td>
-                    <td style="padding: 10px 14px; text-align: center;">${receiptLink}</td>
+                    <td style="padding: 9px 10px; font-weight: 700; color: #0f172a;">${escapeHtml(p.billing_cycle_formatted || '-')}</td>
+                    <td style="padding: 9px 10px;">
+                      <div style="font-weight: 700; color: #56380E; font-size: 12px;">${escapeHtml(typeLabel)}</div>
+                      <div style="font-size: 11px; color: var(--text-muted);">${escapeHtml(unitLabel)}</div>
+                    </td>
+                    <td style="padding: 9px 10px; font-weight: 600; color: #475569;">${escapeHtml(p.amount_due_formatted || '₱0.00')}</td>
+                    <td style="padding: 9px 10px; font-weight: 700; color: #047857;">${escapeHtml(p.amount_paid_formatted || '₱0.00')}</td>
+                    <td style="padding: 9px 10px; font-size: 12px; color: var(--text-muted);">${escapeHtml(p.payment_date_formatted || 'Pending')}</td>
+                    <td style="padding: 9px 10px; font-size: 12px; color: #334155; font-weight: 600;">${escapeHtml(methodStr)}</td>
+                    <td style="padding: 9px 10px;"><span class="clay-badge badge-${escapeHtml(p.status)}">${escapeHtml(String(p.status).toUpperCase())}</span></td>
+                    <td style="padding: 9px 10px; text-align: center; white-space: nowrap;">${receiptLink}</td>
                   </tr>
+                `;
+              }).join('');
+            }
+          }
+
+          // Previous Maintenance Tickets
+          const tkBadge = document.getElementById('archivedTicketCountBadge');
+          if (tkBadge) tkBadge.textContent = `${tickets.length} Ticket${tickets.length === 1 ? '' : 's'}`;
+
+          if (ticketList) {
+            if (tickets.length === 0) {
+              ticketList.innerHTML = '<div style="text-align: center; padding: 20px 12px; color: var(--text-muted); font-size: 12.5px;">No maintenance tickets were filed by this tenant.</div>';
+            } else {
+              ticketList.innerHTML = tickets.map(tk => {
+                const st = String(tk.status || 'open');
+                const statusBadgeStyle = (st === 'resolved' || st === 'closed')
+                  ? 'background: #dcfce7; color: #166534;'
+                  : (st === 'in_progress' ? 'background: #fef3c7; color: #92400e;' : 'background: #fee2e2; color: #991b1b;');
+                const photos = (tk.photo_path || '')
+                  .split(',')
+                  .map(s => s.trim())
+                  .filter(Boolean);
+                const photosHtml = photos.length > 0
+                  ? `<div style="display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px;">` +
+                    photos.map((src, idx) => `<a href="${escapeHtml(src)}" target="_blank" style="font-size: 11px; font-weight: 700; color: #56380E; background: #F3E4C6; padding: 2px 8px; border-radius: 6px; text-decoration: none; display: inline-flex; align-items: center; gap: 4px;">${window.rcIcon('image', 'w-3.5 h-3.5')} Photo ${photos.length > 1 ? idx + 1 : ''}</a>`).join('') +
+                    `</div>`
+                  : '';
+                const resHtml = tk.resolution_notes
+                  ? `<div style="margin-top: 6px; padding: 6px 8px; background: #FFF9EE; border-radius: 6px; font-size: 11.5px; color: #56380E;"><strong>Resolution:</strong> ${escapeHtml(tk.resolution_notes)}${tk.resolved_at_formatted ? ` <span style="color: var(--text-muted);">(${escapeHtml(tk.resolved_at_formatted)})</span>` : ''}</div>`
+                  : '';
+
+                return `
+                  <div style="background: #ffffff; border: 1px solid rgba(166, 180, 204, 0.28); border-radius: 10px; padding: 10px 12px;">
+                    <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; flex-wrap: wrap;">
+                      <div>
+                        <div style="font-size: 13px; font-weight: 800; color: #0f172a;">#${tk.id} · ${escapeHtml(tk.title || 'Maintenance Request')}</div>
+                        <div style="font-size: 11.5px; color: var(--text-muted); margin-top: 2px;">
+                          ${escapeHtml(tk.unit_label || 'Unit')} • ${escapeHtml(tk.category || 'General')} • Priority: ${escapeHtml(tk.priority_label || 'Medium')} • Filed ${escapeHtml(tk.formatted_date || 'N/A')}
+                        </div>
+                      </div>
+                      <div style="display: flex; align-items: center; gap: 8px;">
+                        <span style="font-size: 12px; font-weight: 800; color: #302313;">${escapeHtml(tk.actual_cost_formatted || '₱0.00')}</span>
+                        <span class="clay-badge" style="font-size: 10.5px; padding: 2px 8px; font-weight: 800; ${statusBadgeStyle}">${escapeHtml((tk.status_label || st).toUpperCase())}</span>
+                      </div>
+                    </div>
+                    ${tk.description ? `<div style="font-size: 12px; color: #334155; margin-top: 6px; line-height: 1.4;">${escapeHtml(tk.description)}</div>` : ''}
+                    ${resHtml}
+                    ${photosHtml}
+                  </div>
                 `;
               }).join('');
             }
@@ -4016,8 +6060,82 @@ $pendingReviewCount = count($pendingReviewPayments);
     }
 
     // =========================================================================
-    // MAINTENANCE TICKETS: SEPARATE ACTIVE & COMPLETED TABS & STATUS WORKFLOW
+    // MAINTENANCE TICKETS: FOLDER TABS, UNIFIED VIEW & LIVE BACKEND SYNC
     // =========================================================================
+    window.allTicketsData = <?= json_encode($tickets, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+    let activeTicketTab = 'active';
+    let activeBoardStatus = 'Pending';
+    let lastTicketsSnapshot = JSON.stringify(window.allTicketsData || []);
+    const maintenanceScrollMemory = { windowY: null, boxTop: 0 };
+
+    function normalizeTicketStatus(statusVal) {
+      const st = String(statusVal || '').toLowerCase();
+      if (st === 'done' || st === 'resolved' || st === 'closed') return 'Done';
+      if (st === 'on-going' || st === 'ongoing' || st === 'in_progress') return 'On-Going';
+      return 'Pending';
+    }
+
+    function getKanbanCategoryBadgeStyle(category) {
+      const key = String(category || 'General').trim().toLowerCase();
+      const styles = {
+        plumbing:   'background: #9E6E2E; color: #FFF8EB; border-color: #302313;',
+        carpentry:  'background: #A77532; color: #FFF8EB; border-color: #302313;',
+        electrical: 'background: #B98636; color: #261807; border-color: #302313;',
+        hvac:       'background: #845921; color: #FFF8EB; border-color: #302313;',
+        appliance:  'background: #C5954A; color: #261807; border-color: #302313;',
+        structural: 'background: #734A19; color: #FFF8EB; border-color: #302313;',
+        general:    'background: #B58F53; color: #261807; border-color: #302313;'
+      };
+      return styles[key] || 'background: #9C7136; color: #FFF8EB; border-color: #302313;';
+    }
+
+    function getKanbanPriorityBadgeStyle(priority) {
+      const key = String(priority || 'medium').trim().toLowerCase();
+      const styles = {
+        urgent: 'background: #DC5454; color: #FFFFFF; border-color: #4A1515;',
+        high:   'background: #D97724; color: #FFFFFF; border-color: #4D2507;',
+        medium: 'background: #DDA844; color: #2B1B07; border-color: #4A310E;',
+        low:    'background: #E7C369; color: #2B1B07; border-color: #4A310E;'
+      };
+      return styles[key] || styles.medium;
+    }
+
+    function captureMaintenanceScrollPositions() {
+      const paneActive = document.getElementById('paneActiveTickets');
+      if (!paneActive || paneActive.style.display === 'none') return;
+      maintenanceScrollMemory.windowY = window.scrollY;
+      const boxEl = document.getElementById('maintenanceUnifiedBox');
+      if (boxEl) maintenanceScrollMemory.boxTop = boxEl.scrollTop;
+    }
+
+    function restoreMaintenanceScrollPositions() {
+      requestAnimationFrame(() => {
+        const boxEl = document.getElementById('maintenanceUnifiedBox');
+        if (boxEl) boxEl.scrollTop = maintenanceScrollMemory.boxTop || 0;
+        if (maintenanceScrollMemory.windowY !== null) {
+          window.scrollTo({ top: maintenanceScrollMemory.windowY, behavior: 'auto' });
+        }
+      });
+    }
+
+    function handleActiveStatusDropdownChange(selectedVal) {
+      const valStr = String(selectedVal || '').trim();
+      if (valStr.toLowerCase() === 'all') {
+        activeBoardStatus = 'All';
+      } else {
+        activeBoardStatus = normalizeTicketStatus(valStr) === 'On-Going' ? 'On-Going' : 'Pending';
+      }
+      const dropdownEl = document.getElementById('activeStatusDropdown');
+      if (dropdownEl && dropdownEl.value !== activeBoardStatus) {
+        dropdownEl.value = activeBoardStatus;
+      }
+      if (activeTicketTab !== 'active') {
+        switchTicketTab('active');
+      }
+      renderMaintenanceUnifiedView();
+      syncTicketCounters();
+    }
+
     function switchTicketTab(tab) {
       const activeBtn = document.getElementById('btnTabActiveTickets');
       const completedBtn = document.getElementById('btnTabCompletedTickets');
@@ -4025,23 +6143,237 @@ $pendingReviewCount = count($pendingReviewPayments);
       const completedPane = document.getElementById('paneCompletedTickets');
 
       if (tab === 'completed') {
-        if (activeBtn) activeBtn.classList.remove('active');
-        if (completedBtn) completedBtn.classList.add('active');
+        if (activeTicketTab === 'active') {
+          captureMaintenanceScrollPositions();
+        }
+        activeTicketTab = 'completed';
+        if (activeBtn) {
+          activeBtn.classList.remove('active');
+          activeBtn.setAttribute('aria-selected', 'false');
+        }
+        if (completedBtn) {
+          completedBtn.classList.add('active');
+          completedBtn.setAttribute('aria-selected', 'true');
+        }
         if (activePane) activePane.style.display = 'none';
         if (completedPane) completedPane.style.display = 'block';
       } else {
-        if (completedBtn) completedBtn.classList.remove('active');
-        if (activeBtn) activeBtn.classList.add('active');
+        activeTicketTab = 'active';
+        if (completedBtn) {
+          completedBtn.classList.remove('active');
+          completedBtn.setAttribute('aria-selected', 'false');
+        }
+        if (activeBtn) {
+          activeBtn.classList.add('active');
+          activeBtn.setAttribute('aria-selected', 'true');
+        }
         if (completedPane) completedPane.style.display = 'none';
         if (activePane) activePane.style.display = 'block';
+        restoreMaintenanceScrollPositions();
       }
     }
 
-    // Direct Status Update (From table row dropdown or modal)
+    function createMaintenanceCardHtml(tk) {
+      const unitRaw = tk.unit_number ? String(tk.unit_number) : ('Unit ' + (tk.unit_id || ''));
+      const unitText = unitRaw.toUpperCase();
+      const catText = (tk.category ? String(tk.category) : 'General').trim();
+      const prioText = (tk.priority ? String(tk.priority) : 'medium').trim();
+      const dateStr = tk.created_at
+        ? new Date(String(tk.created_at).replace(' ', 'T')).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+        : '-';
+      const hasExtra = !!(tk.photo_path || tk.resolution_notes || (tk.description && String(tk.description).trim() !== ''));
+
+      return `
+        <article class="kanban-ticket-card"
+                 id="kanban-ticket-${tk.id}"
+                 data-ticket-id="${tk.id}"
+                 tabindex="0"
+                 role="button"
+                 aria-label="${escapeHtml(unitText)} - ${escapeHtml(catText)} - ${escapeHtml(prioText)} priority"
+                 onclick="openTicketByIdFromCache(${tk.id})"
+                 onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openTicketByIdFromCache(${tk.id});}">
+          <div class="kanban-card-top">
+            <span class="kanban-card-unit">${escapeHtml(unitText)}</span>
+            <span class="kanban-card-id">#MT-${String(tk.id).padStart(4, '0')}</span>
+          </div>
+          <div class="kanban-card-badges">
+            <span class="kanban-pill-badge" style="${getKanbanCategoryBadgeStyle(catText)}">${escapeHtml(catText.toUpperCase())}</span>
+            <span class="kanban-pill-badge" style="${getKanbanPriorityBadgeStyle(prioText)}">${escapeHtml(prioText.toUpperCase())}</span>
+            ${hasExtra ? '<span class="kanban-card-more" title="Click card for full details &amp; photos">+...</span>' : ''}
+          </div>
+          <div class="kanban-card-title" title="${escapeHtml(tk.title || 'Maintenance Request')}">${escapeHtml(tk.title || 'Maintenance Request')}</div>
+          <div class="kanban-card-meta">
+            <span style="display:inline-flex;align-items:center;gap:4px;">${window.rcIcon ? window.rcIcon('user', 'w-3.5 h-3.5') : ''} ${escapeHtml(tk.tenant_name || 'Tenant')}</span>
+            <span>${escapeHtml(dateStr)}</span>
+          </div>
+        </article>
+      `;
+    }
+
+    function openTicketByIdFromCache(ticketId) {
+      const idNum = parseInt(ticketId, 10);
+      const found = (window.allTicketsData || []).find(t => parseInt(t.id, 10) === idNum);
+      if (found) {
+        openTicketDetailsModal(found);
+      } else if (typeof window.openTicketDetailsById === 'function') {
+        window.openTicketDetailsById(idNum);
+      }
+    }
+
+    function renderMaintenanceUnifiedView() {
+      const boxEl = document.getElementById('maintenanceUnifiedBox');
+      const gridEl = document.getElementById('maintenanceUnifiedGrid');
+      if (!boxEl || !gridEl) return;
+
+      const prevScrollTop = boxEl.scrollTop;
+      const stateLabelText = activeBoardStatus === 'All'
+        ? 'All Active Maintenance'
+        : (activeBoardStatus === 'On-Going' ? 'On-going Maintenance' : 'Pending Maintenance');
+
+      boxEl.setAttribute('data-board-status', activeBoardStatus);
+      const catLabel = document.getElementById('kanbanCategoryStateLabel');
+      if (catLabel) catLabel.textContent = stateLabelText;
+
+      const statusList = (window.allTicketsData || []).filter(tk => {
+        const norm = normalizeTicketStatus(tk.status);
+        if (activeBoardStatus === 'All') {
+          return norm === 'Pending' || norm === 'On-Going';
+        }
+        return norm === activeBoardStatus;
+      });
+
+      // Leave zero-data unified box completely empty (no placeholder cards or messages)
+      gridEl.innerHTML = statusList.length > 0
+        ? statusList.map(createMaintenanceCardHtml).join('')
+        : '';
+
+      boxEl.scrollTop = prevScrollTop;
+    }
+
+    function renderCompletedTicketsView() {
+      const completedTbody = document.getElementById('completedTicketsTableBody');
+      if (!completedTbody) return;
+
+      const completed = (window.allTicketsData || []).filter(tk => normalizeTicketStatus(tk.status) === 'Done');
+      if (completed.length === 0) {
+        completedTbody.innerHTML = `
+          <tr id="emptyCompletedTicketsRow">
+            <td colspan="7" style="text-align: center; padding: 42px 14px; color: var(--text-muted); font-size: 14px;">
+              <div style="margin-bottom: 8px; display: flex; justify-content: center; color: #94a3b8;">${window.rcIcon('clipboard-list', 'w-8 h-8')}</div>
+              <strong>No completed maintenance records yet.</strong>
+              <div style="font-size: 12px; color: #94a3b8; margin-top: 4px;">Resolved tickets will be archived here for historical review.</div>
+            </td>
+          </tr>
+        `;
+        return;
+      }
+
+      completedTbody.innerHTML = completed.map(tk => {
+        const unitStr = tk.unit_number || ('Unit ' + (tk.unit_id || ''));
+        const prioLower = String(tk.priority || 'medium').toLowerCase();
+        const prioLabel = prioLower.charAt(0).toUpperCase() + prioLower.slice(1);
+        const dateStr = tk.created_at
+          ? new Date(String(tk.created_at).replace(' ', 'T')).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+          : '-';
+        const descRaw = tk.description ? String(tk.description) : '';
+        const descPreview = descRaw.length > 60 ? descRaw.slice(0, 57) + '...' : descRaw;
+
+        return `
+          <tr class="clickable-ticket-row ticket-record-row"
+              id="ticket-row-${tk.id}"
+              data-ticket-id="${tk.id}"
+              style="border-bottom: 1px solid rgba(166, 180, 204, 0.15);"
+              onclick="openTicketByIdFromCache(${tk.id})"
+              title="Click to view maintenance ticket details">
+            <td style="padding: 14px 16px; font-weight: 700; color: #56380E; white-space: nowrap;">#MT-${String(tk.id).padStart(4, '0')}</td>
+            <td style="padding: 14px 16px; font-weight: 600; color: #0f172a; white-space: nowrap;">${escapeHtml(tk.tenant_name || '-')}</td>
+            <td style="padding: 14px 16px; white-space: nowrap;">
+              <span class="clay-badge" style="background: #F3E4C6; color: #56380E; border: 1px solid rgba(181, 143, 83, 0.35); font-weight: 800; font-size: 11px;">
+                ${escapeHtml(unitStr)}
+              </span>
+            </td>
+            <td style="padding: 14px 16px; max-width: 320px;">
+              <div style="font-weight: 600; color: #1e293b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${escapeHtml(tk.title || '')}">
+                ${escapeHtml(tk.title || 'Maintenance Request')}
+              </div>
+              ${descPreview ? `<div style="font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px;" title="${escapeHtml(descRaw)}">${escapeHtml(descPreview)}</div>` : ''}
+            </td>
+            <td style="padding: 14px 16px; font-size: 12.5px; color: var(--text-muted); white-space: nowrap;">${escapeHtml(dateStr)}</td>
+            <td style="padding: 14px 16px; white-space: nowrap;">
+              <span class="clay-badge badge-${escapeHtml(prioLower)}" style="font-weight: 700; font-size: 11px; padding: 3px 8px;">
+                ${escapeHtml(prioLabel)}
+              </span>
+            </td>
+            <td style="padding: 14px 16px; white-space: nowrap;">
+              <span id="ticket-badge-${tk.id}" class="clay-badge badge-done" style="font-weight: 700; font-size: 11.5px; padding: 4px 10px;">
+                ${escapeHtml(tk.status || 'Done')}
+              </span>
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    function syncTicketCounters() {
+      const all = window.allTicketsData || [];
+      const activeTotal = all.filter(tk => normalizeTicketStatus(tk.status) !== 'Done').length;
+      const completedCount = all.filter(tk => normalizeTicketStatus(tk.status) === 'Done').length;
+
+      const activeBadge = document.getElementById('activeTicketCountBadge');
+      const completedBadge = document.getElementById('completedTicketCountBadge');
+      const overviewTickets = document.getElementById('overviewOpenTickets');
+      if (activeBadge) activeBadge.textContent = activeTotal;
+      if (completedBadge) completedBadge.textContent = completedCount;
+      if (overviewTickets) overviewTickets.textContent = activeTotal;
+
+      const navBtn = document.getElementById('navMaintenanceTickets');
+      let sidebarBadge = document.getElementById('sidebarTicketCountBadge');
+      if (activeTotal > 0) {
+        if (!sidebarBadge && navBtn) {
+          sidebarBadge = document.createElement('span');
+          sidebarBadge.className = 'sidebar-rail-badge';
+          sidebarBadge.id = 'sidebarTicketCountBadge';
+          navBtn.appendChild(sidebarBadge);
+        }
+        if (sidebarBadge) {
+          sidebarBadge.textContent = activeTotal;
+          sidebarBadge.style.display = '';
+        }
+      } else if (sidebarBadge) {
+        sidebarBadge.style.display = 'none';
+      }
+
+      if (typeof OWNER_SEARCH_TICKETS !== 'undefined' && Array.isArray(OWNER_SEARCH_TICKETS)) {
+        OWNER_SEARCH_TICKETS.splice(0, OWNER_SEARCH_TICKETS.length, ...all);
+      }
+    }
+
+    async function fetchMaintenanceTickets(preserveState = true) {
+      try {
+        const res = await fetch('api/ticket_api.php', { cache: 'no-store' });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data && data.status === 'success' && Array.isArray(data.tickets)) {
+          const normalized = data.tickets.map(t => ({
+            ...t,
+            status: normalizeTicketStatus(t.status)
+          }));
+          const nextSnap = JSON.stringify(normalized);
+          if (preserveState && nextSnap === lastTicketsSnapshot) {
+            return;
+          }
+          lastTicketsSnapshot = nextSnap;
+          window.allTicketsData = normalized;
+          renderMaintenanceUnifiedView();
+          renderCompletedTicketsView();
+          syncTicketCounters();
+        }
+      } catch (err) {}
+    }
+
+    // Direct Status Update
     async function updateTicketStatus(id, newStatus) {
-      const normStatus = (newStatus === 'Done' || newStatus === 'resolved' || newStatus === 'closed') 
-        ? 'Done' 
-        : ((newStatus === 'On-Going' || newStatus === 'in_progress') ? 'On-Going' : 'Pending');
+      const normStatus = normalizeTicketStatus(newStatus);
 
       try {
         const res = await fetch('api/ticket_api.php', {
@@ -4061,102 +6393,31 @@ $pendingReviewCount = count($pendingReviewPayments);
       }
     }
 
-    // Helper to dynamically move ticket rows between Active and Completed Maintenance tables
-    function moveTicketRowInDOM(ticketId, status) {
-      const row = document.getElementById('ticket-row-' + ticketId);
-      if (!row) return;
-
-      const activeTbody = document.getElementById('activeTicketsTableBody');
-      const completedTbody = document.getElementById('completedTicketsTableBody');
-      const activeCountBadge = document.getElementById('activeTicketCountBadge');
-      const completedCountBadge = document.getElementById('completedTicketCountBadge');
-
-      // 1. Update the status badge inside the row (Column 7)
-      const badgeEl = document.getElementById('ticket-badge-' + ticketId);
-      if (badgeEl) {
-        badgeEl.textContent = status;
-        const normClass = (status === 'Done') ? 'badge-done' : ((status === 'On-Going') ? 'badge-ongoing' : 'badge-pending');
-        badgeEl.className = 'clay-badge ' + normClass;
+    // Sync cached ticket state, unified view, Completed view, and badges
+    function moveTicketRowInDOM(ticketId, status, replyNotes = null) {
+      const idNum = parseInt(ticketId, 10);
+      const normStatus = normalizeTicketStatus(status);
+      const found = (window.allTicketsData || []).find(t => parseInt(t.id, 10) === idNum);
+      if (found) {
+        found.status = normStatus;
+        if (replyNotes !== null) {
+          found.resolution_notes = replyNotes;
+        }
+        found.resolved_at = normStatus === 'Done' ? new Date().toISOString() : null;
       }
 
-      // 2. Update ticket data in onclick if present
-      const currentOnClick = row.getAttribute('onclick') || '';
-      try {
-        const match = currentOnClick.match(/(?:openTicketDetailsModal|openTicketDetailPage)\(([\s\S]*)\)$/);
-        if (match && match[1]) {
-          const tkData = JSON.parse(match[1]);
-          tkData.status = status;
-          if (status === 'Done') tkData.resolved_at = new Date().toISOString();
-          else tkData.resolved_at = null;
-          row.setAttribute('onclick', `openTicketDetailsModal(${JSON.stringify(tkData)})`);
-        }
-      } catch (err) {}
-
-      // 3. Move row between Active and Completed tables if needed
-      if (status === 'Done') {
-        // Move to Completed table if not already there
-        if (!completedTbody.contains(row)) {
-          const emptyCompleted = document.getElementById('emptyCompletedTicketsRow');
-          if (emptyCompleted) emptyCompleted.style.display = 'none';
-
-          completedTbody.prepend(row);
-
-          const currentActiveCount = activeTbody.querySelectorAll('.clickable-ticket-row').length;
-          const currentCompletedCount = completedTbody.querySelectorAll('.clickable-ticket-row').length;
-          if (activeCountBadge) activeCountBadge.textContent = currentActiveCount;
-          if (completedCountBadge) completedCountBadge.textContent = currentCompletedCount;
-
-          if (currentActiveCount === 0) {
-            const emptyActive = document.getElementById('emptyActiveTicketsRow');
-            if (emptyActive) emptyActive.style.display = '';
-            else {
-              activeTbody.innerHTML = `
-                <tr id="emptyActiveTicketsRow">
-                  <td colspan="7" style="text-align: center; padding: 42px 14px; color: var(--text-muted); font-size: 14px;">
-                    <div style="font-size: 32px; margin-bottom: 8px;">🎉</div>
-                    <strong>No active or pending maintenance requests.</strong>
-                    <div style="font-size: 12px; color: #94a3b8; margin-top: 4px;">All reported issues are currently resolved.</div>
-                  </td>
-                </tr>
-              `;
-            }
-          }
-        }
-      } else {
-        // Status is 'Pending' or 'On-Going', move to Active table if in Completed table
-        if (!activeTbody.contains(row)) {
-          const emptyActive = document.getElementById('emptyActiveTicketsRow');
-          if (emptyActive) emptyActive.style.display = 'none';
-
-          activeTbody.prepend(row);
-
-          const currentActiveCount = activeTbody.querySelectorAll('.clickable-ticket-row').length;
-          const currentCompletedCount = completedTbody.querySelectorAll('.clickable-ticket-row').length;
-          if (activeCountBadge) activeCountBadge.textContent = currentActiveCount;
-          if (completedCountBadge) completedCountBadge.textContent = currentCompletedCount;
-
-          if (currentCompletedCount === 0) {
-            const emptyCompleted = document.getElementById('emptyCompletedTicketsRow');
-            if (emptyCompleted) emptyCompleted.style.display = '';
-            else {
-              completedTbody.innerHTML = `
-                <tr id="emptyCompletedTicketsRow">
-                  <td colspan="7" style="text-align: center; padding: 42px 14px; color: var(--text-muted); font-size: 14px;">
-                    <div style="font-size: 32px; margin-bottom: 8px;">📋</div>
-                    <strong>No completed maintenance records yet.</strong>
-                    <div style="font-size: 12px; color: #94a3b8; margin-top: 4px;">Resolved tickets will be archived here for historical review.</div>
-                  </td>
-                </tr>
-              `;
-            }
-          }
-        }
-      }
+      lastTicketsSnapshot = JSON.stringify(window.allTicketsData || []);
+      renderMaintenanceUnifiedView();
+      renderCompletedTicketsView();
+      syncTicketCounters();
     }
 
     function updateTicket(id, status, cost) {
       updateTicketStatus(id, status);
     }
+
+    // Render initial unified empty/wired view immediately from SSR payload
+    renderMaintenanceUnifiedView();
 
     // =========================================================================
     // ANIMATED MAINTENANCE TICKET DETAILS MODAL
@@ -4247,9 +6508,9 @@ $pendingReviewCount = count($pendingReviewPayments);
             card.style.cssText = 'border: 1.5px solid rgba(166,180,204,0.35); border-radius: 10px; overflow: hidden; background: #fff; box-shadow: 0 4px 10px rgba(0,0,0,0.06); text-align: center; max-width: 160px;';
             card.innerHTML = `
               <a href="${pItem}" target="_blank" title="Click to view full image in a new tab" style="display: block; text-decoration: none;">
-                <img src="${pItem}" alt="Ticket Attachment" style="width: 150px; height: 110px; object-fit: cover; display: block;" onerror="this.onerror=null;this.parentElement.innerHTML='<div style=\\'padding:14px;font-size:12px;color:#4338ca;\\'>📷 Photo ' + (${pList.length > 1 ? (idx + 1) : ''}) + '</div>';">
-                <div style="font-size: 11.5px; font-weight: 700; color: #4338ca; padding: 7px 6px; background: #f8fafc; border-top: 1px solid rgba(166,180,204,0.2);">
-                  🔍 View Photo ${pList.length > 1 ? (idx + 1) : ''}
+                <img src="${pItem}" alt="Ticket Attachment" style="width: 150px; height: 110px; object-fit: cover; display: block;" onerror="this.onerror=null;this.parentElement.innerHTML='<div style=\\'padding:14px;font-size:12px;color:#56380E;display:inline-flex;align-items:center;gap:4px;\\'>' + window.rcIcon('image', 'w-4 h-4') + ' Photo ' + (${pList.length > 1 ? (idx + 1) : ''}) + '</div>';">
+                <div style="font-size: 11.5px; font-weight: 700; color: #56380E; padding: 7px 6px; background: #FDF7EC; border-top: 1px solid rgba(166,180,204,0.2); display: flex; align-items: center; justify-content: center; gap: 4px;">
+                  ${window.rcIcon('zoom-in', 'w-3.5 h-3.5')} View Photo ${pList.length > 1 ? (idx + 1) : ''}
                 </div>
               </a>
             `;
@@ -4283,18 +6544,23 @@ $pendingReviewCount = count($pendingReviewPayments);
       }
     }
 
-    // Escape key listener for closing modals
+    // Universal Escape key listener for closing modals
     document.addEventListener('keydown', function(e) {
       if (e.key === 'Escape' || e.keyCode === 27) {
         if (document.getElementById('ownerDeleteConfirmModal')?.classList.contains('open') || document.getElementById('ownerDeleteConfirmModal')?.classList.contains('active')) {
           closeOwnerDeleteConfirmModal();
           return;
         }
-        if (document.getElementById('ticketDetailsModal')?.classList.contains('open') || document.getElementById('ticketDetailsModal')?.classList.contains('active')) {
-          closeTicketDetailsModal();
+        if (document.getElementById('moveOutConfirmModal')?.classList.contains('open') || document.getElementById('moveOutConfirmModal')?.classList.contains('active')) {
+          closeMoveOutConfirmModal();
+          return;
         }
-        if (document.getElementById('archivedTenantDetailsModal')?.classList.contains('open') || document.getElementById('archivedTenantDetailsModal')?.classList.contains('active')) {
-          closeArchivedTenantModal();
+        const openBackdrops = document.querySelectorAll('.modal-backdrop.open, .modal-backdrop:not(.hidden):not([style*="display: none"])');
+        if (openBackdrops.length > 0) {
+          const topModal = openBackdrops[openBackdrops.length - 1];
+          if (topModal && topModal.id && typeof window.closeModal === 'function') {
+            window.closeModal(topModal.id);
+          }
         }
       }
     });
@@ -4334,8 +6600,11 @@ $pendingReviewCount = count($pendingReviewPayments);
             statusBadge.className = 'clay-badge ' + (status === 'Done' ? 'badge-done' : (status === 'On-Going' ? 'badge-ongoing' : 'badge-pending'));
           }
 
-          // Immediately reflect in the main maintenance tables (DOM update and tab transfer)
-          moveTicketRowInDOM(id, status);
+          // Immediately reflect in the Kanban board, Completed view, and ticket counters
+          const savedNotes = result.ticket && typeof result.ticket.resolution_notes !== 'undefined'
+            ? result.ticket.resolution_notes
+            : (reply !== '' ? reply : null);
+          moveTicketRowInDOM(id, status, savedNotes);
 
           // Close modal
           closeTicketDetailsModal();
@@ -4352,31 +6621,339 @@ $pendingReviewCount = count($pendingReviewPayments);
 
     // Direct lookup helper (used by notifications and URL parameters)
     window.openTicketDetailsById = async function(ticketId) {
+      const idNum = parseInt(ticketId, 10);
       if (typeof switchSection === 'function') {
         const navBtn = document.getElementById('navMaintenanceTickets');
         switchSection('sectionTickets', navBtn, false);
       }
-      const row = document.getElementById('ticket-row-' + ticketId);
-      if (row) {
-        const match = (row.getAttribute('onclick') || '').match(/(?:openTicketDetailsModal|openTicketDetailPage)\(([\s\S]*)\)$/);
-        if (match && match[1]) {
-          try {
-            const tkData = JSON.parse(match[1]);
-            openTicketDetailsModal(tkData);
-            return;
-          } catch(e) {}
+      const cachedTk = (window.allTicketsData || []).find(t => parseInt(t.id, 10) === idNum);
+      if (cachedTk) {
+        const normStatus = normalizeTicketStatus(cachedTk.status);
+        if (normStatus === 'Done') {
+          switchTicketTab('completed');
+        } else {
+          handleActiveStatusDropdownChange(normStatus);
         }
+        openTicketDetailsModal(cachedTk);
+        return;
       }
       try {
-        const res = await fetch(`api/ticket_api.php?ticket_id=${ticketId}`);
+        const res = await fetch(`api/ticket_api.php?ticket_id=${idNum}`);
         const data = await res.json();
         if (data.status === 'success' && data.ticket) {
+          const normStatus = normalizeTicketStatus(data.ticket.status);
+          if (normStatus === 'Done') {
+            switchTicketTab('completed');
+          } else {
+            handleActiveStatusDropdownChange(normStatus);
+          }
           openTicketDetailsModal(data.ticket);
         } else {
           showToast('Ticket not found', 'error');
         }
       } catch(err) {
         showToast('Error retrieving ticket details', 'error');
+      }
+    };
+
+    // =========================================================================
+    // GENERAL TENANT REPORTS MANAGEMENT (OWNER PORTAL)
+    // =========================================================================
+    window.allReportsData = <?= json_encode($tenantReports, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+    let currentReportFolderTab = 'pending';
+
+    function switchReportTab(tab) {
+      currentReportFolderTab = (tab === 'reviewed') ? 'reviewed' : 'pending';
+      const pendingBtn = document.getElementById('btnTabPendingReports');
+      const reviewedBtn = document.getElementById('btnTabReviewedReports');
+      const pendingPane = document.getElementById('panePendingReports');
+      const reviewedPane = document.getElementById('paneReviewedReports');
+      const stateLabel = document.getElementById('reportsFolderStateLabel');
+
+      const isReviewed = currentReportFolderTab === 'reviewed';
+      if (pendingBtn) {
+        pendingBtn.classList.toggle('active', !isReviewed);
+        pendingBtn.setAttribute('aria-selected', !isReviewed ? 'true' : 'false');
+      }
+      if (reviewedBtn) {
+        reviewedBtn.classList.toggle('active', isReviewed);
+        reviewedBtn.setAttribute('aria-selected', isReviewed ? 'true' : 'false');
+      }
+      if (pendingPane) pendingPane.style.display = isReviewed ? 'none' : 'block';
+      if (reviewedPane) reviewedPane.style.display = isReviewed ? 'block' : 'none';
+      if (stateLabel) {
+        stateLabel.textContent = isReviewed ? 'Reviewed Tenant Reports' : 'Pending Tenant Reports';
+      }
+    }
+
+    function updateReportCounters() {
+      const all = Array.isArray(window.allReportsData) ? window.allReportsData : [];
+      const pending = all.filter(r => (r.status || 'Pending') === 'Pending');
+      const reviewed = all.filter(r => (r.status || 'Pending') !== 'Pending');
+
+      const pendBadge = document.getElementById('pendingReportsCountBadge');
+      const revBadge = document.getElementById('reviewedReportsCountBadge');
+      const sideBadge = document.getElementById('sidebarReportCountBadge');
+
+      if (pendBadge) pendBadge.textContent = pending.length;
+      if (revBadge) revBadge.textContent = reviewed.length;
+      if (sideBadge) {
+        sideBadge.textContent = pending.length;
+        sideBadge.style.display = pending.length > 0 ? 'inline-flex' : 'none';
+      }
+
+      if (typeof OWNER_SEARCH_REPORTS !== 'undefined' && Array.isArray(OWNER_SEARCH_REPORTS)) {
+        OWNER_SEARCH_REPORTS.splice(0, OWNER_SEARCH_REPORTS.length, ...all);
+      }
+    }
+
+    function renderReportsCardGrid(gridEl, list, emptyTitle, emptySub) {
+      if (!gridEl) return;
+      gridEl.innerHTML = '';
+      if (!list || list.length === 0) {
+        gridEl.innerHTML = `
+          <div class="kanban-empty-placeholder" style="grid-column: 1 / -1;">
+            <span>${window.rcIcon('clipboard-list', 'w-7 h-7')}</span>
+            <strong style="font-size: 13.5px; color: #302313;">${escapeHtml(emptyTitle)}</strong>
+            <span>${escapeHtml(emptySub)}</span>
+          </div>
+        `;
+        return;
+      }
+
+      list.forEach(rep => {
+        const card = document.createElement('div');
+        card.className = 'kanban-ticket-card';
+        card.tabIndex = 0;
+        card.setAttribute('role', 'button');
+
+        const st = String(rep.status || 'Pending');
+        const stSlug = st.toLowerCase();
+        const unitText = rep.unit_number ? `UNIT ${String(rep.unit_number).toUpperCase()}` : 'UNIT -';
+        const catText = rep.category || 'General Inquiry';
+        const dateStr = rep.created_at
+          ? new Date(String(rep.created_at).replace(' ', 'T')).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+          : '-';
+
+        card.innerHTML = `
+          <div class="kanban-card-header">
+            <span class="kanban-card-unit">${escapeHtml(unitText)}</span>
+            <span class="report-status-pill report-status-pill--${escapeHtml(stSlug)}">${escapeHtml(st.toUpperCase())}</span>
+          </div>
+          <div style="margin-bottom: 6px;">
+            <span class="report-category-pill">${escapeHtml(catText)}</span>
+          </div>
+          <div class="kanban-card-title" title="${escapeHtml(rep.subject || 'General Report')}">${escapeHtml(rep.subject || 'General Report')}</div>
+          <div class="kanban-card-meta">
+            <span style="display:inline-flex;align-items:center;gap:4px;">${window.rcIcon('user', 'w-3.5 h-3.5')} ${escapeHtml(rep.tenant_name || 'Tenant')}</span>
+            <span>${escapeHtml(dateStr)}</span>
+          </div>
+        `;
+        card.onclick = () => openReportDetailsModal(rep);
+        card.onkeydown = (ev) => {
+          if (ev.key === 'Enter' || ev.key === ' ') {
+            ev.preventDefault();
+            openReportDetailsModal(rep);
+          }
+        };
+        gridEl.appendChild(card);
+      });
+    }
+
+    function renderReportsFolderViews() {
+      const all = Array.isArray(window.allReportsData) ? window.allReportsData : [];
+      const filterEl = document.getElementById('reportsCategoryFilter');
+      const catFilter = filterEl ? filterEl.value : 'ALL';
+
+      const matchesCat = (r) => catFilter === 'ALL' || String(r.category || '') === catFilter;
+      const pendingList = all.filter(r => (r.status || 'Pending') === 'Pending' && matchesCat(r));
+      const reviewedList = all.filter(r => (r.status || 'Pending') !== 'Pending' && matchesCat(r));
+
+      renderReportsCardGrid(
+        document.getElementById('reportsPendingGrid'),
+        pendingList,
+        'No pending general reports',
+        catFilter === 'ALL' ? 'New tenant requests will appear here for review.' : `No pending reports under "${catFilter}".`
+      );
+      renderReportsCardGrid(
+        document.getElementById('reportsReviewedGrid'),
+        reviewedList,
+        'No reviewed general reports yet',
+        catFilter === 'ALL' ? 'Approved, acknowledged, and rejected reports appear here.' : `No reviewed reports under "${catFilter}".`
+      );
+      updateReportCounters();
+    }
+
+    async function fetchTenantReports(silent = true) {
+      try {
+        const res = await fetch('api/report_api.php');
+        const data = await res.json();
+        if (data.status === 'success' && Array.isArray(data.reports)) {
+          window.allReportsData = data.reports;
+          renderReportsFolderViews();
+        }
+      } catch (err) {
+        if (!silent) showToast('Failed to fetch tenant reports', 'error');
+      }
+    }
+
+    function openReportDetailsModal(rep) {
+      const modal = document.getElementById('reportDetailsModal');
+      if (!modal || !rep) return;
+
+      const st = String(rep.status || 'Pending');
+      const stSlug = st.toLowerCase();
+      document.getElementById('mdlReportId').value = rep.id || '';
+      document.getElementById('mdlReportIdBadge').textContent = `#GR-${String(rep.id || 0).padStart(4, '0')}`;
+      document.getElementById('mdlReportCategory').textContent = rep.category || 'General Inquiry';
+
+      const pillEl = document.getElementById('mdlReportStatusPill');
+      pillEl.textContent = st.toUpperCase();
+      pillEl.className = `report-status-pill report-status-pill--${stSlug}`;
+
+      document.getElementById('mdlReportSubject').textContent = rep.subject || 'General Report';
+      const createdFmt = rep.created_at
+        ? new Date(String(rep.created_at).replace(' ', 'T')).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })
+        : '-';
+      document.getElementById('mdlReportDate').textContent = `Submitted on ${createdFmt}`;
+
+      const tName = rep.tenant_name || 'Resident';
+      document.getElementById('mdlReportTenantAvatar').textContent = tName.trim().charAt(0).toUpperCase() || 'T';
+      document.getElementById('mdlReportTenantName').textContent = tName;
+      document.getElementById('mdlReportUnitBadge').textContent = rep.unit_number ? `Unit ${rep.unit_number}` : 'Unassigned';
+      document.getElementById('mdlReportTenantMeta').textContent = [rep.tenant_phone || '', rep.tenant_email || ''].filter(Boolean).join(' • ') || 'Registered Tenant';
+      document.getElementById('mdlReportDetails').textContent = rep.details || 'No details provided.';
+
+      const attSec = document.getElementById('mdlReportAttachmentsSection');
+      const attCont = document.getElementById('mdlReportAttachmentsContainer');
+      attCont.innerHTML = '';
+      if (rep.attachment_path && String(rep.attachment_path).trim() !== '') {
+        const files = String(rep.attachment_path).split(',').map(s => s.trim()).filter(Boolean);
+        if (files.length > 0) {
+          attSec.style.display = 'block';
+          files.forEach(src => {
+            const link = document.createElement('a');
+            link.href = src;
+            link.target = '_blank';
+            link.rel = 'noopener';
+            if (src.toLowerCase().endsWith('.pdf')) {
+              link.style.cssText = 'display:inline-flex;align-items:center;gap:6px;padding:8px 12px;border-radius:8px;background:#FFF9EE;border:1.5px solid rgba(181,143,83,0.4);color:#56380E;font-size:12px;font-weight:700;text-decoration:none;';
+              link.innerHTML = `${window.rcIcon('file-text', 'w-4 h-4')} Open PDF Attachment`;
+            } else {
+              const img = document.createElement('img');
+              img.src = src;
+              img.alt = 'Report attachment';
+              img.style.cssText = 'width:84px;height:84px;object-fit:cover;border-radius:10px;border:1.5px solid rgba(86,56,14,0.22);';
+              link.appendChild(img);
+            }
+            attCont.appendChild(link);
+          });
+        } else {
+          attSec.style.display = 'none';
+        }
+      } else {
+        attSec.style.display = 'none';
+      }
+
+      document.getElementById('mdlReportRemarks').value = rep.owner_remarks || '';
+      const revMeta = document.getElementById('mdlReportReviewedMeta');
+      if (rep.reviewed_at) {
+        const revFmt = new Date(String(rep.reviewed_at).replace(' ', 'T')).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+        revMeta.textContent = `Reviewed on ${revFmt}${rep.reviewer_name ? ' by ' + rep.reviewer_name : ''}`;
+      } else {
+        revMeta.textContent = 'Not yet reviewed';
+      }
+
+      modal.style.display = 'flex';
+      modal.classList.add('open');
+      modal.classList.add('active');
+      document.body.style.overflow = 'hidden';
+    }
+
+    function closeReportDetailsModal() {
+      const modal = document.getElementById('reportDetailsModal');
+      if (modal) {
+        modal.classList.remove('open');
+        modal.classList.remove('active');
+        modal.style.display = 'none';
+        document.body.style.overflow = '';
+      }
+    }
+
+    function handleReportModalBackdropClick(event) {
+      if (event.target === document.getElementById('reportDetailsModal')) {
+        closeReportDetailsModal();
+      }
+    }
+
+    async function handleReportDecision(decision) {
+      const id = document.getElementById('mdlReportId').value;
+      const remarks = document.getElementById('mdlReportRemarks').value.trim();
+      if (!id) return;
+
+      const btns = [
+        document.getElementById('btnReportApprove'),
+        document.getElementById('btnReportAcknowledge'),
+        document.getElementById('btnReportReject')
+      ].filter(Boolean);
+      btns.forEach(b => { b.disabled = true; });
+
+      try {
+        const res = await fetch('api/report_api.php', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'review_report',
+            report_id: parseInt(id, 10),
+            status: decision,
+            owner_remarks: remarks
+          })
+        });
+        const result = await res.json();
+        if (res.ok && result.status === 'success' && result.report) {
+          showToast(result.message || `Report #GR-${String(id).padStart(4, '0')} marked ${decision}.`);
+          const updated = result.report;
+          const idx = (window.allReportsData || []).findIndex(r => parseInt(r.id, 10) === parseInt(id, 10));
+          if (idx >= 0) {
+            window.allReportsData[idx] = updated;
+          } else if (Array.isArray(window.allReportsData)) {
+            window.allReportsData.unshift(updated);
+          }
+          renderReportsFolderViews();
+          closeReportDetailsModal();
+        } else {
+          showToast(result.message || 'Failed to update report status', 'error');
+        }
+      } catch (err) {
+        showToast('Error communicating with report service', 'error');
+      } finally {
+        btns.forEach(b => { b.disabled = false; });
+      }
+    }
+
+    window.openReportDetailsById = async function(reportId) {
+      const idNum = parseInt(reportId, 10);
+      if (typeof switchSection === 'function') {
+        const navBtn = document.getElementById('navTenantReports');
+        switchSection('sectionReports', navBtn, false);
+      }
+      const cached = (window.allReportsData || []).find(r => parseInt(r.id, 10) === idNum);
+      if (cached) {
+        switchReportTab((cached.status || 'Pending') === 'Pending' ? 'pending' : 'reviewed');
+        openReportDetailsModal(cached);
+        return;
+      }
+      try {
+        const res = await fetch(`api/report_api.php?report_id=${idNum}`);
+        const data = await res.json();
+        if (data.status === 'success' && data.report) {
+          switchReportTab((data.report.status || 'Pending') === 'Pending' ? 'pending' : 'reviewed');
+          openReportDetailsModal(data.report);
+        } else {
+          showToast('Report not found', 'error');
+        }
+      } catch (err) {
+        showToast('Error retrieving report details', 'error');
       }
     };
 
@@ -4478,7 +7055,7 @@ $pendingReviewCount = count($pendingReviewPayments);
     // =========================================================================
     // PAYMENT VERIFICATION & AUDIT MODAL CONTROLS & FILTERING
     // =========================================================================
-    const allPaymentsData = <?= json_encode($payments) ?>;
+    let allPaymentsData = <?= json_encode($payments) ?>;
     let isPaymentVerificationInProgress = false;
     let currentViewingPayment = null;
 
@@ -4537,7 +7114,7 @@ $pendingReviewCount = count($pendingReviewPayments);
       const payTypeElem = document.getElementById('pdPaymentType');
       if (payTypeElem) {
         payTypeElem.textContent = p.payment_type || 'Rent';
-        payTypeElem.style.color = (p.payment_type === 'Advance Deposit') ? '#6d28d9' : '#0369a1';
+        payTypeElem.style.color = (p.payment_type === 'Advance Deposit') ? '#8C5319' : '#2E6F4E';
       }
 
       document.getElementById('pdTenantName').textContent = p.tenant_name || 'Resident';
@@ -4650,7 +7227,7 @@ $pendingReviewCount = count($pendingReviewPayments);
       if (p.receipt_filename && p.receipt_filename.trim() !== '') {
         const fileUrl = 'uploads/receipts/' + encodeURIComponent(p.receipt_filename);
         receiptInspectBtn.href = fileUrl;
-        receiptInspectBtn.innerHTML = '📄 Inspect Uploaded Proof (' + p.receipt_filename + ')';
+        receiptInspectBtn.innerHTML = `${window.rcIcon('file-text', 'w-4 h-4')} Inspect Uploaded Proof (${escapeHtml(p.receipt_filename)})`;
         receiptContent.style.display = 'block';
         noReceiptMsg.style.display = 'none';
 
@@ -4925,42 +7502,273 @@ $pendingReviewCount = count($pendingReviewPayments);
       }
     }
 
-    // Load Charts & KPIs in ₱
-    // Updates the summary widget showing ONLY the total number of residing tenants (NO unit fractions)
+    // =========================================================================
+    // GLOBAL OWNER SEARCH (UNITS, TENANTS, ARCHIVED, TICKETS, PAYMENTS, SECTIONS)
+    // =========================================================================
+    const OWNER_SEARCH_UNITS = <?= json_encode($units, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+    let OWNER_SEARCH_TENANTS = <?= json_encode($allTenants, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+    const OWNER_SEARCH_TICKETS = <?= json_encode($tickets, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+    let OWNER_SEARCH_REPORTS = <?= json_encode($tenantReports, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+    let OWNER_SEARCH_PAYMENTS = <?= json_encode($payments, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+    let ownerSearchArchivedLoaded = false;
+    let activeGlobalSearchResults = [];
+
+    function preloadArchivedForGlobalSearch() {
+      if (ownerSearchArchivedLoaded || (Array.isArray(cachedArchivedTenants) && cachedArchivedTenants.length > 0)) {
+        ownerSearchArchivedLoaded = true;
+        return;
+      }
+      ownerSearchArchivedLoaded = true;
+      fetch('api/tenant_directory_api.php?action=list_archived')
+        .then(r => r.ok ? r.json() : null)
+        .then(data => {
+          if (data && data.status === 'success' && Array.isArray(data.archived_tenants)) {
+            cachedArchivedTenants = data.archived_tenants;
+            const input = document.getElementById('ownerGlobalSearchInput');
+            if (input && input.value.trim().length > 0) {
+              renderGlobalOwnerSearchResults(input.value);
+            }
+          }
+        })
+        .catch(() => {});
+    }
+
+    function clearGlobalOwnerSearch() {
+      const input = document.getElementById('ownerGlobalSearchInput');
+      const clearBtn = document.getElementById('ownerGlobalSearchClear');
+      if (input) input.value = '';
+      if (clearBtn) clearBtn.classList.remove('visible');
+      closeGlobalSearchDropdown();
+    }
+
+    function selectGlobalSearchResult(idx) {
+      const item = activeGlobalSearchResults[idx];
+      if (!item) return;
+      closeGlobalSearchDropdown();
+
+      if (item.kind === 'section') {
+        switchSection(item.sectionId, document.getElementById(item.navId));
+      } else if (item.kind === 'archived_section') {
+        switchSection('sectionArchivedTenants');
+      } else if (item.kind === 'unit') {
+        switchSection('sectionDirectory', document.getElementById('navTenantDirectory'));
+        switchDirectoryTab('active');
+        openUnitFolder(item.payload.id);
+      } else if (item.kind === 'tenant') {
+        switchSection('sectionDirectory', document.getElementById('navTenantDirectory'));
+        switchDirectoryTab('active');
+        openTenantDetailsModal(item.payload, item.payload.unit_number || '', item.payload.unit_id || '');
+      } else if (item.kind === 'archived_tenant') {
+        switchSection('sectionDirectory', document.getElementById('navTenantDirectory'));
+        switchDirectoryTab('archived');
+        openArchivedTenantDetails(item.payload.id);
+      } else if (item.kind === 'ticket') {
+        switchSection('sectionTickets', document.getElementById('navMaintenanceTickets'));
+        openTicketDetailsModal(item.payload);
+      } else if (item.kind === 'report') {
+        switchSection('sectionReports', document.getElementById('navTenantReports'));
+        switchReportTab((item.payload.status || 'Pending') === 'Pending' ? 'pending' : 'reviewed');
+        openReportDetailsModal(item.payload);
+      } else if (item.kind === 'payment') {
+        switchSection('sectionPayments', document.getElementById('navPaymentVerification'));
+        openPaymentDetailsModal(item.payload);
+      }
+    }
+
+    function renderGlobalOwnerSearchResults(rawQuery) {
+      const dd = document.getElementById('globalSearchDropdown');
+      const clearBtn = document.getElementById('ownerGlobalSearchClear');
+      if (!dd) return;
+
+      const q = (rawQuery || '').trim().toLowerCase();
+      if (clearBtn) {
+        clearBtn.classList.toggle('visible', q.length > 0);
+      }
+      if (!q) {
+        activeGlobalSearchResults = [];
+        dd.innerHTML = '';
+        dd.classList.remove('open');
+        return;
+      }
+
+      const matches = [];
+
+      const quickSections = [
+        { title: 'Owner Dashboard & Revenue Analytics', sub: 'KPI cards, overview panel, revenue & repair charts', tag: 'Dashboard', kind: 'section', sectionId: 'sectionAnalytics', navId: 'navLandlordDashboard', keys: 'dashboard analytics overview revenue rent collected rate' },
+        { title: 'Tenant Directory & Units', sub: 'Manage units and active residents', tag: 'Directory', kind: 'section', sectionId: 'sectionDirectory', navId: 'navTenantDirectory', keys: 'tenants directory units apartments residents' },
+        { title: 'Archived Tenant Accounts', sub: 'Moved-out and archived resident records', tag: 'Archive', kind: 'archived_section', keys: 'archived tenants moved out history deleted' },
+        { title: 'Maintenance Tickets', sub: 'Active and completed repair requests', tag: 'Repairs', kind: 'section', sectionId: 'sectionTickets', navId: 'navMaintenanceTickets', keys: 'maintenance tickets repairs issues' },
+        { title: 'Tenant Reports', sub: 'Occupants, pets, modifications & general requests', tag: 'Reports', kind: 'section', sectionId: 'sectionReports', navId: 'navTenantReports', keys: 'reports general occupant pet customization modification inquiry' },
+        { title: 'Payment Verification & Ledger', sub: 'Verify payment proofs, receipts, and rent schedules', tag: 'Payments', kind: 'section', sectionId: 'sectionPayments', navId: 'navPaymentVerification', keys: 'payments receipts verification ledger billing rent' },
+        { title: 'Account Settings & Password', sub: 'Manage owner profile and login security', tag: 'Settings', kind: 'section', sectionId: 'sectionProfile', navId: null, keys: 'settings profile password account security' }
+      ];
+
+      quickSections.forEach(s => {
+        if (s.title.toLowerCase().includes(q) || s.keys.includes(q)) {
+          matches.push(s);
+        }
+      });
+
+      (OWNER_SEARCH_UNITS || []).forEach(u => {
+        const unitName = String(u.unit_number || '');
+        const rentStr = u.monthly_rent ? `₱${Number(u.monthly_rent).toLocaleString()}/mo` : '';
+        if (unitName.toLowerCase().includes(q) || `floor ${u.floor_level || ''}`.includes(q)) {
+          matches.push({
+            title: unitName,
+            sub: `${rentStr} • Floor ${u.floor_level || '-'}`,
+            tag: 'Unit',
+            kind: 'unit',
+            payload: u
+          });
+        }
+      });
+
+      (OWNER_SEARCH_TENANTS || []).forEach(t => {
+        const hay = `${t.name || ''} ${t.username || ''} ${t.email || ''} ${t.phone || ''} ${t.unit_number || ''}`.toLowerCase();
+        if (hay.includes(q)) {
+          matches.push({
+            title: t.name || 'Tenant',
+            sub: `${t.unit_number || 'Unit'} • @${t.username || ''} • ${t.email || ''}`,
+            tag: 'Tenant',
+            kind: 'tenant',
+            payload: t
+          });
+        }
+      });
+
+      (cachedArchivedTenants || []).forEach(a => {
+        const hay = `${a.name || ''} ${a.username || ''} ${a.email || ''} ${a.archived_unit_number || ''}`.toLowerCase();
+        if (hay.includes(q)) {
+          matches.push({
+            title: a.name || 'Archived Tenant',
+            sub: `${a.archived_unit_number || 'Archived'} • ${a.email || ''}`,
+            tag: 'Archived',
+            kind: 'archived_tenant',
+            payload: a
+          });
+        }
+      });
+
+      (OWNER_SEARCH_TICKETS || []).forEach(tk => {
+        const tkCode = `#MT-${String(tk.id || '').padStart(4, '0')}`;
+        const hay = `${tkCode} ${tk.title || ''} ${tk.category || ''} ${tk.tenant_name || ''} ${tk.unit_number || ''} ${tk.status || ''}`.toLowerCase();
+        if (hay.includes(q)) {
+          matches.push({
+            title: `${tkCode} — ${tk.title || 'Maintenance Request'}`,
+            sub: `${tk.unit_number || ''} • ${tk.tenant_name || ''} • ${tk.status || ''}`,
+            tag: 'Ticket',
+            kind: 'ticket',
+            payload: tk
+          });
+        }
+      });
+
+      (OWNER_SEARCH_REPORTS || []).forEach(rep => {
+        const repCode = `#GR-${String(rep.id || '').padStart(4, '0')}`;
+        const hay = `${repCode} ${rep.subject || ''} ${rep.category || ''} ${rep.tenant_name || ''} ${rep.unit_number || ''} ${rep.status || ''}`.toLowerCase();
+        if (hay.includes(q)) {
+          matches.push({
+            title: `${repCode} — ${rep.subject || 'General Report'}`,
+            sub: `${rep.unit_number || ''} • ${rep.category || ''} • ${rep.status || 'Pending'}`,
+            tag: 'Report',
+            kind: 'report',
+            payload: rep
+          });
+        }
+      });
+
+      (OWNER_SEARCH_PAYMENTS || []).forEach(pm => {
+        const hay = `${pm.tenant_name || ''} ${pm.unit_number || ''} ${pm.reference_number || ''} ${pm.status || ''} ${pm.billing_cycle || ''}`.toLowerCase();
+        if (hay.includes(q)) {
+          const amt = Number(pm.amount_due || pm.amount_paid || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+          matches.push({
+            title: `${pm.tenant_name || 'Resident'} — ₱${amt}`,
+            sub: `${pm.unit_number || ''} • ${pm.billing_cycle || 'To be assigned'} • ${String(pm.status || '').toUpperCase()}`,
+            tag: 'Payment',
+            kind: 'payment',
+            payload: pm
+          });
+        }
+      });
+
+      activeGlobalSearchResults = matches.slice(0, 12);
+      if (activeGlobalSearchResults.length === 0) {
+        dd.innerHTML = `<div style="padding: 16px 14px; text-align: center; font-size: 13px; color: var(--tr-text-muted);">No matching tenants, units, tickets, or payments for "<strong>${escapeHtml(rawQuery)}</strong>".</div>`;
+      } else {
+        dd.innerHTML = activeGlobalSearchResults.map((m, idx) => `
+          <button type="button" class="global-search-item" role="option" onclick="selectGlobalSearchResult(${idx})">
+            <div class="global-search-meta">
+              <span class="global-search-title">${escapeHtml(m.title)}</span>
+              <span class="global-search-sub">${escapeHtml(m.sub)}</span>
+            </div>
+            <span class="global-search-tag">${escapeHtml(m.tag)}</span>
+          </button>
+        `).join('');
+      }
+      dd.classList.add('open');
+    }
+
+    function initGlobalOwnerSearch() {
+      const input = document.getElementById('ownerGlobalSearchInput');
+      if (!input) return;
+
+      input.addEventListener('focus', () => {
+        preloadArchivedForGlobalSearch();
+        if (input.value.trim().length > 0) {
+          renderGlobalOwnerSearchResults(input.value);
+        }
+      });
+
+      input.addEventListener('input', () => {
+        renderGlobalOwnerSearchResults(input.value);
+      });
+
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+          clearGlobalOwnerSearch();
+          input.blur();
+        } else if (e.key === 'Enter' && activeGlobalSearchResults.length > 0) {
+          e.preventDefault();
+          selectGlobalSearchResult(0);
+        }
+      });
+    }
+
+    // Load Charts, KPIs, Overview Panel & Diagnostics in ₱
     async function loadDashboardAnalytics() {
       try {
         const res = await fetch('api/analytics_api.php');
         const data = await res.json();
         if (data.status === 'success') {
           // 1. Financial KPIs in ₱
-          document.getElementById('kpiEfficiency').textContent = `${data.kpis.financials.overall_collection_efficiency_pct.toFixed(1)}%`;
-          document.getElementById('kpiOutstanding').textContent = `₱${data.kpis.financials.total_outstanding_balance.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
-          document.getElementById('kpiRevenue').textContent = `₱${data.kpis.financials.total_revenue_collected.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
-          document.getElementById('kpiMaintenance').textContent = `₱${data.kpis.maintenance.total_expenditure.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+          document.getElementById('kpiEfficiency').textContent = `${Number(data.kpis.financials.overall_collection_efficiency_pct || 0).toFixed(1)}%`;
+          document.getElementById('kpiOutstanding').textContent = `₱${Number(data.kpis.financials.total_outstanding_balance || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+          document.getElementById('kpiRevenue').textContent = `₱${Number(data.kpis.financials.total_revenue_collected || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+          document.getElementById('kpiMaintenance').textContent = `₱${Number(data.kpis.maintenance.total_expenditure || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
 
-          // 2. Simple Dashboard Summary: ONLY total number of tenants (NO unit occupancy fractions)
-          const totalTenants = data.kpis.units.total_active_tenants;
-          const tenantSummaryEl = document.getElementById('tenantSummaryText');
-          if (tenantSummaryEl) {
-            tenantSummaryEl.textContent = `${totalTenants} Active Resident${totalTenants === 1 ? '' : 's'}`;
+          const ticketsCountLabel = document.getElementById('kpiTicketsCountLabel');
+          if (ticketsCountLabel) {
+            const totalTicketsLogged = Number(data.kpis.maintenance.total_tickets_logged || 0);
+            ticketsCountLabel.textContent = `${totalTicketsLogged} logged request${totalTicketsLogged === 1 ? '' : 's'}`;
           }
 
-          // 3. Diagnostic Intelligence Alerts
-          if (data.diagnostic_alerts && data.diagnostic_alerts.length > 0) {
-            const container = document.getElementById('diagnosticAlertsContainer');
-            container.innerHTML = '';
-            data.diagnostic_alerts.forEach(al => {
-              const el = document.createElement('div');
-              el.className = `alert-clay alert-clay-${al.severity === 'warning' ? 'warning' : 'info'}`;
-              el.innerHTML = `
-                <div class="alert-icon-clay">${al.severity === 'warning' ? '⚡' : '📌'}</div>
-                <div class="alert-body-clay">
-                  <h4>${al.title}</h4>
-                  <p>${al.message}</p>
-                </div>
-              `;
-              container.appendChild(el);
-            });
+          // 2. Sync Overview Panel live stats cleanly
+          const totalTenants = Number(data.kpis.units.total_active_tenants || 0);
+          const tenantSummaryEl = document.getElementById('tenantSummaryText');
+          if (tenantSummaryEl) {
+            tenantSummaryEl.textContent = String(totalTenants);
+          }
+          const pendingPaymentsEl = document.getElementById('overviewPendingPayments');
+          if (pendingPaymentsEl && data.kpis.manual_verification) {
+            pendingPaymentsEl.textContent = String(Number(data.kpis.manual_verification.pending_receipts_count || 0));
+          }
+          const openTicketsEl = document.getElementById('overviewOpenTickets');
+          if (openTicketsEl && data.kpis.maintenance) {
+            openTicketsEl.textContent = String(Number(data.kpis.maintenance.active_tickets || 0));
+          }
+
+          if (window.lucide && typeof window.lucide.createIcons === 'function') {
+            window.lucide.createIcons();
           }
 
           // 4. Render Chart.js widgets in ₱

@@ -85,7 +85,6 @@ try {
 
         // ACTION: Upload Profile Picture (Owner and Tenant)
         if ($action === 'upload_profile_picture') {
-            AccessControl::requireVerifiedTenantJson($pdo, $currentUser);
             if (!isset($_FILES['profile_picture']) || $_FILES['profile_picture']['error'] !== UPLOAD_ERR_OK) {
                 http_response_code(422);
                 echo json_encode([
@@ -192,7 +191,6 @@ try {
 
         // ACTION: Remove Profile Picture (revert to circular initial icon)
         if ($action === 'remove_profile_picture') {
-            AccessControl::requireVerifiedTenantJson($pdo, $currentUser);
             $oldStmt = $pdo->prepare("SELECT profile_picture, name FROM users WHERE id = :id LIMIT 1");
             $oldStmt->execute([':id' => $userId]);
             $userRow = $oldStmt->fetch(PDO::FETCH_ASSOC);
@@ -221,6 +219,201 @@ try {
                 'status' => 'success',
                 'message' => 'Profile picture removed successfully.',
                 'initial' => $initial
+            ]);
+            exit;
+        }
+
+        // ACTION: Cancel ID Update (Discard temporary file, clear holding columns, keep original ID verified)
+        if ($action === 'cancel_id_update') {
+            $userStmt = $pdo->prepare("SELECT * FROM users WHERE id = :id LIMIT 1");
+            $userStmt->execute([':id' => $userId]);
+            $currentUserRecord = $userStmt->fetch(PDO::FETCH_ASSOC);
+
+            $wasVerified = ((int)($currentUserRecord['is_verified'] ?? 0) === 1 || ($currentUserRecord['verification_status'] ?? '') === 'verified' || !empty($_SESSION['is_updating_verified_id']));
+            $uploadDir = __DIR__ . '/../uploads/id_verifications';
+
+            $pendingId = $currentUserRecord['pending_id_path'] ?? ($_SESSION['pending_id_path'] ?? null);
+            if (!empty($pendingId)) {
+                $pPath = $uploadDir . '/' . basename($pendingId);
+                if (file_exists($pPath)) {
+                    @unlink($pPath);
+                }
+            }
+
+            $pdo->prepare("UPDATE users SET pending_id_path = NULL, pending_id_type = NULL WHERE id = :id")->execute([':id' => $userId]);
+            unset($_SESSION['pending_id_path'], $_SESSION['pending_id_type'], $_SESSION['is_updating_verified_id'], $_SESSION['staged_id_photo'], $_SESSION['staged_id_type']);
+
+            http_response_code(200);
+            echo json_encode([
+                'status' => 'success',
+                'is_verified' => $wasVerified ? 1 : 0,
+                'was_verified' => $wasVerified,
+                'message' => 'ID update cancelled or failed. Your previously verified ID remains active.'
+            ]);
+            exit;
+        }
+
+        // ACTION: Validate & Stage ID Document with Strict ID Type Cross-Checking
+        if ($action === 'validate_and_stage_id') {
+            $userStmt = $pdo->prepare("SELECT * FROM users WHERE id = :id LIMIT 1");
+            $userStmt->execute([':id' => $userId]);
+            $currentUserRecord = $userStmt->fetch(PDO::FETCH_ASSOC);
+            $isVerifiedUser = ((int)($currentUserRecord['is_verified'] ?? 0) === 1 || ($currentUserRecord['verification_status'] ?? '') === 'verified' || !empty($_SESSION['is_updating_verified_id']));
+            $idType = trim((string)($input['id_type'] ?? ($_POST['id_type'] ?? '')));
+
+            if (empty($idType)) {
+                http_response_code(422);
+                echo json_encode([
+                    'status' => 'error',
+                    'code' => 'MISSING_ID_TYPE',
+                    'message' => 'Please select a valid document or ID type from the dropdown menu.'
+                ]);
+                exit;
+            }
+
+            // 1. Validate ID Photo file
+            if (!isset($_FILES['id_photo']) || $_FILES['id_photo']['error'] !== UPLOAD_ERR_OK) {
+                http_response_code(422);
+                echo json_encode([
+                    'status' => 'error',
+                    'code' => 'MISSING_ID_FILE',
+                    'message' => 'Please select or upload a valid photo of your ID.'
+                ]);
+                exit;
+            }
+
+            $idFile = $_FILES['id_photo'];
+            $maxBytes = 10 * 1024 * 1024; // 10MB limit
+
+            if ($idFile['size'] > $maxBytes) {
+                http_response_code(422);
+                echo json_encode([
+                    'status' => 'error',
+                    'code' => 'FILE_TOO_LARGE',
+                    'message' => 'The uploaded ID file exceeds the 10MB size limit.'
+                ]);
+                exit;
+            }
+
+            $idExt = strtolower(pathinfo((string)$idFile['name'], PATHINFO_EXTENSION));
+            $allowedExts = ['jpg', 'jpeg', 'png', 'webp'];
+
+            if (!in_array($idExt, $allowedExts, true)) {
+                http_response_code(422);
+                echo json_encode([
+                    'status' => 'error',
+                    'code' => 'INVALID_FILE_TYPE',
+                    'message' => 'Invalid ID photo format. Please upload JPG, PNG, or WEBP.'
+                ]);
+                exit;
+            }
+
+            $uploadDir = __DIR__ . '/../uploads/id_verifications';
+            if (!is_dir($uploadDir)) {
+                mkdir($uploadDir, 0755, true);
+            }
+
+            $timestampStr = date('Ymd_His');
+            $randStr = bin2hex(random_bytes(4));
+            $idFilename = sprintf('id_user%d_%s_%s.%s', $userId, $timestampStr, $randStr, $idExt);
+            $idDestination = $uploadDir . '/' . $idFilename;
+
+            if (!move_uploaded_file($idFile['tmp_name'], $idDestination)) {
+                http_response_code(500);
+                echo json_encode([
+                    'status' => 'error',
+                    'code' => 'UPLOAD_FAILED',
+                    'message' => 'Failed to store uploaded ID file on the server.'
+                ]);
+                exit;
+            }
+
+            // 2. Pre-process for OCR and extract text if needed
+            $rawOcrText = trim((string)($input['ocr_raw_text'] ?? ($_POST['ocr_raw_text'] ?? '')));
+
+            if (empty($rawOcrText)) {
+                $procFilename = 'proc_' . $idFilename;
+                $procDestination = $uploadDir . '/' . $procFilename;
+                VerificationService::preprocessIdImage($idDestination, $procDestination);
+                $ocrImagePath = (file_exists($procDestination) && filesize($procDestination) > 0) ? $procDestination : $idDestination;
+
+                $tesseractBin = VerificationService::findTesseractBinary();
+                if ($tesseractBin !== null) {
+                    $escapedBin = escapeshellarg($tesseractBin);
+                    $escapedFile = escapeshellarg($ocrImagePath);
+                    $cmd = "{$escapedBin} {$escapedFile} stdout -l eng --oem 1 2>nul";
+                    $output = [];
+                    $retVal = 0;
+                    @exec($cmd, $output, $retVal);
+                    if ($retVal === 0 && !empty($output)) {
+                        $rawOcrText = implode("\n", $output);
+                    }
+                }
+            }
+
+            // 3. ID TYPE CROSS-CHECK: Enforce validation rule that attached ID must match chosen Document Type
+            if (!empty($rawOcrText)) {
+                $typeCheck = VerificationService::verifyIdTypeMatchesDocument($idType, $rawOcrText);
+                if (!$typeCheck['matched']) {
+                    @unlink($idDestination);
+                    $mismatchMessage = 'Verification Failed: The uploaded document does not match the selected ID type.';
+                    http_response_code(422);
+                    echo json_encode([
+                        'status' => 'error',
+                        'code' => 'ID_TYPE_MISMATCH',
+                        'message' => $mismatchMessage,
+                        'details' => $typeCheck
+                    ]);
+                    exit;
+                }
+            }
+
+            // 4. Staged successfully! Save to temporary holding or database & session
+            if ($isVerifiedUser) {
+                // Rule 1: Temporary Data Holding (Database/PHP)
+                // When a verified tenant uploads a new ID, do not immediately overwrite their existing ID record
+                // or change their is_verified status to 0. Store in dedicated temporary database columns and session.
+                $saveIdStmt = $pdo->prepare("
+                    UPDATE users 
+                    SET pending_id_path = :fn, 
+                        pending_id_type = :id_type
+                    WHERE id = :id
+                ");
+                $saveIdStmt->execute([':fn' => $idFilename, ':id_type' => $idType, ':id' => $userId]);
+
+                $_SESSION['pending_id_path'] = $idFilename;
+                $_SESSION['pending_id_type'] = $idType;
+                $_SESSION['is_updating_verified_id'] = true;
+                $_SESSION['staged_id_photo'] = $idFilename;
+                $_SESSION['staged_id_type'] = $idType;
+            } else {
+                $saveIdStmt = $pdo->prepare("
+                    UPDATE users 
+                    SET id_photo_filename = :fn, 
+                        id_type = :id_type,
+                        pending_id_path = :fn,
+                        pending_id_type = :id_type,
+                        id_submitted_at = NOW()
+                    WHERE id = :id
+                ");
+                $saveIdStmt->execute([':fn' => $idFilename, ':id_type' => $idType, ':id' => $userId]);
+
+                if (isset($_SESSION['user'])) {
+                    $_SESSION['user']['id_photo_filename'] = $idFilename;
+                    $_SESSION['user']['id_type'] = $idType;
+                }
+                $_SESSION['staged_id_photo'] = $idFilename;
+                $_SESSION['staged_id_type'] = $idType;
+            }
+
+            http_response_code(200);
+            echo json_encode([
+                'status' => 'success',
+                'is_verified' => $isVerifiedUser ? 1 : 0,
+                'is_updating' => $isVerifiedUser,
+                'message' => 'ID document validated and staged successfully.',
+                'id_photo_filename' => $idFilename,
+                'id_type' => $idType
             ]);
             exit;
         }
@@ -333,7 +526,7 @@ try {
             }
 
             // Fetch current registered user account information
-            $userStmt = $pdo->prepare("SELECT id, name, username, email, birthday, verification_status FROM users WHERE id = :id LIMIT 1");
+            $userStmt = $pdo->prepare("SELECT id, name, username, email, birthday, verification_status, is_verified, id_type, id_photo_filename, pending_id_path, pending_id_type FROM users WHERE id = :id LIMIT 1");
             $userStmt->execute([':id' => $userId]);
             $accountUser = $userStmt->fetch();
 
@@ -342,6 +535,29 @@ try {
                 echo json_encode(['status' => 'error', 'message' => 'User account not found.']);
                 exit;
             }
+
+            $isVerifiedUser = ((int)($accountUser['is_verified'] ?? 0) === 1 || ($accountUser['verification_status'] ?? '') === 'verified' || !empty($_SESSION['is_updating_verified_id']));
+
+            $handleVerificationFailure = function(string $reason, array $details = []) use ($isVerifiedUser, $idDestination, $liveFaceDestination, $pdo, $userId) {
+                if ($isVerifiedUser) {
+                    if (file_exists($idDestination)) @unlink($idDestination);
+                    if (file_exists($liveFaceDestination)) @unlink($liveFaceDestination);
+                    $pdo->prepare("UPDATE users SET pending_id_path = NULL, pending_id_type = NULL WHERE id = :id")->execute([':id' => $userId]);
+                    unset($_SESSION['pending_id_path'], $_SESSION['pending_id_type'], $_SESSION['is_updating_verified_id'], $_SESSION['staged_id_photo'], $_SESSION['staged_id_type']);
+
+                    http_response_code(422);
+                    echo json_encode([
+                        'status' => 'error',
+                        'is_verified' => 1,
+                        'was_verified' => true,
+                        'verification_status' => 'verified',
+                        'message' => 'ID update cancelled or failed. Your previously verified ID remains active.',
+                        'rejection_reason' => $reason,
+                        'details' => $details
+                    ]);
+                    exit;
+                }
+            };
 
             if (!$hasLiveFace) {
                 // When webcam live face is not provided, put under Landlord Review
@@ -543,6 +759,11 @@ try {
 
             if (!$ocrResult['success']) {
                 $textFailureReason = "Verification Failed: ID photo is unclear or blurry.";
+                $handleVerificationFailure($textFailureReason, [
+                    'text_matched' => false,
+                    'text_error' => $textFailureReason
+                ]);
+
                 $updateStmt = $pdo->prepare("
                     UPDATE users 
                     SET verification_status = 'unverified',
@@ -582,6 +803,14 @@ try {
 
             if (!$textMatchResult['match']) {
                 $textFailureReason = $textMatchResult['reason'] ?: "Verification Failed: Account information does not match the ID.";
+                $handleVerificationFailure($textFailureReason, [
+                    'text_matched' => false,
+                    'name_matched' => $textMatchResult['name_matched'] ?? false,
+                    'birthday_matched' => $textMatchResult['birthday_matched'] ?? false,
+                    'name_similarity' => $textMatchResult['name_similarity'] ?? 0.0,
+                    'text_error' => $textFailureReason
+                ]);
+
                 $updateStmt = $pdo->prepare("
                     UPDATE users 
                     SET verification_status = 'unverified',
@@ -625,6 +854,15 @@ try {
             if (!$faceCompareResult['success'] || !$faceCompareResult['is_match']) {
                 $faceFailureReason = "Verification Failed: Face scan does not match the ID photo.";
                 $faceConfidence = (float)($faceCompareResult['confidence'] ?? 0.0);
+                $handleVerificationFailure($faceFailureReason, [
+                    'text_matched' => true,
+                    'name_matched' => true,
+                    'birthday_matched' => true,
+                    'id_type_matched' => true,
+                    'face_matched' => false,
+                    'face_error' => $faceFailureReason,
+                    'face_confidence' => $faceConfidence
+                ]);
 
                 $updateStmt = $pdo->prepare("
                     UPDATE users 
@@ -685,6 +923,8 @@ try {
                     id_type = :id_type,
                     id_photo_filename = :id_photo,
                     live_photo_filename = :live_face,
+                    pending_id_path = NULL,
+                    pending_id_type = NULL,
                     id_submitted_at = NOW(),
                     id_verified_at = NOW(),
                     verification_notes = :notes
@@ -697,6 +937,16 @@ try {
                 ':notes' => $notes,
                 ':id' => $userId
             ]);
+
+            if (isset($_SESSION['user'])) {
+                $_SESSION['user']['is_verified'] = 1;
+                $_SESSION['user']['verification_status'] = 'verified';
+                $_SESSION['user']['id_type'] = $idType;
+                $_SESSION['user']['id_photo_filename'] = $idFilename;
+            }
+            $_SESSION['is_verified'] = 1;
+            $_SESSION['verification_status'] = 'verified';
+            unset($_SESSION['pending_id_path'], $_SESSION['pending_id_type'], $_SESSION['is_updating_verified_id'], $_SESSION['staged_id_photo'], $_SESSION['staged_id_type']);
 
             http_response_code(200);
             echo json_encode([
@@ -720,7 +970,6 @@ try {
 
         // ACTION B: Change Account Password
         if ($action === 'change_password') {
-            AccessControl::requireVerifiedTenantJson($pdo, $currentUser);
             $currentPassword = (string)($input['current_password'] ?? '');
             $newPassword = (string)($input['new_password'] ?? '');
             $confirmPassword = (string)($input['confirm_password'] ?? '');
@@ -780,7 +1029,6 @@ try {
 
         // ACTION C: Update Account Information (Phone, Email, Emergency Contacts)
         if ($action === 'update_account_info') {
-            AccessControl::requireVerifiedTenantJson($pdo, $currentUser);
             $email = trim((string)($input['email'] ?? ''));
             $phone = trim((string)($input['phone'] ?? ''));
             $emergencyName = trim((string)($input['emergency_contact_name'] ?? ''));

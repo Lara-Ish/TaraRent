@@ -21,7 +21,9 @@ if (Auth::check()) {
 }
 
 $errorMessage = null;
-if (isset($_GET['msg']) && $_GET['msg'] === 'deactivated') {
+if (isset($_GET['msg']) && $_GET['msg'] === 'archived') {
+    $errorMessage = 'This account has been archived as the move-out process is complete.';
+} elseif (isset($_GET['msg']) && $_GET['msg'] === 'deactivated') {
     $errorMessage = 'This account has been deactivated or removed by property management.';
 }
 
@@ -40,7 +42,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (empty($username) || empty($password)) {
         $errorMessage = 'Please provide both email address and password.';
     } else {
-        if (Auth::attempt($username, $password, $rememberMe)) {
+        $loginRes = Auth::validateLogin($username, $password, $rememberMe);
+        if ($loginRes['success']) {
             if (Auth::isLandlord()) {
                 header('Location: admin_dashboard.php');
             } else {
@@ -48,7 +51,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             exit;
         } else {
-            $errorMessage = 'Invalid email address or password.';
+            $errorMessage = $loginRes['message'] ?? 'Invalid email address or password.';
         }
     }
 }
@@ -75,6 +78,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
   <!-- Split-Screen Login Design System -->
   <link rel="stylesheet" href="assets/css/login.css">
+  <script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+  <script src="assets/js/lucide_init.js?v=20261112"></script>
 
   <!-- face-api.js for 68-Point Facial Landmark Tracking (Local with CDN fallback) -->
   <script src="assets/js/face-api.min.js"></script>
@@ -127,9 +132,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <?php if ($errorMessage): ?>
           <div class="login-alert" role="alert" id="passwordErrorAlert">
             <div class="login-alert-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v4m0 4h.01M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/>
-              </svg>
+              <i data-lucide="alert-triangle" style="width: 14px; height: 14px;"></i>
             </div>
             <div class="login-alert-body">
               <h4>Unable to sign in</h4>
@@ -178,13 +181,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                   aria-pressed="false"
                   title="Show Password"
                 >
-                  <svg id="iconEyeShow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178Z"/>
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"/>
-                  </svg>
-                  <svg id="iconEyeHide" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="display: none;">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M3.98 8.223A10.477 10.477 0 0 0 1.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.451 10.451 0 0 1 12 4.5c4.756 0 8.773 3.162 10.065 7.498a10.522 10.522 0 0 1-4.293 5.774M6.228 6.228 3 3m3.228 3.228 3.65 3.65m7.894 7.894L21 21m-3.228-3.228-3.65-3.65m0 0a3 3 0 1 0-4.243-4.243m4.242 4.242L9.88 9.88"/>
-                  </svg>
+                  <span id="iconEyeShow" style="display: inline-flex; align-items: center;"><i data-lucide="eye" style="width: 18px; height: 18px;" aria-hidden="true"></i></span>
+                  <span id="iconEyeHide" style="display: none; align-items: center;"><i data-lucide="eye-off" style="width: 18px; height: 18px;" aria-hidden="true"></i></span>
                 </button>
               </div>
             </div>
@@ -224,10 +222,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
           <!-- Prominent "Use Face ID" Button below standard form -->
           <div class="btn-center-wrap">
             <button type="button" id="btnUseFaceId" class="btn-warm-pill">
-              <svg fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M6.827 6.175A2.31 2.31 0 0 1 5.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 0 0-1.134-.175 2.31 2.31 0 0 1-1.64-1.055l-.822-1.316a2.192 2.192 0 0 0-1.736-1.039 48.774 48.774 0 0 0-5.232 0 2.192 2.192 0 0 0-1.736 1.039l-.821 1.316Z" />
-                <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 12.75a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0ZM18.75 10.5h.008v.008h-.008V10.5Z" />
-              </svg>
+              <i data-lucide="scan-face" style="width: 18px; height: 18px;" aria-hidden="true"></i>
               <span>Use Face ID</span>
             </button>
           </div>
@@ -243,9 +238,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
           <div class="face-cam-card gcash-kyc-cam">
             <!-- Real-Time Anti-Spoofing / Liveness Warning Overlay Banner -->
             <div id="faceSpoofWarningOverlay" class="face-spoof-warning" style="display: none; align-items: center; justify-content: center; gap: 8px;">
-              <svg fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" style="color: #ffffff; width: 18px; height: 18px; flex-shrink: 0;">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m0-10.036A11.959 11.959 0 0 1 3.598 6 11.99 11.99 0 0 0 3 9.75c0 5.592 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.57-.598-3.75h-.002A11.959 11.959 0 0 1 12 2.964ZM12 15.75h.007v.008H12v-.008Z" />
-              </svg>
+              <i data-lucide="shield-alert" style="color: #ffffff; width: 18px; height: 18px; flex-shrink: 0;" aria-hidden="true"></i>
               <span id="faceSpoofWarningText">Spoof detected: Please remove photos or screens from the camera.</span>
             </div>
 
@@ -262,15 +255,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             <!-- Dynamic Visual Feedback Badge -->
             <div class="face-status-pill" id="faceStatusPill">
-              <span id="faceStatusIcon">👀</span>
+              <span id="faceStatusIcon" style="display: inline-flex; align-items: center;"><i data-lucide="scan-face" style="width: 16px; height: 16px;" aria-hidden="true"></i></span>
               <span id="faceStatusText">Look directly at camera to start</span>
             </div>
           </div>
 
           <!-- Timed Notification Alert Bar for Rejection / Error -->
           <div id="faceLoginAlert" class="face-timed-alert" style="display: none;">
-            <div style="width: 30px; height: 30px; border-radius: 8px; background: rgba(168, 56, 43, 0.14); color: #8F251A; display: flex; align-items: center; justify-content: center; font-size: 15px; font-weight: 800; flex-shrink: 0;">
-              ✕
+            <div style="width: 30px; height: 30px; border-radius: 8px; background: rgba(168, 56, 43, 0.14); color: #8F251A; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+              <i data-lucide="x" style="width: 16px; height: 16px;" aria-hidden="true"></i>
             </div>
             <div style="flex: 1;">
               <div style="font-size: 13px; font-weight: 700; color: #7A1E15; line-height: 1.35;" id="faceLoginAlertMsg">
@@ -410,7 +403,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       isCaptured = false;
       isVerifying = false;
       hideSpoofWarning();
-      updateStatusBadge('👀', 'Look directly at camera to start', 'normal');
+      updateStatusBadge('scan-face', 'Look directly at camera to start', 'normal');
     }
 
     /**
@@ -452,7 +445,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
      */
     async function startFaceWebcam() {
       const video = document.getElementById('faceWebcamVideo');
-      updateStatusBadge('🔍', 'Starting camera...', 'normal');
+      updateStatusBadge('search', 'Starting camera...', 'normal');
 
       try {
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -489,7 +482,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         startFaceDetectionLoop();
       } catch (err) {
         console.error('Webcam access error:', err);
-        updateStatusBadge('⚠️', 'Camera access denied', 'normal');
+        updateStatusBadge('alert-triangle', 'Camera access denied', 'normal');
         showFaceLoginAlert('Unable to access webcam. Please check browser permissions or use your password.');
       }
     }
@@ -568,7 +561,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       }
 
       if (!detection || !detection.landmarks) {
-        updateStatusBadge('👀', 'Look directly at camera to start', 'normal');
+        updateStatusBadge('scan-face', 'Look directly at camera to start', 'normal');
         return;
       }
 
@@ -576,7 +569,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         (typeof detection.landmarks.getPositions === 'function' ? detection.landmarks.getPositions() : null);
 
       if (!landmarks || landmarks.length < 68) {
-        updateStatusBadge('👀', 'Look directly at camera to start', 'normal');
+        updateStatusBadge('scan-face', 'Look directly at camera to start', 'normal');
         return;
       }
 
@@ -679,13 +672,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       } else {
         // Dynamic guidance feedback based on current cycle state
         if (livenessBlinkState === 'DROPPED_CLOSED') {
-          updateStatusBadge('👀', 'Eyes closed detected! Re-open eyes...', 'challenge');
+          updateStatusBadge('eye', 'Eyes closed detected! Re-open eyes...', 'challenge');
         } else if (livenessHeadState === 'TURNED_AWAY') {
-          updateStatusBadge('🔄', 'Head turn detected! Return to center...', 'challenge');
+          updateStatusBadge('refresh-cw', 'Head turn detected! Return to center...', 'challenge');
         } else if (livenessBlinkState === 'OPEN_OBSERVED' || livenessHeadState === 'CENTER_OBSERVED') {
-          updateStatusBadge('👀', 'Blink your eyes or turn your head slightly', 'challenge');
+          updateStatusBadge('eye', 'Blink your eyes or turn your head slightly', 'challenge');
         } else {
-          updateStatusBadge('👀', 'Look directly at camera to start', 'normal');
+          updateStatusBadge('scan-face', 'Look directly at camera to start', 'normal');
         }
       }
     }
@@ -699,7 +692,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       isVerifying = true;
       stopFaceDetectionLoop();
 
-      updateStatusBadge('✨', 'Liveness verified! Logging in...', 'perfect-capturing');
+      updateStatusBadge('sparkles', 'Liveness verified! Logging in...', 'perfect-capturing');
 
       const video = document.getElementById('faceWebcamVideo');
       const captureCanvas = document.getElementById('faceCaptureCanvas');
@@ -720,7 +713,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
       const base64Data = captureCanvas.toDataURL('image/jpeg', 0.92);
 
-      updateStatusBadge('⏳', 'Verifying...', 'verifying');
+      updateStatusBadge('clock', 'Verifying...', 'verifying');
 
       try {
         const response = await fetch('login_face_verify.php', {
@@ -737,7 +730,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if (response.ok && result.status === 'success') {
           // Success: High confidence match verified
-          updateStatusBadge('✓', 'Face recognized! Welcome back...', 'holding');
+          updateStatusBadge('check', 'Face recognized! Welcome back...', 'holding');
           const ring = document.getElementById('biometricOvalRing');
           if (ring) {
             ring.style.borderColor = '#10b981';
@@ -762,7 +755,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
      * Handle verification failure: display timed notification & reset
      */
     function handleFaceVerificationFailure(message) {
-      updateStatusBadge('✕', 'Face not recognized', 'normal');
+      updateStatusBadge('x', 'Face not recognized', 'normal');
       showFaceLoginAlert(message);
 
       // Reset state after a brief delay so tenant can scan again if desired
@@ -781,7 +774,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       const textEl = document.getElementById('faceStatusText');
       const ring = document.getElementById('biometricOvalRing');
 
-      if (iconEl) iconEl.textContent = icon;
+      if (iconEl) {
+        const iconMap = {
+          '\uD83D\uDC40': 'scan-face',
+          '\uD83D\uDD0D': 'search',
+          '\u26A0\uFE0F': 'alert-triangle',
+          '\uD83D\uDD04': 'refresh-cw',
+          '\u2728': 'sparkles',
+          '\u23F3': 'clock',
+          '\u2713': 'check',
+          '\u2715': 'x'
+        };
+        const lucideName = iconMap[icon] || icon || 'scan-face';
+        iconEl.innerHTML = window.rcIcon(lucideName, 'w-4 h-4');
+      }
       if (textEl) textEl.textContent = text;
 
       if (ring) {

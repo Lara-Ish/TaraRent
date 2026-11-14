@@ -1,16 +1,12 @@
 <?php
-require_once __DIR__ . '/../config/db.php';
+require_once 'config/db.php';
 $pdo = Database::getConnection();
+$stmt = $pdo->query("SHOW COLUMNS FROM users LIKE 'verification_status'");
+print_r($stmt->fetch(PDO::FETCH_ASSOC));
 
-echo "=== PASSWORD_RESETS COLUMNS ===\n";
-$cols = $pdo->query("DESCRIBE password_resets")->fetchAll(PDO::FETCH_ASSOC);
-foreach ($cols as $col) {
-    echo "{$col['Field']} - {$col['Type']} - Null:{$col['Null']} - Default:{$col['Default']}\n";
+$stmt2 = $pdo->query("SHOW COLUMNS FROM users");
+while ($row = $stmt2->fetch(PDO::FETCH_ASSOC)) {
+    if (strpos($row['Field'], 'verif') !== false || strpos($row['Field'], 'id_') !== false) {
+        echo $row['Field'] . ' -> ' . $row['Type'] . "\n";
+    }
 }
-
-echo "\n=== USERS IN DB ===\n";
-$users = $pdo->query("SELECT id, username, name, email, role, is_active FROM users")->fetchAll(PDO::FETCH_ASSOC);
-foreach ($users as $u) {
-    echo "ID:{$u['id']} | {$u['role']} | {$u['username']} | {$u['name']} | {$u['email']} | Active:{$u['is_active']}\n";
-}
-

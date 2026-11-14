@@ -74,6 +74,63 @@ if (!empty($rawInput)) {
 }
 $action = trim((string)($_POST['action'] ?? ($jsonPayload['action'] ?? '')));
 
+$isVerifiedUser = ((int)($accountUser['is_verified'] ?? 0) === 1 || ($accountUser['verification_status'] ?? '') === 'verified' || !empty($_SESSION['is_updating_verified_id']));
+
+// Safe Failure Handler for Verified ID Updates vs Standard Verifications
+$handleFailure = function(string $defaultMsg, float $confidence = 0.0, array $extra = []) use ($isVerifiedUser, $accountUser, $userId, $uploadDir, $pdo, &$liveFacePath) {
+    if ($isVerifiedUser) {
+        // Safe-Fail Mechanism: Automatically discard temporary ID file
+        $pendingId = $accountUser['pending_id_path'] ?? ($_SESSION['pending_id_path'] ?? null);
+        if (!empty($pendingId)) {
+            $pPath = $uploadDir . '/' . basename($pendingId);
+            if (file_exists($pPath)) {
+                @unlink($pPath);
+            }
+        }
+        if (!empty($liveFacePath) && file_exists($liveFacePath)) {
+            @unlink($liveFacePath);
+        }
+        // Leave main database records untouched so tenant remains fully verified and active using original ID
+        $pdo->prepare("UPDATE users SET pending_id_path = NULL, pending_id_type = NULL WHERE id = :id")->execute([':id' => $userId]);
+        unset($_SESSION['pending_id_path'], $_SESSION['pending_id_type'], $_SESSION['is_updating_verified_id'], $_SESSION['staged_id_photo'], $_SESSION['staged_id_type']);
+
+        sendFaceJsonResponse(422, array_merge([
+            'status' => 'error',
+            'is_verified' => 1,
+            'was_verified' => true,
+            'confidence' => round($confidence, 2),
+            'message' => 'ID update cancelled or failed. Your previously verified ID remains active.'
+        ], $extra));
+    } else {
+        sendFaceJsonResponse(422, array_merge([
+            'status' => 'error',
+            'is_verified' => 0,
+            'confidence' => round($confidence, 2),
+            'message' => $defaultMsg
+        ], $extra));
+    }
+};
+
+// Handle ID Update Cancellation: Discard temporary file, reset holding columns, keep original ID verified
+if ($action === 'cancel_id_update') {
+    $pendingId = $accountUser['pending_id_path'] ?? ($_SESSION['pending_id_path'] ?? null);
+    if (!empty($pendingId)) {
+        $pPath = $uploadDir . '/' . basename($pendingId);
+        if (file_exists($pPath)) {
+            @unlink($pPath);
+        }
+    }
+    $pdo->prepare("UPDATE users SET pending_id_path = NULL, pending_id_type = NULL WHERE id = :id")->execute([':id' => $userId]);
+    unset($_SESSION['pending_id_path'], $_SESSION['pending_id_type'], $_SESSION['is_updating_verified_id'], $_SESSION['staged_id_photo'], $_SESSION['staged_id_type']);
+
+    sendFaceJsonResponse(200, [
+        'status' => 'success',
+        'is_verified' => $isVerifiedUser ? 1 : 0,
+        'was_verified' => $isVerifiedUser,
+        'message' => 'ID update cancelled or failed. Your previously verified ID remains active.'
+    ]);
+}
+
 // Handle Phase 2: Dedicated Live Testing Completion (No photo upload / saving)
 if ($action === 'complete_liveness') {
     $isFaceMatched = !empty($_SESSION['verification_face_matched'])
@@ -121,7 +178,7 @@ if ($action === 'complete_liveness') {
 }
 
 // Handle ID Pre-upload from Step 1 (Stage ID image on server before face scan)
-if (!empty($_POST['upload_id_only'])) {
+if (!empty($_POST['upload_id_only']) || $action === 'validate_and_stage_id') {
     $idType = trim((string)($_POST['id_type'] ?? ($accountUser['id_type'] ?? '')));
     if (isset($_FILES['id_photo']) && $_FILES['id_photo']['error'] === UPLOAD_ERR_OK) {
         $idFile = $_FILES['id_photo'];
@@ -132,39 +189,71 @@ if (!empty($_POST['upload_id_only'])) {
         $idFilename = sprintf('id_user%d_%s_%s.%s', $userId, $timestampStr, $randStr, $idExt);
         $dest = $uploadDir . '/' . $idFilename;
         if (move_uploaded_file($idFile['tmp_name'], $dest)) {
-            $saveIdStmt = $pdo->prepare("
-                UPDATE users 
-                SET id_photo_filename = :fn, 
-                    id_type = :id_type,
-                    verification_status = 'pending',
-                    id_submitted_at = NOW()
-                WHERE id = :id
-            ");
-            $saveIdStmt->execute([':fn' => $idFilename, ':id_type' => $idType, ':id' => $userId]);
-
-            if (isset($_SESSION['user'])) {
-                $_SESSION['user']['id_photo_filename'] = $idFilename;
-                $_SESSION['user']['id_type'] = $idType;
-                $_SESSION['user']['verification_status'] = 'pending';
+            $rawOcrText = trim((string)($_POST['ocr_raw_text'] ?? ''));
+            if (empty($rawOcrText)) {
+                $ocrRes = VerificationService::extractIdDataWithOCR($dest, null, $accountUser, $idType);
+                if (!empty($ocrRes['raw_text'])) {
+                    $rawOcrText = $ocrRes['raw_text'];
+                }
             }
-            $_SESSION['verification_status'] = 'pending';
 
-            // In-app notification for landlord
-            NotificationService::notifyLandlords(
-                $pdo,
-                'account',
-                'ID Verification Submitted',
-                "Tenant {$accountUser['name']} submitted a {$idType} photo for verification.",
-                'sectionDirectory',
-                $userId,
-                'id_verification_submitted',
-                false
-            );
+            if (!empty($rawOcrText)) {
+                $typeCheck = VerificationService::verifyIdTypeMatchesDocument($idType, $rawOcrText);
+                if (!$typeCheck['matched']) {
+                    @unlink($dest);
+                    sendFaceJsonResponse(422, [
+                        'status' => 'error',
+                        'code' => 'ID_TYPE_MISMATCH',
+                        'message' => 'Verification Failed: The uploaded document does not match the selected ID type.',
+                        'details' => $typeCheck
+                    ]);
+                }
+            }
+
+            if ($isVerifiedUser) {
+                // Rule 1: Temporary Data Holding (Database/PHP)
+                // When a verified tenant uploads a new ID, do not immediately overwrite their existing ID record
+                // or change their is_verified status to 0. Store in dedicated temporary database columns and session.
+                $saveIdStmt = $pdo->prepare("
+                    UPDATE users 
+                    SET pending_id_path = :fn, 
+                        pending_id_type = :id_type
+                    WHERE id = :id
+                ");
+                $saveIdStmt->execute([':fn' => $idFilename, ':id_type' => $idType, ':id' => $userId]);
+
+                $_SESSION['pending_id_path'] = $idFilename;
+                $_SESSION['pending_id_type'] = $idType;
+                $_SESSION['is_updating_verified_id'] = true;
+                $_SESSION['staged_id_photo'] = $idFilename;
+                $_SESSION['staged_id_type'] = $idType;
+            } else {
+                $saveIdStmt = $pdo->prepare("
+                    UPDATE users 
+                    SET id_photo_filename = :fn, 
+                        id_type = :id_type,
+                        pending_id_path = :fn,
+                        pending_id_type = :id_type,
+                        id_submitted_at = NOW()
+                    WHERE id = :id
+                ");
+                $saveIdStmt->execute([':fn' => $idFilename, ':id_type' => $idType, ':id' => $userId]);
+
+                if (isset($_SESSION['user'])) {
+                    $_SESSION['user']['id_photo_filename'] = $idFilename;
+                    $_SESSION['user']['id_type'] = $idType;
+                }
+                $_SESSION['staged_id_photo'] = $idFilename;
+                $_SESSION['staged_id_type'] = $idType;
+            }
 
             sendFaceJsonResponse(200, [
                 'status' => 'success',
-                'message' => 'ID photo submitted successfully and is now under landlord review.',
-                'id_photo_filename' => $idFilename
+                'is_verified' => $isVerifiedUser ? 1 : 0,
+                'is_updating' => $isVerifiedUser,
+                'message' => 'ID photo validated and staged successfully.',
+                'id_photo_filename' => $idFilename,
+                'id_type' => $idType
             ]);
         }
     }
@@ -247,13 +336,50 @@ if (isset($_FILES['id_photo']) && $_FILES['id_photo']['error'] === UPLOAD_ERR_OK
     $dest = $uploadDir . '/' . $idFilename;
     if (move_uploaded_file($idFile['tmp_name'], $dest)) {
         $idFilePath = $dest;
-        // Save to users table so subsequent checks retrieve it
-        $saveIdStmt = $pdo->prepare("UPDATE users SET id_photo_filename = :fn, id_type = :id_type WHERE id = :id");
-        $saveIdStmt->execute([':fn' => $idFilename, ':id_type' => $idType, ':id' => $userId]);
+        if ($isVerifiedUser) {
+            // Save to temporary pending columns for verified user
+            $saveIdStmt = $pdo->prepare("UPDATE users SET pending_id_path = :fn, pending_id_type = :id_type WHERE id = :id");
+            $saveIdStmt->execute([':fn' => $idFilename, ':id_type' => $idType, ':id' => $userId]);
+            $_SESSION['pending_id_path'] = $idFilename;
+            $_SESSION['pending_id_type'] = $idType;
+            $_SESSION['is_updating_verified_id'] = true;
+        } else {
+            $saveIdStmt = $pdo->prepare("UPDATE users SET id_photo_filename = :fn, id_type = :id_type, pending_id_path = :fn, pending_id_type = :id_type WHERE id = :id");
+            $saveIdStmt->execute([':fn' => $idFilename, ':id_type' => $idType, ':id' => $userId]);
+        }
     }
 }
 
-// Case B: Retrieve previously uploaded ID image from database or server filesystem
+// Case B: Dedicated temporary pending ID (from Step 1 staging or previous request)
+// Strict rule: If a pending new ID exists, Face++ MUST cross-check against this temporary new ID, not the old one!
+if (!$idFilePath) {
+    $pendingIdCandidate = $_SESSION['pending_id_path'] ?? ($accountUser['pending_id_path'] ?? null);
+    if (!empty($pendingIdCandidate)) {
+        $candidatePath = $uploadDir . '/' . basename($pendingIdCandidate);
+        if (file_exists($candidatePath) && filesize($candidatePath) > 0) {
+            $idFilePath = $candidatePath;
+            $idFilename = basename($pendingIdCandidate);
+            if (empty($idType)) {
+                $idType = trim((string)($_SESSION['pending_id_type'] ?? ($accountUser['pending_id_type'] ?? '')));
+            }
+            $_SESSION['is_updating_verified_id'] = true;
+        }
+    }
+}
+
+// Case C: Staged ID photo from session
+if (!$idFilePath && !empty($_SESSION['staged_id_photo'])) {
+    $sPath = $uploadDir . '/' . basename($_SESSION['staged_id_photo']);
+    if (file_exists($sPath) && filesize($sPath) > 0) {
+        $idFilePath = $sPath;
+        $idFilename = basename($_SESSION['staged_id_photo']);
+        if (empty($idType)) {
+            $idType = trim((string)($_SESSION['staged_id_type'] ?? ''));
+        }
+    }
+}
+
+// Case D: Retrieve previously uploaded ID image from database or server filesystem (fallback only if no pending ID)
 if (!$idFilePath && !empty($accountUser['id_photo_filename'])) {
     $possiblePaths = [
         $uploadDir . '/' . $accountUser['id_photo_filename'],
@@ -314,13 +440,8 @@ if (empty($rawOcrText) && !empty($idFilePath) && isset($_FILES['id_photo'])) {
 if (!empty($idType) && !empty($rawOcrText)) {
     $typeCheck = VerificationService::verifyIdTypeMatchesDocument($idType, $rawOcrText);
     if (!$typeCheck['matched']) {
-        // STRICT REJECTION: If a document mismatch is detected, completely halt the verification flow
-        // and return a clear error message to the frontend so the user is forced to upload the correct document.
-        sendFaceJsonResponse(422, [
-            'status' => 'error',
-            'is_verified' => 0,
-            'message' => 'Verification Failed: The uploaded document does not match the selected ID type.'
-        ]);
+        // STRICT REJECTION: If a document mismatch is detected, halt flow safely
+        $handleFailure('Verification Failed: The uploaded document does not match the selected ID type.');
     }
 }
 
@@ -381,11 +502,7 @@ if (isset($_SERVER['HTTP_X_MOCK_FACEPP_ERROR'])) {
         curl_close($ch);
 
         if ($curlErr) {
-            sendFaceJsonResponse(502, [
-                'status' => 'error',
-                'is_verified' => 0,
-                'message' => 'Face verification failed. Please try again.'
-            ]);
+            $handleFailure('Face verification failed. Please try again.');
         }
 
         $data = json_decode((string)$response, true);
@@ -399,41 +516,15 @@ if (isset($_SERVER['HTTP_X_MOCK_FACEPP_ERROR'])) {
     }
 }
 
-if (!is_array($data)) {
-    sendFaceJsonResponse(422, [
-        'status' => 'error',
-        'is_verified' => 0,
-        'message' => 'Face verification failed. Please try again.'
-    ]);
-}
-
-// 6. Strict Evaluation & Database Update
-// Handle Face++ API errors or face detection failures
-if (isset($data['error_message'])) {
-    sendFaceJsonResponse(422, [
-        'status' => 'error',
-        'is_verified' => 0,
-        'message' => 'Face verification failed. Please try again.'
-    ]);
+if (!is_array($data) || isset($data['error_message'])) {
+    $handleFailure('Face verification failed. Please try again.');
 }
 
 $faces1 = $data['faces1'] ?? [];
 $faces2 = $data['faces2'] ?? [];
 
-if (empty($faces2)) {
-    sendFaceJsonResponse(422, [
-        'status' => 'error',
-        'is_verified' => 0,
-        'message' => 'Face verification failed. Please try again.'
-    ]);
-}
-
-if (empty($faces1)) {
-    sendFaceJsonResponse(422, [
-        'status' => 'error',
-        'is_verified' => 0,
-        'message' => 'Face verification failed. Please try again.'
-    ]);
+if (empty($faces2) || empty($faces1)) {
+    $handleFailure('Face verification failed. Please try again.');
 }
 
 // 7. Parse Confidence & Evaluate Against Face++ API Thresholds
@@ -448,9 +539,11 @@ $isConfidenceMatch = ($confidence >= 70.0) || ($threshold1e4 > 0 && $confidence 
 
 // Strict Identity Matching: As long as captured live testing face matches photo on attached ID via Face++, approve account
 if ($isConfidenceMatch) {
-    // Unified Face++ Comparison: Directly update tenant account to is_verified = 1
-    $idFilenameToSave = $idFilename ?: ($accountUser['id_photo_filename'] ?? null);
-    $idTypeToSave = !empty($idType) ? $idType : ($accountUser['id_type'] ?? null);
+    // Fallback & Commit Logic (Safe-Fail Mechanism):
+    // If Successful: Replace the main ID columns with the new data and clear temporary holding fields.
+    // The tenant seamlessly remains is_verified = 1 under the new ID.
+    $idFilenameToSave = $idFilename ?: ($accountUser['pending_id_path'] ?? ($accountUser['id_photo_filename'] ?? null));
+    $idTypeToSave = !empty($idType) ? $idType : ($accountUser['pending_id_type'] ?? ($accountUser['id_type'] ?? null));
     $notes = sprintf('Face++ Verified: confidence %.2f%% (baseline >= 70.00%%, threshold 1e-4: %.2f%%). Auto-capture liveness verified.', $confidence, $threshold1e4);
 
     $updateStmt = $pdo->prepare("
@@ -460,6 +553,8 @@ if ($isConfidenceMatch) {
             id_type = :id_type,
             id_photo_filename = :id_photo,
             live_photo_filename = :live_face,
+            pending_id_path = NULL,
+            pending_id_type = NULL,
             terms_accepted = 1,
             privacy_acknowledged = 1,
             id_verified_at = NOW(),
@@ -482,6 +577,7 @@ if ($isConfidenceMatch) {
     }
     $_SESSION['is_verified'] = 1;
     $_SESSION['verification_status'] = 'verified';
+    unset($_SESSION['pending_id_path'], $_SESSION['pending_id_type'], $_SESSION['is_updating_verified_id'], $_SESSION['staged_id_photo'], $_SESSION['staged_id_type']);
 
     sendFaceJsonResponse(200, [
         'status' => 'success',
@@ -493,13 +589,10 @@ if ($isConfidenceMatch) {
         'message' => 'Face verification successful!'
     ]);
 } else {
-    // Confidence below realistic baseline (>= 70.0% or 1e-4 threshold)
-    sendFaceJsonResponse(422, [
-        'status' => 'error',
-        'is_verified' => 0,
-        'confidence' => round($confidence, 2),
+    // If Cancelled or Failed: Automatically discard temporary ID file.
+    // Leave main database records untouched so tenant remains fully verified and active using original ID.
+    $handleFailure('Face verification failed. Please try again.', $confidence, [
         'threshold_1e4' => round($threshold1e4, 2),
         'threshold_1e5' => round($threshold1e5, 2),
-        'message' => 'Face verification failed. Please try again.'
     ]);
 }

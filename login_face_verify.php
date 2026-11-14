@@ -105,16 +105,38 @@ if (isset($_SERVER['HTTP_X_MOCK_FACE_USER'])) {
     }
 
     $stmt = $pdo->prepare("
-        SELECT u.id, u.username, u.name, u.email, u.role, u.phone, u.unit_id, un.unit_number
+        SELECT u.id, u.username, u.name, u.email, u.role, u.phone, u.unit_id, u.is_active, u.is_archived, u.rental_status, u.deleted_at, un.unit_number
         FROM users u
         LEFT JOIN units un ON u.unit_id = un.id
-        WHERE (u.username = :val OR u.id = :idVal) AND u.is_active = 1
+        WHERE (u.username = :val OR u.id = :idVal)
         LIMIT 1
     ");
     $stmt->execute([':val' => $mockUserVal, ':idVal' => is_numeric($mockUserVal) ? (int)$mockUserVal : 0]);
     $matchedUser = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if ($matchedUser) {
+        $isArchived = ((int)($matchedUser['is_archived'] ?? 0) === 1)
+            || (($matchedUser['rental_status'] ?? '') === 'archived')
+            || !empty($matchedUser['deleted_at']);
+
+        if ($isArchived) {
+            http_response_code(403);
+            echo json_encode([
+                'status'  => 'error',
+                'message' => 'This account has been archived as the move-out process is complete.'
+            ]);
+            exit;
+        }
+
+        if ((int)($matchedUser['is_active'] ?? 0) !== 1) {
+            http_response_code(403);
+            echo json_encode([
+                'status'  => 'error',
+                'message' => 'This account has been deactivated or removed by property management.'
+            ]);
+            exit;
+        }
+
         session_regenerate_id(true);
         $_SESSION['user_id']     = (int)$matchedUser['id'];
         $_SESSION['username']    = $matchedUser['username'];
@@ -160,6 +182,9 @@ $stmt = $pdo->query("
     FROM users u
     LEFT JOIN units un ON u.unit_id = un.id
     WHERE u.is_active = 1
+      AND (u.is_archived = 0 OR u.is_archived IS NULL)
+      AND u.deleted_at IS NULL
+      AND (u.rental_status != 'archived' OR u.rental_status IS NULL)
       AND (u.is_verified = 1 OR u.verification_status = 'verified')
       AND (u.live_photo_filename IS NOT NULL OR u.id_photo_filename IS NOT NULL)
     ORDER BY u.id_verified_at DESC, u.id DESC

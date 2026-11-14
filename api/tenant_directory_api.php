@@ -49,7 +49,14 @@ try {
                 echo json_encode(['status' => 'error', 'message' => 'Invalid tenant ID.']);
                 exit;
             }
-            $tStmt = $pdo->prepare("SELECT id, name, unit_id, rental_status, is_active, is_archived FROM users WHERE id = :id AND role = 'tenant' LIMIT 1");
+            $tStmt = $pdo->prepare("
+                SELECT u.id, u.name, u.username, u.unit_id, un.unit_number, un.monthly_rent,
+                       u.rental_status, u.move_in_date, u.move_out_date, u.is_active, u.is_archived
+                FROM users u
+                LEFT JOIN units un ON u.unit_id = un.id
+                WHERE u.id = :id AND u.role = 'tenant'
+                LIMIT 1
+            ");
             $tStmt->execute([':id' => $tId]);
             $tenant = $tStmt->fetch(PDO::FETCH_ASSOC);
             if (!$tenant) {
@@ -59,13 +66,91 @@ try {
             }
             $settlement = TenantService::checkTenantSettlement($pdo, $tId);
             echo json_encode([
-                'status'        => 'success',
-                'tenant_id'     => $tId,
-                'tenant_name'   => $tenant['name'],
-                'rental_status' => $tenant['rental_status'] ?? 'active',
-                'is_active'     => (int)$tenant['is_active'],
-                'is_archived'   => (int)$tenant['is_archived'],
-                'settlement'    => $settlement
+                'status'                  => 'success',
+                'tenant_id'               => $tId,
+                'tenant_name'             => $tenant['name'],
+                'username'                => $tenant['username'] ?? '',
+                'unit_id'                 => (int)($tenant['unit_id'] ?? 0),
+                'unit_number'             => $tenant['unit_number'] ?? 'Unassigned',
+                'monthly_rent'            => (float)($tenant['monthly_rent'] ?? 0),
+                'rental_status'           => $tenant['rental_status'] ?? 'active',
+                'move_in_date'            => $tenant['move_in_date'] ?? null,
+                'move_in_date_formatted'  => !empty($tenant['move_in_date']) ? date('M d, Y', strtotime($tenant['move_in_date'])) : 'Not recorded',
+                'move_out_date'           => $tenant['move_out_date'] ?? null,
+                'move_out_date_formatted' => !empty($tenant['move_out_date']) ? date('M d, Y', strtotime($tenant['move_out_date'])) : null,
+                'is_active'               => (int)$tenant['is_active'],
+                'is_archived'             => (int)$tenant['is_archived'],
+                'settlement'              => $settlement
+            ]);
+            exit;
+        }
+
+        // ACTION: Get Live Tenant Information & Billing Overview for Modal
+        if ($action === 'get_tenant_billing' || $action === 'get_active_tenant_details') {
+            $tId = (int)($_GET['tenant_id'] ?? 0);
+            if ($tId <= 0) {
+                http_response_code(422);
+                echo json_encode(['status' => 'error', 'message' => 'Invalid tenant ID.']);
+                exit;
+            }
+
+            $tStmt = $pdo->prepare("
+                SELECT u.id, u.unit_id, u.username, u.name, u.email, u.phone, 
+                       u.verification_status, u.is_verified, u.id_type, u.id_photo_filename, u.verification_notes, u.id_submitted_at,
+                       u.birthday, u.emergency_contact, u.emergency_contact_name,
+                       u.emergency_contact_relationship, u.emergency_contact_phone,
+                       u.move_in_date, u.move_out_date, u.rental_status,
+                       u.total_occupants, u.adults_count, u.kids_count, u.created_at, u.profile_picture,
+                       un.unit_number, un.bedrooms, un.bathrooms, un.monthly_rent
+                FROM users u
+                LEFT JOIN units un ON u.unit_id = un.id
+                WHERE u.id = :id AND u.role = 'tenant'
+                LIMIT 1
+            ");
+            $tStmt->execute([':id' => $tId]);
+            $tenant = $tStmt->fetch(PDO::FETCH_ASSOC);
+            if (!$tenant) {
+                http_response_code(404);
+                echo json_encode(['status' => 'error', 'message' => 'Tenant not found.']);
+                exit;
+            }
+
+            // Strict Backend Privacy Rule: Check tenant's is_verified status.
+            // If the account is 0 (unverified) or marked as failed/rejected, the backend must NOT send
+            // the ID file path or the ID type string to the frontend. Set these variables to null.
+            $rawVStatus = strtolower(trim((string)($tenant['verification_status'] ?? 'unverified')));
+            $isVerifiedTenant = ((int)($tenant['is_verified'] ?? 0) === 1) && ($rawVStatus === 'verified');
+            $tenant['is_verified'] = $isVerifiedTenant ? 1 : 0;
+            if (!$isVerifiedTenant) {
+                $tenant['id_type'] = null;
+                $tenant['id_photo_filename'] = null;
+            }
+
+            // Fetch latest Rent payment record
+            $pRentStmt = $pdo->prepare("
+                SELECT id, payment_type, billing_cycle, due_date, amount_due, amount_paid, payment_date, status, receipt_filename
+                FROM payments 
+                WHERE tenant_id = :tid AND payment_type = 'Rent'
+                ORDER BY id DESC LIMIT 1
+            ");
+            $pRentStmt->execute([':tid' => $tId]);
+            $latestRent = $pRentStmt->fetch(PDO::FETCH_ASSOC);
+
+            // Fetch Deposit payment record
+            $pDepStmt = $pdo->prepare("
+                SELECT id, payment_type, billing_cycle, due_date, amount_due, amount_paid, payment_date, status, receipt_filename
+                FROM payments 
+                WHERE tenant_id = :tid AND payment_type = 'Advance Deposit'
+                ORDER BY id DESC LIMIT 1
+            ");
+            $pDepStmt->execute([':tid' => $tId]);
+            $latestDeposit = $pDepStmt->fetch(PDO::FETCH_ASSOC);
+
+            echo json_encode([
+                'status'         => 'success',
+                'tenant'         => $tenant,
+                'latest_rent'    => $latestRent,
+                'latest_deposit' => $latestDeposit
             ]);
             exit;
         }
@@ -88,7 +173,7 @@ try {
             $stmt = $pdo->prepare("
                 SELECT u.id, u.name, u.username, u.email, u.phone, u.birthday, 
                        u.archived_unit_number, u.archived_monthly_rent, u.archived_spaces_text,
-                       u.move_in_date, u.deleted_at, u.created_at, u.profile_picture,
+                       u.rental_status, u.move_in_date, u.move_out_date, u.deleted_at, u.created_at, u.profile_picture,
                        (SELECT COUNT(*) FROM payments WHERE tenant_id = u.id) AS total_payments,
                        (SELECT COUNT(*) FROM maintenance_tickets WHERE tenant_id = u.id) AS total_tickets,
                        (SELECT COALESCE(SUM(amount_paid), 0) FROM payments WHERE tenant_id = u.id AND status = 'approved') AS total_paid
@@ -102,6 +187,9 @@ try {
             foreach ($archivedTenants as &$at) {
                 $at['formatted_deleted_at'] = !empty($at['deleted_at']) ? date('M j, Y g:i A', strtotime($at['deleted_at'])) : 'Archived';
                 $at['formatted_move_in'] = !empty($at['move_in_date']) ? date('M j, Y', strtotime($at['move_in_date'])) : 'Not set';
+                $at['formatted_move_out'] = !empty($at['move_out_date'])
+                    ? date('M j, Y', strtotime($at['move_out_date']))
+                    : (!empty($at['deleted_at']) ? date('M j, Y', strtotime($at['deleted_at'])) : 'Not set');
                 $at['total_paid_formatted'] = '₱' . number_format((float)$at['total_paid'], 2);
                 $at['initial'] = strtoupper(mb_substr(trim(explode(' ', trim($at['name']))[0]), 0, 1, 'UTF-8')) ?: 'T';
             }
@@ -127,10 +215,10 @@ try {
             $stmt = $pdo->prepare("
                 SELECT u.id, u.name, u.username, u.email, u.phone, u.birthday,
                        u.emergency_contact, u.emergency_contact_name, u.emergency_contact_relationship, u.emergency_contact_phone,
-                       u.archived_unit_number, u.archived_monthly_rent, u.archived_spaces_text,
-                       u.move_in_date, u.total_occupants, u.adults_count, u.kids_count,
+                       u.unit_id, u.rental_status, u.archived_unit_number, u.archived_monthly_rent, u.archived_spaces_text,
+                       u.move_in_date, u.move_out_date, u.total_occupants, u.adults_count, u.kids_count,
                        u.id_type, u.id_photo_filename, u.profile_picture,
-                       u.verification_status, u.id_submitted_at, u.id_verified_at,
+                       u.verification_status, u.is_verified, u.id_submitted_at, u.id_verified_at,
                        u.deleted_at, u.created_at,
                        (SELECT address FROM apartment_settings LIMIT 1) AS property_address,
                        (SELECT security_deposit FROM apartment_settings LIMIT 1) AS standard_deposit
@@ -147,8 +235,21 @@ try {
                 exit;
             }
 
+            // Strict Backend Privacy Rule:
+            $rawVStatus = strtolower(trim((string)($tenant['verification_status'] ?? 'unverified')));
+            $isVerifiedTenant = ((int)($tenant['is_verified'] ?? 0) === 1) && ($rawVStatus === 'verified');
+            $tenant['is_verified'] = $isVerifiedTenant ? 1 : 0;
+            if (!$isVerifiedTenant) {
+                $tenant['id_type'] = null;
+                $tenant['id_photo_filename'] = null;
+            }
+
             $tenant['formatted_deleted_at'] = !empty($tenant['deleted_at']) ? date('M j, Y g:i A', strtotime($tenant['deleted_at'])) : 'Archived';
             $tenant['formatted_move_in'] = !empty($tenant['move_in_date']) ? date('M j, Y', strtotime($tenant['move_in_date'])) : 'Not recorded';
+            $tenant['formatted_move_out'] = !empty($tenant['move_out_date'])
+                ? date('M j, Y', strtotime($tenant['move_out_date']))
+                : (!empty($tenant['deleted_at']) ? date('M j, Y', strtotime($tenant['deleted_at'])) : 'Not recorded');
+            $tenant['rental_status_label'] = ($tenant['rental_status'] ?? 'moved_out') === 'moved_out' ? 'Archived / Moved Out' : 'Archived';
             $tenant['initial'] = strtoupper(mb_substr(trim(explode(' ', trim($tenant['name']))[0]), 0, 1, 'UTF-8')) ?: 'T';
 
             $propAddress = $tenant['property_address'] ?: '742 Evergreen Boulevard, Portland, OR 97201';
@@ -156,46 +257,89 @@ try {
             $tenant['complete_address'] = $unitPrefix . 'TaraRent Residences, ' . $propAddress;
             $tenant['formatted_birthday'] = !empty($tenant['birthday']) ? date('M j, Y', strtotime($tenant['birthday'])) : 'Not provided';
             $tenant['formatted_created_at'] = !empty($tenant['created_at']) ? date('M j, Y', strtotime($tenant['created_at'])) : 'N/A';
-            $depositAmount = (float)($tenant['archived_monthly_rent'] ?: ($tenant['standard_deposit'] ?: 3000.00));
-            $tenant['advance_deposit_formatted'] = '₱' . number_format($depositAmount, 2);
-            $tenant['archived_monthly_rent_formatted'] = '₱' . number_format((float)($tenant['archived_monthly_rent'] ?: 3000.00), 2) . ' / mo';
 
             // 2. Payments & Billing History (Paid, Unpaid, Overdue, Pending)
             $pStmt = $pdo->prepare("
-                SELECT id, payment_type, billing_cycle, due_date, base_rent_amount, 
-                       additional_space_fee, additional_spaces_breakdown,
-                       amount_due, amount_paid, payment_date, status, payment_method, 
-                       receipt_filename, verified_by_landlord, verification_notes, verified_at, created_at
-                FROM payments
-                WHERE tenant_id = :id
-                ORDER BY billing_cycle DESC, id DESC
+                SELECT p.id, p.unit_id, pu.unit_number AS payment_unit_number,
+                       p.payment_type, p.billing_cycle, p.due_date, p.base_rent_amount, 
+                       p.additional_space_fee, p.additional_spaces_breakdown,
+                       p.amount_due, p.amount_paid, p.payment_date, p.status, p.payment_method, 
+                       p.receipt_filename, p.verified_by_landlord, p.verification_notes, p.verified_at, p.created_at
+                FROM payments p
+                LEFT JOIN units pu ON p.unit_id = pu.id
+                WHERE p.tenant_id = :id
+                ORDER BY p.billing_cycle DESC, p.id DESC
             ");
             $pStmt->execute([':id' => $tId]);
             $payments = $pStmt->fetchAll(PDO::FETCH_ASSOC);
 
+            $depositPaidTotal = 0.0;
+            $depositDueTotal = 0.0;
+            $hasAdvanceDepositRow = false;
+            $depositStatusParts = [];
+            $historyUnits = [];
+
+            if (!empty($tenant['archived_unit_number'])) {
+                $historyUnits[] = $tenant['archived_unit_number'];
+            }
+
             foreach ($payments as &$p) {
-                $p['billing_cycle_formatted'] = !empty($p['billing_cycle']) ? date('F Y', strtotime($p['billing_cycle'])) : 'Billing Cycle';
+                $p['billing_cycle_formatted'] = !empty($p['billing_cycle']) ? date('F Y', strtotime($p['billing_cycle'])) : ($p['payment_type'] ?: 'Billing Cycle');
                 $p['due_date_formatted'] = !empty($p['due_date']) ? date('M j, Y', strtotime($p['due_date'])) : 'N/A';
                 $p['payment_date_formatted'] = !empty($p['payment_date']) ? date('M j, Y', strtotime($p['payment_date'])) : 'Pending';
+                $p['verified_at_formatted'] = !empty($p['verified_at']) ? date('M j, Y g:i A', strtotime($p['verified_at'])) : null;
                 $p['amount_due_formatted'] = '₱' . number_format((float)$p['amount_due'], 2);
                 $p['amount_paid_formatted'] = '₱' . number_format((float)$p['amount_paid'], 2);
+                $p['unit_label'] = $p['payment_unit_number'] ?: ($tenant['archived_unit_number'] ?: 'Unit');
+                $p['status_label'] = ucfirst(str_replace('_', ' ', (string)($p['status'] ?? 'unpaid')));
+
+                if (!empty($p['payment_unit_number']) && !in_array($p['payment_unit_number'], $historyUnits, true)) {
+                    $historyUnits[] = $p['payment_unit_number'];
+                }
+
+                if (strcasecmp((string)($p['payment_type'] ?? ''), 'Advance Deposit') === 0) {
+                    $hasAdvanceDepositRow = true;
+                    $depositDueTotal += (float)($p['amount_due'] ?? 0);
+                    $depositPaidTotal += (float)($p['amount_paid'] ?? 0);
+                    $depositStatusParts[] = ucfirst((string)($p['status'] ?? 'unpaid'));
+                }
             }
+            unset($p);
+
+            $fallbackDeposit = (float)($tenant['archived_monthly_rent'] ?: ($tenant['standard_deposit'] ?: 3000.00));
+            $depositAmount = $hasAdvanceDepositRow ? ($depositPaidTotal > 0 ? $depositPaidTotal : $depositDueTotal) : $fallbackDeposit;
+            $depositStatusStr = $hasAdvanceDepositRow ? (' (' . implode(', ', array_unique($depositStatusParts)) . ')') : '';
+            $tenant['advance_deposit_formatted'] = '₱' . number_format($depositAmount, 2) . $depositStatusStr;
+            $tenant['archived_monthly_rent_formatted'] = '₱' . number_format((float)($tenant['archived_monthly_rent'] ?: 3000.00), 2) . ' / mo';
 
             // 3. Maintenance Tickets & Responses
             $tStmt = $pdo->prepare("
-                SELECT id, title, description, photo_path, category, priority, status, 
-                       actual_cost, resolution_notes, created_at, resolved_at
-                FROM maintenance_tickets
-                WHERE tenant_id = :id
-                ORDER BY created_at DESC, id DESC
+                SELECT mt.id, mt.unit_id, tu.unit_number AS ticket_unit_number,
+                       mt.title, mt.description, mt.photo_path, mt.category, mt.priority, mt.status, 
+                       mt.actual_cost, mt.resolution_notes, mt.created_at, mt.resolved_at
+                FROM maintenance_tickets mt
+                LEFT JOIN units tu ON mt.unit_id = tu.id
+                WHERE mt.tenant_id = :id
+                ORDER BY mt.created_at DESC, mt.id DESC
             ");
             $tStmt->execute([':id' => $tId]);
             $tickets = $tStmt->fetchAll(PDO::FETCH_ASSOC);
 
             foreach ($tickets as &$tk) {
-                $tk['formatted_date'] = date('M j, Y g:i A', strtotime($tk['created_at']));
+                $tk['formatted_date'] = !empty($tk['created_at']) ? date('M j, Y g:i A', strtotime($tk['created_at'])) : 'N/A';
+                $tk['resolved_at_formatted'] = !empty($tk['resolved_at']) ? date('M j, Y g:i A', strtotime($tk['resolved_at'])) : null;
                 $tk['actual_cost_formatted'] = '₱' . number_format((float)$tk['actual_cost'], 2);
+                $tk['unit_label'] = $tk['ticket_unit_number'] ?: ($tenant['archived_unit_number'] ?: 'Unit');
+                $tk['status_label'] = ucfirst(str_replace('_', ' ', (string)($tk['status'] ?? 'open')));
+                $tk['priority_label'] = ucfirst((string)($tk['priority'] ?? 'medium'));
+
+                if (!empty($tk['ticket_unit_number']) && !in_array($tk['ticket_unit_number'], $historyUnits, true)) {
+                    $historyUnits[] = $tk['ticket_unit_number'];
+                }
             }
+            unset($tk);
+
+            $tenant['unit_history'] = !empty($historyUnits) ? implode(' → ', $historyUnits) : ($tenant['archived_unit_number'] ?: 'Not recorded');
 
             echo json_encode([
                 'status' => 'success',
@@ -206,21 +350,22 @@ try {
             exit;
         }
 
-        // DEFAULT ACTION: Fetch Active Tenants Grouped by Units
-        // Fetch 3 Units
+        // DEFAULT ACTION: Fetch Active Tenants Grouped by Units with Real-Time Payment Settlement Status
         $unitsStmt = $pdo->query("SELECT * FROM units ORDER BY unit_number ASC");
         $units = $unitsStmt->fetchAll();
 
         // Fetch All Active Tenants with personal details & emergency contacts (strictly excluding archived)
         $tenantsStmt = $pdo->query("
             SELECT u.id, u.unit_id, u.username, u.name, u.email, u.phone, 
-                   u.verification_status, u.id_type, u.id_photo_filename,
+                   u.verification_status, u.is_verified, u.id_type, u.id_photo_filename, u.verification_notes, u.id_submitted_at,
                    u.birthday, u.emergency_contact, u.emergency_contact_name,
                    u.emergency_contact_relationship, u.emergency_contact_phone,
-                   u.move_in_date, u.total_occupants, u.adults_count, u.kids_count, u.created_at,
-                   un.unit_number, un.monthly_rent
+                   u.move_in_date, u.move_out_date, u.rental_status,
+                   u.total_occupants, u.adults_count, u.kids_count, u.created_at,
+                   COALESCE(un.unit_number, u.archived_unit_number, 'Moved Out') AS unit_number, 
+                   COALESCE(un.monthly_rent, u.archived_monthly_rent, 0.00) AS monthly_rent
             FROM users u
-            JOIN units un ON u.unit_id = un.id
+            LEFT JOIN units un ON u.unit_id = un.id
             WHERE u.role = 'tenant' 
               AND u.is_active = 1 
               AND (u.is_archived = 0 OR u.is_archived IS NULL)
@@ -229,42 +374,91 @@ try {
         ");
         $allTenants = $tenantsStmt->fetchAll();
 
-        // Group tenants by unit
+        // Group tenants by unit and evaluate payment ledger via TenantService
         $grouped = [];
         foreach ($units as $u) {
             $uId = (int)$u['id'];
             $grouped[$uId] = [
-                'unit_id' => $uId,
-                'unit_number' => $u['unit_number'],
-                'monthly_rent' => (float)$u['monthly_rent'],
-                'capacity' => 'Unlimited',
-                'tenants' => []
+                'unit_id'       => $uId,
+                'id'            => $uId,
+                'unit_number'   => $u['unit_number'],
+                'floor_level'   => (int)($u['floor_level'] ?? 1),
+                'bedrooms'      => (int)($u['bedrooms'] ?? 1),
+                'bathrooms'     => (float)($u['bathrooms'] ?? 1.0),
+                'monthly_rent'  => (float)$u['monthly_rent'],
+                'capacity'      => 'Unlimited',
+                'is_occupied'   => false,
+                'is_paid_up'    => null,
+                'card_state'    => 'available',
+                'tenants'       => []
             ];
         }
 
+        $unpaidMovedOutTenants = [];
         foreach ($allTenants as $t) {
-            $uId = (int)$t['unit_id'];
-            if (isset($grouped[$uId])) {
-                $grouped[$uId]['tenants'][] = [
-                    'id' => (int)$t['id'],
-                    'name' => $t['name'],
-                    'username' => $t['username'],
-                    'email' => $t['email'],
-                    'phone' => $t['phone'] ?: 'No phone provided',
-                    'verification_status' => $t['verification_status'] ?? 'unverified',
-                    'id_type' => $t['id_type'] ?: null,
-                    'id_photo_filename' => $t['id_photo_filename'] ?: null,
-                    'birthday' => $t['birthday'] ?: null,
-                    'emergency_contact_name' => $t['emergency_contact_name'] ?: ($t['emergency_contact'] ?: 'None listed'),
-                    'emergency_contact_relationship' => $t['emergency_contact_relationship'] ?: '',
-                    'emergency_contact_phone' => $t['emergency_contact_phone'] ?: '',
-                    'move_in_date' => $t['move_in_date'] ?: date('Y-m-d', strtotime($t['created_at'])),
-                    'total_occupants' => (int)($t['total_occupants'] ?? 1),
-                    'adults_count' => (int)($t['adults_count'] ?? 1),
-                    'kids_count' => (int)($t['kids_count'] ?? 0)
-                ];
+            $uId = (int)($t['unit_id'] ?? 0);
+            $tId = (int)$t['id'];
+            $settlement = TenantService::checkTenantSettlement($pdo, $tId);
+            $isPaidUp = (bool)($settlement['is_settled'] ?? false);
+
+            $rawVStatus = strtolower(trim((string)($t['verification_status'] ?? 'unverified')));
+            $isVerifiedTenant = ((int)($t['is_verified'] ?? 0) === 1) && ($rawVStatus === 'verified');
+
+            $tenantData = [
+                'id'                             => $tId,
+                'unit_id'                        => $uId,
+                'unit_number'                    => $t['unit_number'],
+                'monthly_rent'                   => (float)$t['monthly_rent'],
+                'name'                           => $t['name'],
+                'username'                       => $t['username'],
+                'email'                          => $t['email'],
+                'phone'                          => $t['phone'] ?: 'No phone provided',
+                'verification_status'            => $t['verification_status'] ?? 'unverified',
+                'is_verified'                    => $isVerifiedTenant ? 1 : 0,
+                // Strict Backend Privacy Rule: Never send ID info if unverified or rejected/failed
+                'id_type'                        => $isVerifiedTenant ? ($t['id_type'] ?: null) : null,
+                'id_photo_filename'              => $isVerifiedTenant ? ($t['id_photo_filename'] ?: null) : null,
+                'verification_notes'             => $t['verification_notes'] ?: null,
+                'id_submitted_at'                => $t['id_submitted_at'] ?: null,
+                'birthday'                       => $t['birthday'] ?: null,
+                'emergency_contact'              => $t['emergency_contact'] ?: '',
+                'emergency_contact_name'         => $t['emergency_contact_name'] ?: ($t['emergency_contact'] ?: 'None listed'),
+                'emergency_contact_relationship' => $t['emergency_contact_relationship'] ?: '',
+                'emergency_contact_phone'        => $t['emergency_contact_phone'] ?: '',
+                'move_in_date'                   => $t['move_in_date'] ?: date('Y-m-d', strtotime($t['created_at'])),
+                'move_out_date'                  => $t['move_out_date'] ?: null,
+                'rental_status'                  => $t['rental_status'] ?: 'active',
+                'total_occupants'                => (int)($t['total_occupants'] ?? 1),
+                'adults_count'                   => (int)($t['adults_count'] ?? 1),
+                'kids_count'                     => (int)($t['kids_count'] ?? 0),
+                'created_at'                     => $t['created_at'],
+                'is_paid_up'                     => $isPaidUp,
+                'settlement'                     => $settlement
+            ];
+
+            // If tenant moved out or has no assigned physical unit, decouple from unit occupancy
+            if ($t['rental_status'] === 'moved_out' || $uId <= 0) {
+                $unpaidMovedOutTenants[] = $tenantData;
+            } elseif (isset($grouped[$uId])) {
+                $grouped[$uId]['tenants'][] = $tenantData;
             }
         }
+
+        foreach ($grouped as &$unitItem) {
+            if (!empty($unitItem['tenants'])) {
+                $unitItem['is_occupied'] = true;
+                $allSettled = true;
+                foreach ($unitItem['tenants'] as $occ) {
+                    if (empty($occ['is_paid_up'])) {
+                        $allSettled = false;
+                        break;
+                    }
+                }
+                $unitItem['is_paid_up'] = $allSettled;
+                $unitItem['card_state'] = $allSettled ? 'occupied_paid' : 'occupied_unpaid';
+            }
+        }
+        unset($unitItem);
 
         $occupiedUnitIds = array_keys(array_filter($grouped, fn($u) => !empty($u['tenants'])));
 
@@ -275,8 +469,11 @@ try {
         echo json_encode([
             'status' => 'success',
             'total_tenants' => count($allTenants),
+            'active_units_count' => count($occupiedUnitIds),
+            'total_units_count' => count($grouped),
             'occupied_unit_ids' => $occupiedUnitIds,
             'units' => array_values($grouped),
+            'moved_out_tenants' => $unpaidMovedOutTenants,
             'additional_spaces' => $additionalSpacesList
         ]);
         exit;
@@ -307,13 +504,33 @@ try {
                 exit;
             }
 
-            // Require fresh Owner/Admin account password verification on backend before deletion
+            // Strict Move-Out Security Authentication: Owner/Admin password is required
             $ownerPassword = (string)($input['owner_password'] ?? '');
+            if ($ownerPassword === '') {
+                http_response_code(422);
+                echo json_encode([
+                    'status'  => 'error',
+                    'code'    => 'PASSWORD_REQUIRED',
+                    'message' => 'Security authorization required: Please enter your password to authorize this move-out action.'
+                ]);
+                exit;
+            }
+
             $pwCheck = AccessControl::verifyOwnerPassword($pdo, $ownerPassword);
             if (!$pwCheck['valid']) {
                 http_response_code((int)$pwCheck['status_code']);
-                echo json_encode(['status' => 'error', 'message' => $pwCheck['message']]);
+                echo json_encode([
+                    'status'  => 'error',
+                    'code'    => 'INVALID_PASSWORD',
+                    'message' => $pwCheck['message'] ?? 'Incorrect password. Security authorization failed.'
+                ]);
                 exit;
+            }
+            $confirmSettlement = true;
+
+            $moveOutDate = isset($input['move_out_date']) ? trim((string)$input['move_out_date']) : null;
+            if ($moveOutDate === '') {
+                $moveOutDate = null;
             }
 
             // Confirm the targeted account is specifically a tenant before proceeding
@@ -325,10 +542,19 @@ try {
                 exit;
             }
 
-            $result = TenantService::markMovedOut($pdo, $tenantId);
+            $result = TenantService::markMovedOut($pdo, $tenantId, $moveOutDate, $confirmSettlement);
 
-            if ($result['status'] === 'error') {
-                http_response_code(404);
+            if (($result['status'] ?? 'error') === 'error') {
+                $errCode = $result['code'] ?? '';
+                if ($errCode === 'already_archived') {
+                    http_response_code(409);
+                } elseif ($errCode === 'invalid_date' || $errCode === 'confirmation_required' || $errCode === 'unsettled_balance') {
+                    http_response_code(422);
+                } elseif ($errCode === 'not_found') {
+                    http_response_code(404);
+                } else {
+                    http_response_code(500);
+                }
                 echo json_encode($result);
                 exit;
             }
@@ -782,7 +1008,13 @@ try {
                 $_SESSION['last_tenant_create_time'] = $now;
             }
 
+            $firstName = trim((string)($input['first_name'] ?? ''));
+            $middleName = trim((string)($input['middle_name'] ?? ''));
+            $lastName = trim((string)($input['last_name'] ?? ''));
             $name = trim((string)($input['name'] ?? ''));
+            if ($name === '' && ($firstName !== '' || $lastName !== '')) {
+                $name = trim(implode(' ', array_filter([$firstName, $middleName, $lastName], fn($v) => $v !== '')));
+            }
             $birthday = trim((string)($input['birthday'] ?? ''));
             $email = trim((string)($input['email'] ?? ''));
             $phone = trim((string)($input['phone'] ?? ''));
@@ -936,14 +1168,18 @@ try {
             $legacyEmergencyParts = array_filter([$emergencyName, $emergencyRel ? "($emergencyRel)" : '', $emergencyPhone]);
             $legacyEmergency = implode(' ', $legacyEmergencyParts);
 
+            $baseUnitRent = (!empty($unit['monthly_rent']) && (float)$unit['monthly_rent'] > 0)
+                ? (float)$unit['monthly_rent']
+                : 3000.00;
+
             $insertStmt = $pdo->prepare("
                 INSERT INTO users (
-                    unit_id, username, name, email, password_hash, role, verification_status, phone, 
+                    unit_id, monthly_rent, username, name, email, password_hash, role, verification_status, phone, 
                     birthday, emergency_contact, emergency_contact_name, 
                     emergency_contact_relationship, emergency_contact_phone, 
                     move_in_date, total_occupants, adults_count, kids_count, is_active, created_at
                 ) VALUES (
-                    :unit_id, :username, :name, :email, :password_hash, 'tenant', 'unverified', :phone,
+                    :unit_id, :monthly_rent, :username, :name, :email, :password_hash, 'tenant', 'unverified', :phone,
                     :birthday, :emergency_contact, :emergency_contact_name,
                     :emergency_contact_relationship, :emergency_contact_phone,
                     :move_in_date, :total_occupants, :adults_count, :kids_count, 1, NOW()
@@ -951,6 +1187,7 @@ try {
             ");
             $insertStmt->execute([
                 ':unit_id' => $unitId,
+                ':monthly_rent' => $baseUnitRent,
                 ':username' => $generatedUsername,
                 ':name' => $name,
                 ':email' => $email,
@@ -1038,19 +1275,49 @@ try {
             // PROCESS ADDITIONAL RENTAL SPACE SELECTIONS (Optional)
             // Space 1 & Space 2 (₱1,500.00/month each)
             // -----------------------------------------------------------------
+            $space1Selected = filter_var($input['space_1'] ?? false, FILTER_VALIDATE_BOOLEAN);
+            $space2Selected = filter_var($input['space_2'] ?? false, FILTER_VALIDATE_BOOLEAN);
+
+            $selectedSpaceNumbers = [];
+            if ($space1Selected) {
+                $selectedSpaceNumbers[] = 1;
+            }
+            if ($space2Selected) {
+                $selectedSpaceNumbers[] = 2;
+            }
+
             $selectedSpaceIds = $input['additional_space_ids'] ?? $input['additional_spaces'] ?? [];
             if (!is_array($selectedSpaceIds)) {
                 $selectedSpaceIds = [];
             }
             $selectedSpaceIds = array_values(array_unique(array_filter(array_map('intval', $selectedSpaceIds), fn($id) => $id > 0)));
 
+            if (!empty($selectedSpaceNumbers)) {
+                $numPlaceholders = implode(',', array_fill(0, count($selectedSpaceNumbers), '?'));
+                $numLookupStmt = $pdo->prepare("SELECT id FROM additional_spaces WHERE space_number IN ({$numPlaceholders})");
+                $numLookupStmt->execute($selectedSpaceNumbers);
+                foreach ($numLookupStmt->fetchAll(PDO::FETCH_COLUMN) as $matchedId) {
+                    $selectedSpaceIds[] = (int)$matchedId;
+                }
+                $selectedSpaceIds = array_values(array_unique(array_filter($selectedSpaceIds, fn($id) => $id > 0)));
+            }
+
             $totalExtraSpaceFee = 0.00;
             $spaceBreakdownParts = [];
+            $assignedSpaceIds = [];
+            $assignedSpaceNumbers = [];
 
             if (!empty($selectedSpaceIds)) {
                 foreach ($selectedSpaceIds as $sId) {
-                    // Lock and validate space availability
-                    $spaceStmt = $pdo->prepare("SELECT id, space_number, space_name, monthly_fee, status FROM additional_spaces WHERE id = :id FOR UPDATE");
+                    // Lock and validate space availability (also verify assigned tenant is not still active)
+                    $spaceStmt = $pdo->prepare("
+                        SELECT s.id, s.space_number, s.space_name, s.monthly_fee, s.status, s.assigned_tenant_id,
+                               u.is_active AS tenant_is_active, u.is_archived AS tenant_is_archived
+                        FROM additional_spaces s
+                        LEFT JOIN users u ON s.assigned_tenant_id = u.id
+                        WHERE s.id = :id
+                        FOR UPDATE
+                    ");
                     $spaceStmt->execute([':id' => $sId]);
                     $spaceRow = $spaceStmt->fetch();
 
@@ -1064,21 +1331,28 @@ try {
                         exit;
                     }
 
-                    if ($spaceRow['status'] !== 'available') {
+                    $hasActiveAssignedTenant = !empty($spaceRow['assigned_tenant_id'])
+                        && (int)($spaceRow['tenant_is_active'] ?? 0) === 1
+                        && (int)($spaceRow['tenant_is_archived'] ?? 0) === 0;
+
+                    if ($spaceRow['status'] !== 'available' || $hasActiveAssignedTenant) {
                         $pdo->rollBack();
                         http_response_code(409);
                         echo json_encode([
                             'status' => 'error',
-                            'message' => "{$spaceRow['space_name']} is already occupied by another tenant and cannot be assigned."
+                            'message' => "{$spaceRow['space_name']} is already occupied by another active tenant and cannot be assigned."
                         ]);
                         exit;
                     }
 
-                    $spaceFee = (float)$spaceRow['monthly_fee'];
+                    // Server-side verified space rate: ₱1,500.00 per assigned extra space
+                    $spaceFee = ((float)$spaceRow['monthly_fee'] > 0) ? (float)$spaceRow['monthly_fee'] : 1500.00;
                     $totalExtraSpaceFee += $spaceFee;
                     $spaceBreakdownParts[] = "{$spaceRow['space_name']} (₱" . number_format($spaceFee, 2) . "/mo)";
+                    $assignedSpaceIds[] = (int)$spaceRow['id'];
+                    $assignedSpaceNumbers[] = (int)$spaceRow['space_number'];
 
-                    // Assign space to the new tenant
+                    // Assign space to the new tenant and mark occupied
                     $assignSpaceStmt = $pdo->prepare("
                         UPDATE additional_spaces
                         SET status = 'occupied',
@@ -1097,6 +1371,13 @@ try {
 
             $spaceBreakdownText = !empty($spaceBreakdownParts) ? implode(' + ', $spaceBreakdownParts) : null;
             $totalRentDue = $standardRentAmount + $totalExtraSpaceFee;
+
+            // Update tenant record's monthly_rent column with verified base rent + assigned extra spaces
+            $pdo->prepare("UPDATE users SET monthly_rent = :monthly_rent WHERE id = :id")
+                ->execute([
+                    ':monthly_rent' => $totalRentDue,
+                    ':id' => $newId
+                ]);
 
             // 2. Monthly Rent Bill (₱3,000.00 base + additional space fees, Recurring)
             $dupRentStmt = $pdo->prepare("SELECT id FROM payments WHERE tenant_id = :tid AND payment_type = 'Rent' AND (billing_cycle = :cycle OR status IN ('unpaid', 'pending_setup')) LIMIT 1");
@@ -1202,6 +1483,13 @@ try {
                 'advance_deposit_id' => $advanceDepositId,
                 'rent_payment_id' => $monthlyRentId,
                 'placeholder_payment_id' => $monthlyRentId,
+                'base_rent' => $standardRentAmount,
+                'additional_space_fee' => $totalExtraSpaceFee,
+                'monthly_rent' => $totalRentDue,
+                'assigned_space_ids' => $assignedSpaceIds,
+                'assigned_space_numbers' => $assignedSpaceNumbers,
+                'space_1' => in_array(1, $assignedSpaceNumbers, true),
+                'space_2' => in_array(2, $assignedSpaceNumbers, true),
                 'email_sent' => $emailSent,
                 'credentials' => [
                     'username' => $generatedUsername,

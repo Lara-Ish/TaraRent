@@ -10,45 +10,39 @@ const RentConnectCharts = (() => {
   let unitCostChartInstance = null;
   let categoryChartInstance = null;
 
-  // Pastel Clay Color Palette for Charts
+  // Warm Cream, Golden Brown & Dark Brown Palette matching TaraRent Owner Theme
   const colors = {
-    indigo: '#818cf8',
-    indigoLight: 'rgba(129, 140, 248, 0.45)',
-    mint: '#6ee7b7',
-    mintLight: 'rgba(110, 231, 183, 0.5)',
-    mintDark: '#10b981',
-    rose: '#fda4af',
-    roseLight: 'rgba(253, 164, 175, 0.5)',
-    amber: '#fde68a',
-    amberLight: 'rgba(253, 230, 138, 0.6)',
-    sky: '#7dd3fc',
-    skyLight: 'rgba(125, 211, 252, 0.5)',
-    purple: '#c4b5fd',
-    purpleLight: 'rgba(196, 181, 253, 0.5)',
-    gridLines: 'rgba(148, 163, 184, 0.15)',
-    tooltipBg: '#edf2fb',
-    textMain: '#334155'
+    gold: '#B58F53',
+    goldLight: 'rgba(181, 143, 83, 0.45)',
+    darkBrown: '#56380E',
+    beige: '#D8BD94',
+    beigeBar: 'rgba(216, 189, 148, 0.72)',
+    cream: '#F5D99E',
+    forest: '#2E6F4E',
+    terracotta: '#B94A3E',
+    amberWarm: '#D9822B',
+    espresso: '#302313',
+    taupe: '#6E5330',
+    gridLines: 'rgba(86, 56, 14, 0.12)',
+    tooltipBg: '#F7F3ED',
+    textMain: '#302313'
   };
 
   /**
-   * Universal Claymorphic Tooltip Configuration
+   * Universal Warm Cream Tooltip Configuration
    */
   const clayTooltipOptions = {
     backgroundColor: colors.tooltipBg,
-    titleColor: '#0f172a',
-    bodyColor: '#334155',
-    borderColor: 'rgba(255, 255, 255, 0.8)',
+    titleColor: '#56380E',
+    bodyColor: '#302313',
+    borderColor: '#D8BD94',
     borderWidth: 1,
     padding: 12,
-    cornerRadius: 16,
+    cornerRadius: 12,
     boxPadding: 6,
     usePointStyle: true,
-    shadowOffsetX: 6,
-    shadowOffsetY: 6,
-    shadowBlur: 14,
-    shadowColor: 'rgba(166, 180, 204, 0.4)',
     callbacks: {
-      labelTextColor: () => '#334155'
+      labelTextColor: () => '#302313'
     }
   };
 
@@ -58,11 +52,19 @@ const RentConnectCharts = (() => {
    */
   function renderCollectionChart(canvasId, monthlyData) {
     const ctx = document.getElementById(canvasId);
+    const emptyEl = document.getElementById('revenueChartEmptyState');
     if (!ctx) return;
 
     if (collectionChartInstance) {
       collectionChartInstance.destroy();
+      collectionChartInstance = null;
     }
+
+    if (!Array.isArray(monthlyData) || monthlyData.length === 0) {
+      if (emptyEl) emptyEl.classList.add('visible');
+      return;
+    }
+    if (emptyEl) emptyEl.classList.remove('visible');
 
     const labels = monthlyData.map(m => m.month_label || m.month_key);
     const billedRent = monthlyData.map(m => m.billed_rent);
@@ -77,15 +79,15 @@ const RentConnectCharts = (() => {
             type: 'line',
             label: 'Collection Efficiency (%)',
             data: efficiencyRate,
-            borderColor: colors.mintDark,
-            backgroundColor: colors.mint,
+            borderColor: colors.darkBrown,
+            backgroundColor: colors.cream,
             borderWidth: 3,
             tension: 0.35,
-            pointRadius: 6,
-            pointHoverRadius: 8,
-            pointBackgroundColor: '#ffffff',
-            pointBorderColor: colors.mintDark,
-            pointBorderWidth: 3,
+            pointRadius: 5,
+            pointHoverRadius: 7,
+            pointBackgroundColor: '#F7F3ED',
+            pointBorderColor: colors.darkBrown,
+            pointBorderWidth: 2.5,
             yAxisID: 'yEfficiency',
             order: 1
           },
@@ -93,8 +95,8 @@ const RentConnectCharts = (() => {
             type: 'bar',
             label: 'Collected Rent (₱)',
             data: collectedRent,
-            backgroundColor: colors.indigo,
-            borderRadius: 12,
+            backgroundColor: colors.gold,
+            borderRadius: 10,
             borderSkipped: false,
             yAxisID: 'yAmount',
             order: 2
@@ -103,8 +105,8 @@ const RentConnectCharts = (() => {
             type: 'bar',
             label: 'Billed Rent (₱)',
             data: billedRent,
-            backgroundColor: 'rgba(203, 213, 225, 0.7)',
-            borderRadius: 12,
+            backgroundColor: colors.beigeBar,
+            borderRadius: 10,
             borderSkipped: false,
             yAxisID: 'yAmount',
             order: 3
@@ -125,7 +127,8 @@ const RentConnectCharts = (() => {
               usePointStyle: true,
               pointStyle: 'circle',
               color: colors.textMain,
-              font: { weight: '600', size: 12 }
+              font: { weight: '700', size: 12 },
+              padding: 16
             }
           },
           tooltip: {
@@ -157,7 +160,8 @@ const RentConnectCharts = (() => {
               drawBorder: false
             },
             ticks: {
-              color: '#64748b',
+              color: colors.taupe,
+              font: { weight: '600', size: 11 },
               callback: val => `₱${val.toLocaleString()}`
             }
           },
@@ -168,7 +172,8 @@ const RentConnectCharts = (() => {
             max: 100,
             grid: { display: false },
             ticks: {
-              color: colors.mintDark,
+              color: colors.darkBrown,
+              font: { weight: '700', size: 11 },
               callback: val => `${val}%`
             }
           }
@@ -186,14 +191,15 @@ const RentConnectCharts = (() => {
 
     if (unitCostChartInstance) {
       unitCostChartInstance.destroy();
+      unitCostChartInstance = null;
     }
 
-    const labels = unitData.map(u => u.unit_number);
-    const costs = unitData.map(u => u.total_cost);
+    const safeData = Array.isArray(unitData) ? unitData : [];
+    const labels = safeData.map(u => u.unit_number);
+    const costs = safeData.map(u => u.total_cost);
 
-    // Color code: highlight outlier units in soft rose clay, normal in pastel sky
-    const barColors = unitData.map(u => 
-      u.cost_anomaly === 'critical_high_cost' ? colors.rose : colors.sky
+    const barColors = safeData.map(u =>
+      u.cost_anomaly === 'critical_high_cost' ? colors.terracotta : colors.gold
     );
 
     unitCostChartInstance = new Chart(ctx, {
@@ -204,7 +210,7 @@ const RentConnectCharts = (() => {
           label: 'Total Maintenance Expense (₱)',
           data: costs,
           backgroundColor: barColors,
-          borderRadius: 14,
+          borderRadius: 12,
           borderSkipped: false,
           maxBarThickness: 46
         }]
@@ -218,7 +224,8 @@ const RentConnectCharts = (() => {
             ...clayTooltipOptions,
             callbacks: {
               label: (context) => {
-                const item = unitData[context.dataIndex];
+                const item = safeData[context.dataIndex];
+                if (!item) return '';
                 return [
                   ` Expense: ₱${item.total_cost.toLocaleString()}`,
                   ` Tickets Logged: ${item.ticket_count}`,
@@ -243,7 +250,7 @@ const RentConnectCharts = (() => {
               drawBorder: false
             },
             ticks: {
-              color: '#64748b',
+              color: colors.taupe,
               callback: val => `₱${val.toLocaleString()}`
             }
           }
@@ -253,7 +260,7 @@ const RentConnectCharts = (() => {
   }
 
   /**
-   * 3. Render Repair Type Categorization (Doughnut / Clay Ring Chart)
+   * 3. Render Repair Type Categorization (Doughnut Chart)
    */
   function renderCategoryChart(canvasId, categoryData) {
     const ctx = document.getElementById(canvasId);
@@ -261,11 +268,16 @@ const RentConnectCharts = (() => {
 
     if (categoryChartInstance) {
       categoryChartInstance.destroy();
+      categoryChartInstance = null;
     }
 
-    const labels = categoryData.map(c => c.category);
-    const costs = categoryData.map(c => c.total_cost);
-    const palette = [colors.indigo, colors.mint, colors.amber, colors.sky, colors.purple, colors.rose];
+    const safeCats = Array.isArray(categoryData) ? categoryData : [];
+    const hasData = safeCats.length > 0 && safeCats.some(c => c.total_cost > 0);
+    const labels = hasData ? safeCats.map(c => c.category) : ['No Expenses Logged'];
+    const costs = hasData ? safeCats.map(c => c.total_cost) : [1];
+    const palette = hasData
+      ? [colors.darkBrown, colors.gold, colors.beige, colors.forest, colors.amberWarm, colors.terracotta]
+      : ['rgba(216, 189, 148, 0.45)'];
 
     categoryChartInstance = new Chart(ctx, {
       type: 'doughnut',
@@ -274,18 +286,18 @@ const RentConnectCharts = (() => {
         datasets: [{
           data: costs,
           backgroundColor: palette.slice(0, labels.length),
-          borderWidth: 4,
-          borderColor: '#edf2fb',
-          hoverOffset: 10
+          borderWidth: 3,
+          borderColor: '#F7F3ED',
+          hoverOffset: hasData ? 8 : 0
         }]
       },
       options: {
         responsive: true,
         maintainAspectRatio: false,
-        cutout: '66%',
+        cutout: '64%',
         plugins: {
           legend: {
-            position: 'right',
+            position: window.innerWidth <= 560 ? 'bottom' : 'right',
             labels: {
               usePointStyle: true,
               pointStyle: 'circle',
@@ -296,9 +308,11 @@ const RentConnectCharts = (() => {
           },
           tooltip: {
             ...clayTooltipOptions,
+            enabled: hasData,
             callbacks: {
               label: (context) => {
-                const cat = categoryData[context.dataIndex];
+                const cat = safeCats[context.dataIndex];
+                if (!cat) return '';
                 return ` ${cat.category}: ₱${cat.total_cost.toLocaleString()} (${cat.cost_share_percentage}%)`;
               }
             }
@@ -310,16 +324,10 @@ const RentConnectCharts = (() => {
 
   return {
     initCharts: (analyticsData) => {
-      if (analyticsData.charts) {
-        if (analyticsData.charts.monthly_collection_efficiency) {
-          renderCollectionChart('chartCollectionEfficiency', analyticsData.charts.monthly_collection_efficiency);
-        }
-        if (analyticsData.charts.maintenance_by_unit) {
-          renderUnitCostChart('chartUnitMaintenance', analyticsData.charts.maintenance_by_unit);
-        }
-        if (analyticsData.charts.maintenance_by_category) {
-          renderCategoryChart('chartCategoryBreakdown', analyticsData.charts.maintenance_by_category);
-        }
+      if (analyticsData && analyticsData.charts) {
+        renderCollectionChart('chartCollectionEfficiency', analyticsData.charts.monthly_collection_efficiency || []);
+        renderUnitCostChart('chartUnitMaintenance', analyticsData.charts.maintenance_by_unit || []);
+        renderCategoryChart('chartCategoryBreakdown', analyticsData.charts.maintenance_by_category || []);
       }
     }
   };

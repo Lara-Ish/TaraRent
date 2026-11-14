@@ -584,6 +584,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
   <!-- Claymorphism / Glassmorphism Stylesheet -->
   <link rel="stylesheet" href="assets/css/claymorphism.css">
+  <script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+  <script src="assets/js/lucide_init.js?v=20261112"></script>
 
   <style>
     /* Monospace Code Input Formatting */
@@ -644,7 +646,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
          ===================================================================== -->
     <div id="screen1View" class="screen-fade">
       <h1 class="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight text-center mb-2 flex items-center justify-center gap-2">
-        <span>🔐</span>
+        <i data-lucide="lock" class="w-7 h-7 text-indigo-600" aria-hidden="true"></i>
         <span>Forgot Password</span>
       </h1>
       <p class="text-xs sm:text-sm text-slate-500 text-center leading-relaxed mb-6">
@@ -652,14 +654,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       </p>
 
       <div id="screen1Alert" class="hidden p-3.5 rounded-xl text-xs sm:text-sm font-medium mb-5 flex items-start gap-2.5 bg-rose-50 border border-rose-200 text-rose-800">
-        <span class="flex-shrink-0">⚠️</span>
+        <span class="flex-shrink-0 mt-0.5"><i data-lucide="alert-triangle" class="w-4 h-4" aria-hidden="true"></i></span>
         <span id="screen1AlertText"></span>
       </div>
 
       <form id="formScreen1" onsubmit="handleSendCode(event)" class="space-y-4">
         <div>
           <label for="screen1Email" class="block text-xs sm:text-sm font-bold text-slate-700 mb-1.5 flex items-center gap-1.5">
-            <span>📧</span>
+            <i data-lucide="mail" class="w-4 h-4 text-indigo-600" aria-hidden="true"></i>
             <span>Registered Email Address</span>
           </label>
           <input 
@@ -678,13 +680,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
           id="btnSendCode" 
           class="w-full py-3.5 px-6 rounded-xl bg-gradient-to-r from-indigo-500 to-indigo-600 hover:from-indigo-600 hover:to-indigo-700 text-white font-bold text-sm shadow-lg shadow-indigo-500/25 active:scale-[0.99] transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-75 disabled:cursor-not-allowed"
         >
-          <span>✉️ Send Verification Code</span>
+          <i data-lucide="mail" class="w-4 h-4" aria-hidden="true"></i>
+          <span>Send Verification Code</span>
         </button>
       </form>
 
       <div class="text-center mt-6 pt-2">
         <a href="login.php" class="text-xs sm:text-sm font-bold text-indigo-600 hover:text-indigo-800 transition-colors inline-flex items-center gap-1.5">
-          <span>🏠</span>
+          <i data-lucide="home" class="w-4 h-4" aria-hidden="true"></i>
           <span>Back to Login</span>
         </a>
       </div>
@@ -695,7 +698,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
          ===================================================================== -->
     <div id="screen2View" class="screen-fade hidden">
       <h1 class="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight text-center mb-2 flex items-center justify-center gap-2">
-        <span>✉️</span>
+        <i data-lucide="mail-check" class="w-7 h-7 text-indigo-600" aria-hidden="true"></i>
         <span>Verify Your Email</span>
       </h1>
       <p class="text-xs sm:text-sm text-slate-500 text-center leading-relaxed mb-5">
@@ -705,7 +708,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       <!-- Registered Email Pill with Change Option -->
       <div class="bg-indigo-50/80 border border-indigo-100 rounded-xl px-3.5 py-2.5 mb-5 flex items-center justify-between gap-2 text-xs sm:text-sm text-indigo-900">
         <div class="flex items-center gap-2 overflow-hidden truncate">
-          <span>📧</span>
+          <i data-lucide="mail" class="w-4 h-4 text-indigo-600 flex-shrink-0" aria-hidden="true"></i>
           <span class="font-bold truncate" id="screen2EmailDisplay">email@example.com</span>
         </div>
         <button type="button" onclick="goToScreen(1)" class="text-xs font-bold text-indigo-600 hover:text-indigo-800 underline flex-shrink-0 cursor-pointer">
@@ -714,7 +717,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       </div>
 
       <div id="screen2Alert" class="hidden p-3.5 rounded-xl text-xs sm:text-sm font-medium mb-5 flex items-start gap-2.5 bg-rose-50 border border-rose-200 text-rose-800">
-        <span class="flex-shrink-0">⚠️</span>
+        <span class="flex-shrink-0 mt-0.5"><i data-lucide="alert-triangle" class="w-4 h-4" aria-hidden="true"></i></span>
         <span id="screen2AlertText"></span>
       </div>
 
@@ -722,7 +725,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <div>
           <div class="flex items-center justify-between mb-1.5">
             <label for="screen2Code" class="text-xs sm:text-sm font-bold text-slate-700 flex items-center gap-1.5">
-              <span>🔢</span>
+              <i data-lucide="hash" class="w-4 h-4 text-indigo-600" aria-hidden="true"></i>
               <span>Enter Verification Code</span>
             </label>
             <span class="text-[11px] font-bold text-rose-600 bg-rose-50 px-2 py-0.5 rounded-full border border-rose-100">
@@ -748,7 +751,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
           id="btnVerifyCode" 
           class="w-full py-3.5 px-6 rounded-xl bg-gradient-to-r from-indigo-500 to-indigo-600 hover:from-indigo-600 hover:to-indigo-700 text-white font-bold text-sm shadow-lg shadow-indigo-500/25 active:scale-[0.99] transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-75 disabled:cursor-not-allowed"
         >
-          <span>✅ Verify Code</span>
+          <i data-lucide="check-circle-2" class="w-4 h-4" aria-hidden="true"></i>
+          <span>Verify Code</span>
         </button>
       </form>
 
@@ -759,11 +763,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
           onclick="handleResendCode()" 
           class="font-bold text-indigo-600 hover:text-indigo-800 transition-colors inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
         >
-          <span>🔄</span>
+          <i data-lucide="refresh-cw" class="w-4 h-4" aria-hidden="true"></i>
           <span id="btnResendText">Resend Code</span>
         </button>
         <a href="login.php" class="font-bold text-slate-500 hover:text-slate-700 transition-colors inline-flex items-center gap-1.5">
-          <span>🏠</span>
+          <i data-lucide="home" class="w-4 h-4" aria-hidden="true"></i>
           <span>Back to Login</span>
         </a>
       </div>
@@ -775,7 +779,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
          ===================================================================== -->
     <div id="screen3View" class="screen-fade hidden">
       <h1 class="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight text-center mb-2 flex items-center justify-center gap-2">
-        <span>🔑</span>
+        <i data-lucide="key-round" class="w-7 h-7 text-indigo-600" aria-hidden="true"></i>
         <span>Change Password</span>
       </h1>
       <p class="text-xs sm:text-sm text-slate-500 text-center leading-relaxed mb-6">
@@ -783,7 +787,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       </p>
 
       <div id="screen3Alert" class="hidden p-3.5 rounded-xl text-xs sm:text-sm font-medium mb-5 flex items-start gap-2.5 bg-rose-50 border border-rose-200 text-rose-800">
-        <span class="flex-shrink-0">⚠️</span>
+        <span class="flex-shrink-0 mt-0.5"><i data-lucide="alert-triangle" class="w-4 h-4" aria-hidden="true"></i></span>
         <span id="screen3AlertText"></span>
       </div>
 
@@ -792,7 +796,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         <div>
           <label for="screen3Password" class="block text-xs sm:text-sm font-bold text-slate-700 mb-1.5 flex items-center gap-1.5">
-            <span>🔑</span>
+            <i data-lucide="key-round" class="w-4 h-4 text-indigo-600" aria-hidden="true"></i>
             <span>New Password</span>
           </label>
           <div class="relative">
@@ -808,18 +812,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             >
             <button 
               type="button" 
-              class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1 text-sm cursor-pointer" 
+              class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1 text-sm cursor-pointer inline-flex items-center justify-center" 
               onclick="togglePasswordVisibility('screen3Password', this)" 
               title="Show / Hide Password"
+              aria-label="Show or Hide Password"
             >
-              👁️
+              <i data-lucide="eye" class="w-4 h-4" aria-hidden="true"></i>
             </button>
           </div>
         </div>
 
         <div>
           <label for="screen3ConfirmPassword" class="block text-xs sm:text-sm font-bold text-slate-700 mb-1.5 flex items-center gap-1.5">
-            <span>🔒</span>
+            <i data-lucide="lock" class="w-4 h-4 text-indigo-600" aria-hidden="true"></i>
             <span>Confirm Password</span>
           </label>
           <div class="relative">
@@ -834,11 +839,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             >
             <button 
               type="button" 
-              class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1 text-sm cursor-pointer" 
+              class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1 text-sm cursor-pointer inline-flex items-center justify-center" 
               onclick="togglePasswordVisibility('screen3ConfirmPassword', this)" 
               title="Show / Hide Password"
+              aria-label="Show or Hide Password"
             >
-              👁️
+              <i data-lucide="eye" class="w-4 h-4" aria-hidden="true"></i>
             </button>
           </div>
         </div>
@@ -848,13 +854,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
           id="btnResetPassword" 
           class="w-full py-3.5 px-6 rounded-xl bg-gradient-to-r from-indigo-500 to-indigo-600 hover:from-indigo-600 hover:to-indigo-700 text-white font-bold text-sm shadow-lg shadow-indigo-500/25 active:scale-[0.99] transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-75 disabled:cursor-not-allowed"
         >
-          <span>💾 Reset Password</span>
+          <i data-lucide="save" class="w-4 h-4" aria-hidden="true"></i>
+          <span>Reset Password</span>
         </button>
       </form>
 
       <div class="text-center mt-6 pt-2">
         <a href="login.php" class="text-xs sm:text-sm font-bold text-slate-500 hover:text-slate-700 transition-colors inline-flex items-center gap-1.5">
-          <span>🏠</span>
+          <i data-lucide="home" class="w-4 h-4" aria-hidden="true"></i>
           <span>Back to Login</span>
         </a>
       </div>
@@ -865,8 +872,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
          ===================================================================== -->
     <div id="screen4View" class="screen-fade hidden text-center py-2">
       <!-- Animated Success Checkmark Badge -->
-      <div class="w-20 h-20 mx-auto mb-5 rounded-full bg-gradient-to-tr from-emerald-400 to-emerald-500 flex items-center justify-center shadow-xl shadow-emerald-500/30 text-3xl">
-        <span>✅</span>
+      <div class="w-20 h-20 mx-auto mb-5 rounded-full bg-gradient-to-tr from-emerald-400 to-emerald-500 text-white flex items-center justify-center shadow-xl shadow-emerald-500/30">
+        <i data-lucide="check-circle-2" class="w-10 h-10" aria-hidden="true"></i>
       </div>
 
       <h1 class="text-xl sm:text-2xl font-extrabold text-emerald-900 tracking-tight mb-2">
@@ -883,7 +890,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         href="login.php" 
         class="w-full py-3.5 px-6 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white font-bold text-sm shadow-lg shadow-emerald-500/25 active:scale-[0.99] transition-all inline-flex items-center justify-center gap-2 text-center"
       >
-        <span>🏠 Back to Login</span>
+        <i data-lucide="home" class="w-4 h-4" aria-hidden="true"></i>
+        <span>Back to Login</span>
       </a>
     </div>
 
@@ -971,11 +979,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       if (!input) return;
       if (input.type === 'password') {
         input.type = 'text';
-        btn.textContent = '🙈';
+        btn.innerHTML = window.rcIcon('eye-off', 'w-4 h-4');
         btn.title = 'Hide Password';
       } else {
         input.type = 'password';
-        btn.textContent = '👁️';
+        btn.innerHTML = window.rcIcon('eye', 'w-4 h-4');
         btn.title = 'Show Password';
       }
     }
