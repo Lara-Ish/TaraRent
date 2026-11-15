@@ -70,7 +70,7 @@ try {
 
             // Deactivate old tenant account if replacing
             if ($currentTenantId) {
-                $deactivate = $pdo->prepare("UPDATE users SET is_active = 0 WHERE id = :id");
+                $deactivate = $pdo->prepare("UPDATE users SET is_active = FALSE WHERE id = :id");
                 $deactivate->execute([':id' => $currentTenantId]);
             }
 
@@ -78,7 +78,7 @@ try {
             $passwordHash = password_hash($password, PASSWORD_BCRYPT);
             $insertUser = $pdo->prepare("
                 INSERT INTO users (username, name, email, password_hash, role, phone, is_active, created_at)
-                VALUES (:u, :n, :e, :p, 'tenant', :ph, 1, NOW())
+                VALUES (:u, :n, :e, :p, 'tenant', :ph, TRUE, NOW())
             ");
             $insertUser->execute([
                 ':u' => $username,
@@ -96,7 +96,7 @@ try {
                     status, payment_method, verified_by_landlord, verification_notes, created_at
                 ) VALUES (
                     :tenant_id, 1, :billing_cycle, :due_date, :amount_due, 0.00,
-                    'pending', 'GCash / Bank Transfer', 0, 'Placeholder initial rent payment generated upon tenant registration.', NOW()
+                    'pending', 'GCash / Bank Transfer', FALSE, 'Placeholder initial rent payment generated upon tenant registration.', NOW()
                 )
             ");
             $insertPayment->execute([

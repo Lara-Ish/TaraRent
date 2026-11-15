@@ -84,7 +84,7 @@ class MailConfig
         if (empty($appUrl)) {
             $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || (isset($_SERVER['SERVER_PORT']) && $_SERVER['SERVER_PORT'] == 443) ? 'https://' : 'http://';
             $hostName = $_SERVER['HTTP_HOST'] ?? 'localhost';
-            $appUrl = $protocol . $hostName . '/RentConnect';
+            $appUrl = $protocol . $hostName . '/TaraRent';
         }
         $appUrl = rtrim($appUrl, '/');
 

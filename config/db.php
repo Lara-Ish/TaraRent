@@ -1,26 +1,43 @@
 <?php
 /**
  * RentConnect Database Configuration & PDO Connection
- * Standard MySQL / MariaDB Relational Database
+ * PostgreSQL Database (Supabase)
  */
 
 declare(strict_types=1);
 
 class Database {
-    // MySQL / SQL Server Database Credentials
-    private static string $host = '127.0.0.1';
-    private static string $db   = 'rentconnect';
-    private static string $user = 'root';
-    private static string $pass = '';
-    private static int    $port = 3306;
-    private static string $charset = 'utf8mb4';
+    // Supabase PostgreSQL Database Credentials
+    private static string $host = 'aws-1-ap-southeast-1.pooler.supabase.com';
+    private static string $db   = 'postgres';
+    private static string $user = 'postgres.asqnfbhzgqdlqxnuuugu';
+    private static string $pass = 'TaraRent2026';
+    private static int    $port = 6543;
+    private static string $sslmode = 'require';
 
     private static ?PDO $instance = null;
     private static bool $schemaChecked = false;
 
     /**
+     * Parse connection string or environment overrides if provided
+     */
+    private static function initFromEnv(): void {
+        $connStr = getenv('DATABASE_URL') ?: getenv('SUPABASE_DB_URL');
+        if ($connStr) {
+            $parsed = parse_url($connStr);
+            if ($parsed) {
+                if (isset($parsed['host'])) self::$host = $parsed['host'];
+                if (isset($parsed['port'])) self::$port = (int)$parsed['port'];
+                if (isset($parsed['user'])) self::$user = $parsed['user'];
+                if (isset($parsed['pass'])) self::$pass = urldecode(trim($parsed['pass'], '[]'));
+                if (isset($parsed['path'])) self::$db = ltrim($parsed['path'], '/');
+            }
+        }
+    }
+
+    /**
      * Self-healing schema validation: ensures verification columns exist in users table
-     * and payments table has payment_type and unpaid status
+     * and payments table has payment_type and unpaid status (PostgreSQL syntax)
      */
     private static function ensureVerificationColumns(PDO $pdo): void {
         if (self::$schemaChecked) {
@@ -28,48 +45,43 @@ class Database {
         }
         self::$schemaChecked = true;
         try {
-            $pdo->exec("ALTER TABLE `users` ADD COLUMN IF NOT EXISTS `live_photo_filename` VARCHAR(255) NULL AFTER `id_photo_filename`");
-            $pdo->exec("ALTER TABLE `users` ADD COLUMN IF NOT EXISTS `verification_notes` TEXT NULL AFTER `id_verified_at`");
-            $pdo->exec("ALTER TABLE `users` ADD COLUMN IF NOT EXISTS `terms_accepted` TINYINT(1) NOT NULL DEFAULT 0");
-            $pdo->exec("ALTER TABLE `users` ADD COLUMN IF NOT EXISTS `privacy_acknowledged` TINYINT(1) NOT NULL DEFAULT 0");
-            $pdo->exec("ALTER TABLE `users` ADD COLUMN IF NOT EXISTS `rental_status` ENUM('active', 'moved_out') NOT NULL DEFAULT 'active' AFTER `role`");
-            $pdo->exec("ALTER TABLE `users` ADD COLUMN IF NOT EXISTS `move_out_date` DATE NULL AFTER `move_in_date`");
+            // PostgreSQL ALTER TABLE ADD COLUMN IF NOT EXISTS without MySQL-specific AFTER keyword
+            $pdo->exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS live_photo_filename VARCHAR(255) NULL");
+            $pdo->exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_id_path VARCHAR(255) NULL");
+            $pdo->exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_id_type VARCHAR(50) NULL");
+            $pdo->exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_notes TEXT NULL");
+            $pdo->exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS terms_accepted BOOLEAN NOT NULL DEFAULT FALSE");
+            $pdo->exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS privacy_acknowledged BOOLEAN NOT NULL DEFAULT FALSE");
+            $pdo->exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS rental_status VARCHAR(20) NOT NULL DEFAULT 'active'");
+            $pdo->exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS move_out_date DATE NULL");
+            $pdo->exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS monthly_rent DECIMAL(10,2) NULL");
+            $pdo->exec("ALTER TABLE payments ADD COLUMN IF NOT EXISTS payment_type VARCHAR(50) NOT NULL DEFAULT 'Rent'");
 
-            // Allow email reuse for inactive/archived tenants while strictly enforcing uniqueness among active tenants
+            // Index creation if not exists
             try {
-                $idxStmt = $pdo->query("SHOW INDEX FROM `users` WHERE Key_name = 'email' AND Non_unique = 0");
-                if ($idxStmt && $idxStmt->fetch()) {
-                    $pdo->exec("ALTER TABLE `users` DROP INDEX `email`");
-                }
+                $pdo->exec("CREATE INDEX IF NOT EXISTS idx_users_email ON users (email)");
             } catch (Throwable $e) {}
-            try {
-                $pdo->exec("ALTER TABLE `users` ADD COLUMN IF NOT EXISTS `active_tenant_email` VARCHAR(150) GENERATED ALWAYS AS (IF(`is_active` = 1 AND (`is_archived` = 0 OR `is_archived` IS NULL), `email`, NULL)) STORED");
-                $pdo->exec("ALTER TABLE `users` ADD UNIQUE KEY IF NOT EXISTS `uq_active_tenant_email` (`active_tenant_email`)");
-                $pdo->exec("ALTER TABLE `users` ADD KEY IF NOT EXISTS `idx_users_email` (`email`)");
-            } catch (Throwable $e) {}
-
-            $pdo->exec("ALTER TABLE `users` ADD COLUMN IF NOT EXISTS `monthly_rent` DECIMAL(10,2) NULL AFTER `unit_id`");
-            $pdo->exec("ALTER TABLE `payments` ADD COLUMN IF NOT EXISTS `payment_type` VARCHAR(50) NOT NULL DEFAULT 'Rent' AFTER `unit_id`");
-            $pdo->exec("ALTER TABLE `payments` MODIFY COLUMN `status` ENUM('pending_setup', 'unpaid', 'pending', 'approved', 'rejected', 'overdue') NOT NULL DEFAULT 'pending_setup'");
         } catch (Throwable $e) {
             // Silently ignore if already present or user lacks DDL permissions
         }
     }
 
     /**
-     * Get singleton PDO MySQL connection instance
+     * Get singleton PDO PostgreSQL connection instance
      */
     public static function getConnection(): PDO {
         if (self::$instance !== null) {
             return self::$instance;
         }
 
+        self::initFromEnv();
+
         $dsn = sprintf(
-            'mysql:host=%s;port=%d;dbname=%s;charset=%s',
+            'pgsql:host=%s;port=%d;dbname=%s;sslmode=%s',
             self::$host,
             self::$port,
             self::$db,
-            self::$charset
+            self::$sslmode
         );
 
         $options = [
@@ -88,7 +100,7 @@ class Database {
             echo json_encode([
                 'status' => 'error',
                 'message' => 'Database connection failed: ' . $e->getMessage(),
-                'hint' => 'Ensure MySQL is running on port 3306 and database "rentconnect" is imported from database/schema.sql.'
+                'hint' => 'Ensure Supabase PostgreSQL credentials are valid and sslmode=require is accepted.'
             ], JSON_PRETTY_PRINT);
             exit;
         }

@@ -149,7 +149,7 @@ class Auth {
                        un.unit_number
                 FROM users u
                 LEFT JOIN units un ON u.unit_id = un.id
-                WHERE u.id = :id AND u.is_active = 1 AND (u.is_archived = 0 OR u.is_archived IS NULL)
+                WHERE u.id = :id AND u.is_active = TRUE AND (u.is_archived = FALSE OR u.is_archived IS NULL)
                 LIMIT 1
             ");
             $stmt->execute([':id' => $userId]);
@@ -165,6 +165,14 @@ class Auth {
             if (!hash_equals($expectedSig, $providedSig)) {
                 self::clearRememberCookies(false);
                 return false;
+            }
+
+            if (strtolower((string)($user['role'] ?? '')) === 'tenant') {
+                $tStatus = AccessControl::getTenantStatus($pdo, $userId);
+                if ($tStatus['mode'] === 'silent_lockout' || $tStatus['mode'] === 'deactivated') {
+                    self::clearRememberCookies(false);
+                    return false;
+                }
             }
 
             if (PHP_SAPI !== 'cli' && session_status() === PHP_SESSION_ACTIVE && !headers_sent()) {
@@ -255,28 +263,24 @@ class Auth {
             exit;
         }
         $pdo = Database::getConnection();
-        $stmt = $pdo->prepare("SELECT is_active, is_archived, rental_status, deleted_at FROM users WHERE id = :id LIMIT 1");
-        $stmt->execute([':id' => (int)($_SESSION['user_id'] ?? 0)]);
-        $userRow = $stmt->fetch(PDO::FETCH_ASSOC);
+        $tenantStatus = AccessControl::getTenantStatus($pdo, (int)($_SESSION['user_id'] ?? 0));
 
-        if (!$userRow) {
+        if (!$tenantStatus['found']) {
             self::logout();
             header('Location: login.php');
             exit;
         }
 
-        // Lockout archived tenant accounts immediately and destroy session
-        $isArchived = ((int)($userRow['is_archived'] ?? 0) === 1)
-            || (($userRow['rental_status'] ?? '') === 'archived')
-            || !empty($userRow['deleted_at']);
-
-        if ($isArchived) {
+        // Rule 2: Silent Lockout (Moved Out & Paid)
+        // If the tenant's account is marked as moved out AND their outstanding balance is 0 or less,
+        // completely deny access. Destroy session and silently redirect back to the login page without any specific error messages or notifications.
+        if ($tenantStatus['mode'] === 'silent_lockout') {
             self::logout();
-            header('Location: login.php?msg=archived');
+            header('Location: login.php');
             exit;
         }
 
-        if ((int)($userRow['is_active'] ?? 1) !== 1) {
+        if ($tenantStatus['mode'] === 'deactivated') {
             self::logout();
             header('Location: login.php?msg=deactivated');
             exit;
@@ -285,8 +289,9 @@ class Auth {
 
     /**
      * Authenticate user credentials against SQL database and validate account status.
-     * Returns structured result distinguishing between invalid credentials, archived accounts,
-     * deactivated accounts, and successful authentications.
+     * Enforces strict RBAC:
+     * - Rule 2: Silent Lockout for moved out & paid tenants (denies login with generic invalid credentials)
+     * - Rule 3: Debt Collection Mode for moved out & unpaid tenants (allows login)
      */
     public static function validateLogin(string $username, string $password, bool $rememberMe = false): array {
         $pdo = Database::getConnection();
@@ -311,28 +316,41 @@ class Auth {
             ];
         }
 
-        // Check if account is archived (moved out with zero balance)
-        $isArchived = ((int)($user['is_archived'] ?? 0) === 1)
-            || (($user['rental_status'] ?? '') === 'archived')
-            || !empty($user['deleted_at']);
+        // Role-Based Status Validation
+        if (strtolower((string)($user['role'] ?? '')) === 'tenant') {
+            $tenantStatus = AccessControl::getTenantStatus($pdo, (int)$user['id']);
 
-        if ($isArchived) {
-            self::logout();
-            return [
-                'success' => false,
-                'status'  => 'archived',
-                'message' => 'This account has been archived as the move-out process is complete.'
-            ];
-        }
+            // Rule 2: Silent Lockout (Moved Out & Paid)
+            // If the tenant's account is marked as moved out AND their outstanding balance is 0 or less,
+            // completely deny access. Prevent login entirely without any specific error messages or notifications.
+            if ($tenantStatus['mode'] === 'silent_lockout') {
+                self::logout();
+                return [
+                    'success' => false,
+                    'status'  => 'invalid',
+                    'message' => 'Invalid email address or password.'
+                ];
+            }
 
-        // Check if account is inactive / deactivated
-        if ((int)($user['is_active'] ?? 0) !== 1) {
-            self::logout();
-            return [
-                'success' => false,
-                'status'  => 'deactivated',
-                'message' => 'This account has been deactivated or removed by property management.'
-            ];
+            // Check if account is inactive / deactivated
+            if ($tenantStatus['mode'] === 'deactivated') {
+                self::logout();
+                return [
+                    'success' => false,
+                    'status'  => 'deactivated',
+                    'message' => 'This account has been deactivated or removed by property management.'
+                ];
+            }
+        } else {
+            // Landlord / Admin deactivated check
+            if (!filter_var($user['is_active'] ?? false, FILTER_VALIDATE_BOOLEAN)) {
+                self::logout();
+                return [
+                    'success' => false,
+                    'status'  => 'deactivated',
+                    'message' => 'This account has been deactivated or removed by property management.'
+                ];
+            }
         }
 
         if (PHP_SAPI !== 'cli' && session_status() === PHP_SESSION_ACTIVE && !headers_sent()) {

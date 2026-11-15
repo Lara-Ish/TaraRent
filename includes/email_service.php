@@ -175,7 +175,7 @@ class EmailService
                           AND template_type = :ttype 
                           AND subject = :subject
                           AND status IN ('sent', 'mock_sent')
-                          AND sent_at >= DATE_SUB(NOW(), INTERVAL 5 MINUTE)
+                          AND sent_at >= (NOW() - INTERVAL '5 MINUTE')
                         LIMIT 1
                     ");
                     $checkStmt->execute([
@@ -275,7 +275,7 @@ class EmailService
             $stmt = $pdo->prepare("
                 SELECT id, name, email 
                 FROM users 
-                WHERE role = 'landlord' AND is_active = 1 
+                WHERE role = 'landlord' AND is_active = TRUE 
                 ORDER BY id ASC 
                 LIMIT 1
             ");
@@ -317,7 +317,7 @@ class EmailService
                 SELECT u.id, u.name, u.email, u.unit_id, un.unit_number
                 FROM users u
                 LEFT JOIN units un ON u.unit_id = un.id
-                WHERE u.id = :id AND u.role = 'tenant' AND u.is_active = 1
+                WHERE u.id = :id AND u.role = 'tenant' AND u.is_active = TRUE
                 LIMIT 1
             ");
             $stmt->execute([':id' => $tenantId]);

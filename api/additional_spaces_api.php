@@ -139,7 +139,7 @@ try {
                     echo json_encode(['status' => 'error', 'message' => 'Please select a tenant to assign this space to.']);
                     exit;
                 }
-                $tCheck = $pdo->prepare("SELECT id, name, unit_id FROM users WHERE id = :id AND role = 'tenant' AND is_active = 1 LIMIT 1");
+                $tCheck = $pdo->prepare("SELECT id, name, unit_id FROM users WHERE id = :id AND role = 'tenant' AND is_active = TRUE LIMIT 1");
                 $tCheck->execute([':id' => $targetTenantId]);
                 $targetTenant = $tCheck->fetch(PDO::FETCH_ASSOC);
                 if (!$targetTenant) {

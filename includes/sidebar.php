@@ -89,71 +89,74 @@ if ($isAuthorizedLandlord) {
 } elseif ($isAuthorizedTenant) {
     $currentTenantSection = $_GET['section'] ?? 'tenantOverview';
 
-    // Detect if the logged-in tenant has 'moved out' status but an outstanding balance > 0
-    $isMovedOutUnpaid = false;
-    if (isset($sidebarConfig['is_moved_out_unpaid'])) {
-        $isMovedOutUnpaid = (bool)$sidebarConfig['is_moved_out_unpaid'];
-    }
+    // Determine tenant verification and tenancy status mode
+    $tenantSessionId = (int)($_SESSION['user_id'] ?? 0);
+    $tenantStatusMode = $sidebarConfig['tenant_status_mode'] ?? null;
+    $isTenantVerified = isset($sidebarConfig['is_verified']) ? (bool)$sidebarConfig['is_verified'] : null;
+    $isMovedOutUnpaid = isset($sidebarConfig['is_moved_out_unpaid']) ? (bool)$sidebarConfig['is_moved_out_unpaid'] : null;
 
-    // Direct database verification fallback to guarantee sync
-    if (!$isMovedOutUnpaid && class_exists('Database')) {
+    if (($tenantStatusMode === null || $isTenantVerified === null || $isMovedOutUnpaid === null) && $tenantSessionId > 0 && class_exists('Database')) {
         try {
-            $tenantSessionId = (int)($_SESSION['user_id'] ?? 0);
-            if ($tenantSessionId > 0) {
-                $dbPdo = Database::getConnection();
-                if ($dbPdo) {
-                    $uCheck = $dbPdo->prepare("SELECT rental_status, is_active FROM users WHERE id = :id LIMIT 1");
-                    $uCheck->execute([':id' => $tenantSessionId]);
-                    $uRow = $uCheck->fetch(PDO::FETCH_ASSOC);
-                    $rStatus = strtolower(trim((string)($uRow['rental_status'] ?? '')));
-                    if (in_array($rStatus, ['moved_out', 'moved out'], true)) {
-                        $pCheck = $dbPdo->prepare("
-                            SELECT COUNT(*) FROM payments 
-                            WHERE tenant_id = :tid 
-                              AND (status IN ('unpaid', 'overdue', 'rejected', 'pending_setup') OR (amount_due - amount_paid) > 0.01)
-                        ");
-                        $pCheck->execute([':tid' => $tenantSessionId]);
-                        if ((int)$pCheck->fetchColumn() > 0) {
-                            $isMovedOutUnpaid = true;
-                        }
-                    }
-                }
+            $dbPdo = Database::getConnection();
+            if ($dbPdo && class_exists('AccessControl')) {
+                $statusData = AccessControl::getTenantStatus($dbPdo, $tenantSessionId);
+                $tenantStatusMode = $statusData['mode'];
+                $isTenantVerified = $statusData['is_verified'];
+                $isMovedOutUnpaid = ($tenantStatusMode === 'debt_collection');
             }
         } catch (\Throwable $e) {}
     }
 
+    $isTenantVerified = (bool)($isTenantVerified ?? false);
+    $isMovedOutUnpaid = (bool)($isMovedOutUnpaid ?? false);
+
+    // Rule 1 & Rule 3 Nav Restrictions:
+    // 1. Unverified: Re-enable Log Maintenance, Upload Payment, and Report so tenants can browse freely.
+    // 3. Debt Collection: restrict to Dashboard & Upload Payment; disable Log Maintenance & Report.
+    $isMaintenanceDisabled = $isMovedOutUnpaid;
+    $isPaymentsDisabled = false;
+    $isReportDisabled = $isMovedOutUnpaid;
+
+    $maintenanceDisabledReason = 'Access restricted: Settle unpaid balance first';
+    $paymentsDisabledReason = '';
+    $reportDisabledReason = 'Access restricted: Settle unpaid balance first';
+
     $tenantNavDefinitions = [
         [
-            'id'       => 'navTenantOverview',
-            'section'  => 'tenantOverview',
-            'onclick'  => "switchTenantSection('tenantOverview', this)",
-            'label'    => 'Dashboard',
-            'icon'     => '<i data-lucide="layout-dashboard" class="w-6 h-6 text-gray-700" aria-hidden="true"></i>',
-            'disabled' => false,
+            'id'              => 'navTenantOverview',
+            'section'         => 'tenantOverview',
+            'onclick'         => "switchTenantSection('tenantOverview', this)",
+            'label'           => 'Dashboard',
+            'icon'            => '<i data-lucide="layout-dashboard" class="w-6 h-6 text-gray-700" aria-hidden="true"></i>',
+            'disabled'        => false,
+            'disabled_reason' => '',
         ],
         [
-            'id'       => 'navTenantMaintenance',
-            'section'  => 'tenantMaintenance',
-            'onclick'  => $isMovedOutUnpaid ? '' : "switchTenantSection('tenantMaintenance', this)",
-            'label'    => 'Log Maintenance',
-            'icon'     => '<i data-lucide="wrench" class="w-6 h-6 text-gray-700" aria-hidden="true"></i>',
-            'disabled' => $isMovedOutUnpaid,
+            'id'              => 'navTenantMaintenance',
+            'section'         => 'tenantMaintenance',
+            'onclick'         => $isMaintenanceDisabled ? '' : "switchTenantSection('tenantMaintenance', this)",
+            'label'           => 'Log Maintenance',
+            'icon'            => '<i data-lucide="wrench" class="w-6 h-6 text-gray-700" aria-hidden="true"></i>',
+            'disabled'        => $isMaintenanceDisabled,
+            'disabled_reason' => $maintenanceDisabledReason,
         ],
         [
-            'id'       => 'navTenantPayments',
-            'section'  => 'tenantPayments',
-            'onclick'  => "switchTenantSection('tenantPayments', this)",
-            'label'    => 'Upload Payment',
-            'icon'     => '<i data-lucide="credit-card" class="w-6 h-6 text-gray-700" aria-hidden="true"></i>',
-            'disabled' => false,
+            'id'              => 'navTenantPayments',
+            'section'         => 'tenantPayments',
+            'onclick'         => $isPaymentsDisabled ? '' : "switchTenantSection('tenantPayments', this)",
+            'label'           => 'Upload Payment',
+            'icon'            => '<i data-lucide="credit-card" class="w-6 h-6 text-gray-700" aria-hidden="true"></i>',
+            'disabled'        => $isPaymentsDisabled,
+            'disabled_reason' => $paymentsDisabledReason,
         ],
         [
-            'id'       => 'navTenantReport',
-            'section'  => 'tenantReport',
-            'onclick'  => $isMovedOutUnpaid ? '' : "switchTenantSection('tenantReport', this)",
-            'label'    => 'Report',
-            'icon'     => '<i data-lucide="file-text" class="w-6 h-6 text-gray-700" aria-hidden="true"></i>',
-            'disabled' => $isMovedOutUnpaid,
+            'id'              => 'navTenantReport',
+            'section'         => 'tenantReport',
+            'onclick'         => $isReportDisabled ? '' : "switchTenantSection('tenantReport', this)",
+            'label'           => 'Report',
+            'icon'            => '<i data-lucide="file-text" class="w-6 h-6 text-gray-700" aria-hidden="true"></i>',
+            'disabled'        => $isReportDisabled,
+            'disabled_reason' => $reportDisabledReason,
         ],
     ];
 
@@ -168,13 +171,14 @@ if ($isAuthorizedLandlord) {
     $authorizedNavItems = array_map(function ($item) use ($currentTenantSection, $hasMatchedActive) {
         $isActive = !$item['disabled'] && ($hasMatchedActive ? ($item['section'] === $currentTenantSection) : ($item['section'] === 'tenantOverview'));
         return [
-            'id'       => $item['id'],
-            'section'  => $item['section'],
-            'onclick'  => $item['onclick'],
-            'label'    => $item['label'],
-            'active'   => $isActive,
-            'disabled' => $item['disabled'],
-            'icon'     => $item['icon'],
+            'id'              => $item['id'],
+            'section'         => $item['section'],
+            'onclick'         => $item['onclick'],
+            'label'           => $item['label'],
+            'active'          => $isActive,
+            'disabled'        => $item['disabled'],
+            'disabled_reason' => $item['disabled_reason'] ?? '',
+            'icon'            => $item['icon'],
         ];
     }, $tenantNavDefinitions);
 }
@@ -222,7 +226,7 @@ if ($isAuthorizedLandlord) {
             $btnClasses = 'sidebar-nav-item flex justify-between items-center w-full'
               . (!empty($item['active']) ? ' active' : '')
               . ($isDisabled ? ' opacity-50 pointer-events-none cursor-not-allowed nav-item-disabled' : '');
-            $itemTitle = $isDisabled ? 'Access restricted: Settle unpaid balance first' : $item['label'];
+            $itemTitle = $isDisabled ? (!empty($item['disabled_reason']) ? $item['disabled_reason'] : 'Access restricted') : $item['label'];
           ?>
           <button type="button"
                   class="<?= htmlspecialchars($btnClasses) ?>"
@@ -237,7 +241,7 @@ if ($isAuthorizedLandlord) {
               <span class="hide-on-retract nav-label font-medium"><?= htmlspecialchars($item['label']) ?></span>
             </span>
             <?php if ($isDisabled): ?>
-              <span class="hide-on-retract text-gray-500 ml-auto flex items-center" style="margin-left: auto; display: flex; align-items: center;" title="Locked: Settle balance to unlock">
+              <span class="hide-on-retract text-gray-500 ml-auto flex items-center" style="margin-left: auto; display: flex; align-items: center;" title="<?= htmlspecialchars($itemTitle) ?>">
                 <i data-lucide="lock" class="w-4 h-4 text-gray-500" style="width: 16px; height: 16px;" aria-hidden="true"></i>
               </span>
             <?php elseif (!empty($item['badge_id']) && !empty($item['badge_count']) && (int)$item['badge_count'] > 0): ?>

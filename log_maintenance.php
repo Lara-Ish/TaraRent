@@ -10,6 +10,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/config/auth.php';
+require_once __DIR__ . '/includes/access_control.php';
 
 // 1. Session Authentication Check
 if (!class_exists('Auth') || !Auth::check()) {
@@ -31,7 +32,7 @@ if ($sessionRole !== 'tenant') {
     exit;
 }
 
-// 4. Security Check: Moved-Out Tenants with Outstanding Balances
+// 4. Role-Based Access Control via AccessControl::getTenantStatus
 $currentUser = Auth::user();
 $tenantId = (int)($currentUser['id'] ?? 0);
 
@@ -39,28 +40,37 @@ if ($tenantId > 0 && class_exists('Database')) {
     try {
         $pdo = Database::getConnection();
         if ($pdo) {
-            $uStmt = $pdo->prepare("SELECT rental_status, is_active FROM users WHERE id = :id LIMIT 1");
-            $uStmt->execute([':id' => $tenantId]);
-            $uRow = $uStmt->fetch(PDO::FETCH_ASSOC);
+            $tenantStatus = AccessControl::getTenantStatus($pdo, $tenantId);
 
-            $rentalStatus = strtolower(trim((string)($uRow['rental_status'] ?? '')));
-            $isActive = (int)($uRow['is_active'] ?? 0);
+            // Rule 2: Silent Lockout (Moved Out & Paid)
+            if ($tenantStatus['mode'] === 'silent_lockout') {
+                Auth::logout();
+                header('Location: login.php');
+                exit;
+            }
 
-            // If tenant has moved out
-            if (in_array($rentalStatus, ['moved_out', 'moved out'], true)) {
-                $pStmt = $pdo->prepare("
-                    SELECT COUNT(*) FROM payments 
-                    WHERE tenant_id = :tid 
-                      AND (status IN ('unpaid', 'overdue', 'rejected', 'pending_setup') OR (amount_due - amount_paid) > 0.01)
-                ");
-                $pStmt->execute([':tid' => $tenantId]);
-                $unpaidCount = (int)$pStmt->fetchColumn();
+            if ($tenantStatus['mode'] === 'deactivated') {
+                Auth::logout();
+                header('Location: login.php?msg=deactivated');
+                exit;
+            }
 
-                // If balance remains, block route access and redirect to Dashboard
-                if ($unpaidCount > 0 || $isActive === 1) {
-                    header('Location: tenant_portal.php?section=tenantOverview&restricted=moved_out');
-                    exit;
-                }
+            // Rule 3: Debt Collection Mode (Moved Out & Unpaid)
+            if ($tenantStatus['mode'] === 'debt_collection') {
+                header('Location: tenant_portal.php?section=tenantOverview&restricted=moved_out');
+                exit;
+            }
+
+            // Backend Protection: If a POST request is detected from an unverified user, abort and return access denied error
+            if ($_SERVER['REQUEST_METHOD'] === 'POST' && (!$tenantStatus['is_verified'] || $tenantStatus['mode'] === 'unverified')) {
+                http_response_code(403);
+                header('Content-Type: application/json; charset=UTF-8');
+                echo json_encode([
+                    'status'  => 'error',
+                    'code'    => 'ACCESS_DENIED',
+                    'message' => 'Access Denied: Please verify your identity to submit new records.'
+                ]);
+                exit;
             }
         }
     } catch (\Throwable $e) {

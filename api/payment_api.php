@@ -74,6 +74,7 @@ try {
             $isApproved = ($decision === 'approved');
             $statusVal = $isApproved ? 'approved' : 'rejected';
             $verifiedFlag = $isApproved ? 1 : 0;
+            $verifiedSql = $isApproved ? 'TRUE' : 'FALSE';
             $defaultNotes = $isApproved ? 'Payment receipt approved & verified.' : 'Payment proof rejected.';
             $finalNotes = !empty($notes) ? $notes : $defaultNotes;
 
@@ -101,16 +102,15 @@ try {
             $stmt = $pdo->prepare("
                 UPDATE payments 
                 SET status = :status,
-                    verified_by_landlord = :v,
+                    verified_by_landlord = {$verifiedSql},
                     verification_notes = :notes,
                     verified_at = NOW(),
-                    payment_date = COALESCE(payment_date, CURDATE())
+                    payment_date = COALESCE(payment_date, CURRENT_DATE)
                     {$updatePaidSql}
                 WHERE id = :id
             ");
             $stmt->execute([
                 ':status' => $statusVal,
-                ':v' => $verifiedFlag,
                 ':notes' => $finalNotes,
                 ':id' => $paymentId
             ]);
@@ -150,7 +150,7 @@ try {
                 try {
                     $tStmt = $pdo->prepare("
                         SELECT * FROM users 
-                        WHERE id = :id AND role = 'tenant' AND is_active = 1 AND (is_archived = 0 OR is_archived IS NULL)
+                        WHERE id = :id AND role = 'tenant' AND is_active = TRUE AND (is_archived = FALSE OR is_archived IS NULL)
                         LIMIT 1
                         FOR UPDATE
                     ");
@@ -214,6 +214,10 @@ try {
             $amountPaid = (float)($_POST['amount_paid'] ?? 3000.00);
             $billingCycle = trim((string)($_POST['billing_cycle'] ?? date('Y-m-01')));
             $paymentMethod = trim((string)($_POST['payment_method'] ?? 'GCash / Bank Transfer'));
+            $refNum = trim((string)($_POST['reference_number'] ?? ''));
+            if (!empty($refNum) && stripos($paymentMethod, $refNum) === false) {
+                $paymentMethod = $paymentMethod . ' (Ref: ' . $refNum . ')';
+            }
 
             $savedFilename = null;
 
@@ -286,12 +290,12 @@ try {
                 $updateStmt = $pdo->prepare("
                     UPDATE payments 
                     SET amount_paid = :paid,
-                        payment_date = CURDATE(),
+                        payment_date = CURRENT_DATE,
                         status = 'pending',
                         receipt_filename = COALESCE(:receipt, receipt_filename),
                         payment_method = :method,
                         billing_cycle = COALESCE(billing_cycle, :cycle),
-                        verified_by_landlord = 0,
+                        verified_by_landlord = FALSE,
                         verification_notes = NULL,
                         verified_at = NULL
                     WHERE id = :id
@@ -317,7 +321,7 @@ try {
                     INSERT INTO payments 
                         (tenant_id, unit_id, payment_type, billing_cycle, due_date, amount_due, amount_paid, payment_date, status, payment_method, receipt_filename, verified_by_landlord, created_at)
                     VALUES 
-                        (:tenant_id, :unit_id, :ptype, :cycle, :due_date, :due, :paid, CURDATE(), 'pending', :method, :receipt, 0, NOW())
+                        (:tenant_id, :unit_id, :ptype, :cycle, :due_date, :due, :paid, CURRENT_DATE, 'pending', :method, :receipt, FALSE, NOW())
                 ");
                 $insertStmt->execute([
                     ':tenant_id' => $tenantId,
@@ -633,8 +637,8 @@ try {
                 FROM payments p
                 JOIN users u ON p.tenant_id = u.id
                 JOIN units un ON p.unit_id = un.id
-                WHERE (u.is_archived = 0 OR u.is_archived IS NULL)
-                  AND u.is_active = 1
+                WHERE (u.is_archived = FALSE OR u.is_archived IS NULL)
+                  AND u.is_active = TRUE
                   AND u.deleted_at IS NULL
                 ORDER BY p.id DESC
             ");

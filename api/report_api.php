@@ -33,40 +33,31 @@ $pdo = Database::getConnection();
  */
 function ensureTenantReportsTable(PDO $pdo): void
 {
-    $pdo->exec("
-        CREATE TABLE IF NOT EXISTS `tenant_reports` (
-            `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
-            `tenant_id` INT UNSIGNED NOT NULL,
-            `unit_id` INT UNSIGNED NOT NULL,
-            `category` ENUM(
-                'Additional Occupant Registration',
-                'Pet Adoption/Registration',
-                'Unit Customization/Modification',
-                'General Inquiry',
-                'Other...'
-            ) NOT NULL,
-            `subject` VARCHAR(180) NOT NULL,
-            `details` TEXT NOT NULL,
-            `attachment_path` VARCHAR(1000) NULL DEFAULT NULL,
-            `status` ENUM('Pending','Approved','Rejected','Acknowledged') NOT NULL DEFAULT 'Pending',
-            `owner_remarks` TEXT NULL DEFAULT NULL,
-            `reviewed_by` INT UNSIGNED NULL DEFAULT NULL,
-            `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            `reviewed_at` DATETIME NULL DEFAULT NULL,
-            `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            PRIMARY KEY (`id`),
-            KEY `idx_tr_tenant` (`tenant_id`),
-            KEY `idx_tr_unit` (`unit_id`),
-            KEY `idx_tr_status` (`status`),
-            KEY `idx_tr_created` (`created_at`),
-            CONSTRAINT `fk_tr_tenant`
-                FOREIGN KEY (`tenant_id`) REFERENCES `users` (`id`)
-                ON DELETE CASCADE ON UPDATE CASCADE,
-            CONSTRAINT `fk_tr_unit`
-                FOREIGN KEY (`unit_id`) REFERENCES `units` (`id`)
-                ON DELETE CASCADE ON UPDATE CASCADE
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    ");
+    try {
+        $pdo->exec("
+            CREATE TABLE IF NOT EXISTS tenant_reports (
+                id SERIAL PRIMARY KEY,
+                tenant_id INT NOT NULL,
+                unit_id INT NOT NULL,
+                category VARCHAR(80) NOT NULL,
+                subject VARCHAR(180) NOT NULL,
+                details TEXT NOT NULL,
+                attachment_path VARCHAR(1000) NULL DEFAULT NULL,
+                status VARCHAR(30) NOT NULL DEFAULT 'Pending',
+                owner_remarks TEXT NULL DEFAULT NULL,
+                reviewed_by INT NULL DEFAULT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                reviewed_at TIMESTAMP NULL DEFAULT NULL,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT fk_tr_tenant FOREIGN KEY (tenant_id) REFERENCES users (id) ON DELETE CASCADE ON UPDATE CASCADE,
+                CONSTRAINT fk_tr_unit FOREIGN KEY (unit_id) REFERENCES units (id) ON DELETE CASCADE ON UPDATE CASCADE
+            )
+        ");
+        $pdo->exec("CREATE INDEX IF NOT EXISTS idx_tr_tenant ON tenant_reports (tenant_id)");
+        $pdo->exec("CREATE INDEX IF NOT EXISTS idx_tr_unit ON tenant_reports (unit_id)");
+        $pdo->exec("CREATE INDEX IF NOT EXISTS idx_tr_status ON tenant_reports (status)");
+        $pdo->exec("CREATE INDEX IF NOT EXISTS idx_tr_created ON tenant_reports (created_at)");
+    } catch (Throwable $e) {}
 }
 
 try {
@@ -404,7 +395,7 @@ try {
             $query .= " WHERE tr.tenant_id = :tid";
             $params[':tid'] = (int)$currentUser['id'];
         } else {
-            $query .= " WHERE (u.is_archived = 0 OR u.is_archived IS NULL) AND u.deleted_at IS NULL";
+            $query .= " WHERE (u.is_archived = FALSE OR u.is_archived IS NULL) AND u.deleted_at IS NULL";
         }
 
         $query .= " ORDER BY tr.created_at DESC, tr.id DESC";

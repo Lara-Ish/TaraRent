@@ -30,7 +30,7 @@ try {
     $kpiStmt = $pdo->query("
         SELECT 
             COUNT(DISTINCT u.id) AS total_units,
-            (SELECT COUNT(*) FROM users WHERE role = 'tenant' AND is_active = 1) AS total_active_tenants,
+            (SELECT COUNT(*) FROM users WHERE role = 'tenant' AND is_active = TRUE) AS total_active_tenants,
             COALESCE(SUM(CASE WHEN p.status != 'pending_setup' THEN p.amount_due ELSE 0 END), 0) AS total_receivables_billed,
             COALESCE(SUM(CASE WHEN p.status = 'approved' THEN p.amount_paid ELSE 0 END), 0) AS total_revenue_collected,
             COALESCE(SUM(CASE WHEN p.status NOT IN ('approved', 'pending_setup') AND p.amount_due IS NOT NULL THEN (p.amount_due - p.amount_paid) ELSE 0 END), 0) AS total_outstanding_balance,
@@ -160,7 +160,7 @@ try {
         JOIN units u ON p.unit_id = u.id
         JOIN users usr ON p.tenant_id = usr.id
         WHERE p.status IN ('rejected', 'overdue') 
-           OR (p.status = 'pending' AND p.due_date < CURDATE() AND p.amount_paid < p.amount_due)
+           OR (p.status = 'pending' AND p.due_date < CURRENT_DATE AND p.amount_paid < p.amount_due)
         ORDER BY p.billing_cycle DESC
     ");
     $overdues = $overdueStmt->fetchAll();

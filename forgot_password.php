@@ -123,7 +123,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // Rate Limiting: Max 6 reset requests per IP in 15 minutes
             $rateStmt = $pdo->prepare("
                 SELECT COUNT(*) FROM password_resets 
-                WHERE ip_address = :ip AND created_at >= DATE_SUB(NOW(), INTERVAL 15 MINUTE)
+                WHERE ip_address = :ip AND created_at >= (NOW() - INTERVAL '15 MINUTE')
             ");
             $rateStmt->execute([':ip' => $ip]);
             $recentAttempts = (int)$rateStmt->fetchColumn();
@@ -144,7 +144,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $userStmt = $pdo->prepare("
                     SELECT id, name, email, role, is_active 
                     FROM users 
-                    WHERE email = :email AND is_active = 1 AND (is_archived = 0 OR is_archived IS NULL)
+                    WHERE email = :email AND is_active = TRUE AND (is_archived = FALSE OR is_archived IS NULL)
                     LIMIT 1
                 ");
                 $userStmt->execute([':email' => $email]);
@@ -177,7 +177,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         INSERT INTO password_resets 
                             (user_id, email, token_hash, ip_address, expires_at, attempts, max_attempts, created_at)
                         VALUES 
-                            (:uid, :email, :thash, :ip, DATE_ADD(NOW(), INTERVAL 5 MINUTE), 0, 5, NOW())
+                            (:uid, :email, :thash, :ip, (NOW() + INTERVAL '5 MINUTE'), 0, 5, NOW())
                     ");
                     $insertStmt->execute([
                         ':uid'   => $userId,
@@ -348,7 +348,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $userStmt = $pdo->prepare("
                     SELECT id, name, email, is_active 
                     FROM users 
-                    WHERE email = :email AND is_active = 1 AND (is_archived = 0 OR is_archived IS NULL)
+                    WHERE email = :email AND is_active = TRUE AND (is_archived = FALSE OR is_archived IS NULL)
                     LIMIT 1
                 ");
                 $userStmt->execute([':email' => $email]);
@@ -371,7 +371,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         INSERT INTO password_resets 
                             (user_id, email, token_hash, ip_address, expires_at, attempts, max_attempts, created_at)
                         VALUES 
-                            (:uid, :email, :thash, :ip, DATE_ADD(NOW(), INTERVAL 5 MINUTE), 0, 5, NOW())
+                            (:uid, :email, :thash, :ip, (NOW() + INTERVAL '5 MINUTE'), 0, 5, NOW())
                     ");
                     $insertStmt->execute([
                         ':uid'   => $userId,

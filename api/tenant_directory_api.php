@@ -78,8 +78,8 @@ try {
                 'move_in_date_formatted'  => !empty($tenant['move_in_date']) ? date('M d, Y', strtotime($tenant['move_in_date'])) : 'Not recorded',
                 'move_out_date'           => $tenant['move_out_date'] ?? null,
                 'move_out_date_formatted' => !empty($tenant['move_out_date']) ? date('M d, Y', strtotime($tenant['move_out_date'])) : null,
-                'is_active'               => (int)$tenant['is_active'],
-                'is_archived'             => (int)$tenant['is_archived'],
+                'is_active'               => filter_var($tenant['is_active'] ?? false, FILTER_VALIDATE_BOOLEAN) ? 1 : 0,
+                'is_archived'             => filter_var($tenant['is_archived'] ?? false, FILTER_VALIDATE_BOOLEAN) ? 1 : 0,
                 'settlement'              => $settlement
             ]);
             exit;
@@ -119,7 +119,7 @@ try {
             // If the account is 0 (unverified) or marked as failed/rejected, the backend must NOT send
             // the ID file path or the ID type string to the frontend. Set these variables to null.
             $rawVStatus = strtolower(trim((string)($tenant['verification_status'] ?? 'unverified')));
-            $isVerifiedTenant = ((int)($tenant['is_verified'] ?? 0) === 1) && ($rawVStatus === 'verified');
+            $isVerifiedTenant = filter_var($tenant['is_verified'] ?? false, FILTER_VALIDATE_BOOLEAN) && ($rawVStatus === 'verified');
             $tenant['is_verified'] = $isVerifiedTenant ? 1 : 0;
             if (!$isVerifiedTenant) {
                 $tenant['id_type'] = null;
@@ -159,7 +159,7 @@ try {
         if ($action === 'list_archived') {
             $search = trim((string)($_GET['search'] ?? ''));
             $params = [];
-            $whereClause = "u.role = 'tenant' AND (u.is_archived = 1 OR u.deleted_at IS NOT NULL)";
+            $whereClause = "u.role = 'tenant' AND (u.is_archived = TRUE OR u.deleted_at IS NOT NULL)";
 
             if (!empty($search)) {
                 $whereClause .= " AND (u.name LIKE :s1 OR u.email LIKE :s2 OR u.username LIKE :s3 OR u.archived_unit_number LIKE :s4)";
@@ -237,7 +237,7 @@ try {
 
             // Strict Backend Privacy Rule:
             $rawVStatus = strtolower(trim((string)($tenant['verification_status'] ?? 'unverified')));
-            $isVerifiedTenant = ((int)($tenant['is_verified'] ?? 0) === 1) && ($rawVStatus === 'verified');
+            $isVerifiedTenant = filter_var($tenant['is_verified'] ?? false, FILTER_VALIDATE_BOOLEAN) && ($rawVStatus === 'verified');
             $tenant['is_verified'] = $isVerifiedTenant ? 1 : 0;
             if (!$isVerifiedTenant) {
                 $tenant['id_type'] = null;
@@ -367,8 +367,8 @@ try {
             FROM users u
             LEFT JOIN units un ON u.unit_id = un.id
             WHERE u.role = 'tenant' 
-              AND u.is_active = 1 
-              AND (u.is_archived = 0 OR u.is_archived IS NULL)
+              AND u.is_active = TRUE 
+              AND (u.is_archived = FALSE OR u.is_archived IS NULL)
               AND u.deleted_at IS NULL
             ORDER BY un.unit_number ASC, u.name ASC
         ");
@@ -402,7 +402,7 @@ try {
             $isPaidUp = (bool)($settlement['is_settled'] ?? false);
 
             $rawVStatus = strtolower(trim((string)($t['verification_status'] ?? 'unverified')));
-            $isVerifiedTenant = ((int)($t['is_verified'] ?? 0) === 1) && ($rawVStatus === 'verified');
+            $isVerifiedTenant = filter_var($t['is_verified'] ?? false, FILTER_VALIDATE_BOOLEAN) && ($rawVStatus === 'verified');
 
             $tenantData = [
                 'id'                             => $tId,
@@ -584,7 +584,7 @@ try {
                 $check->execute([':id' => $tenantId]);
                 $target = $check->fetch(PDO::FETCH_ASSOC);
 
-                if (!$target || ((int)($target['is_archived'] ?? 0) !== 1 && empty($target['deleted_at']))) {
+                if (!$target || (!filter_var($target['is_archived'] ?? false, FILTER_VALIDATE_BOOLEAN) && empty($target['deleted_at']))) {
                     $pdo->rollBack();
                     http_response_code(400);
                     echo json_encode(['status' => 'error', 'message' => 'This account is not archived or is already active.']);
@@ -606,7 +606,7 @@ try {
                         SELECT u.id, u.unit_number, u.monthly_rent 
                         FROM units u 
                         WHERE u.id NOT IN (
-                            SELECT unit_id FROM users WHERE role = 'tenant' AND is_active = 1 AND unit_id IS NOT NULL
+                            SELECT unit_id FROM users WHERE role = 'tenant' AND is_active = TRUE AND unit_id IS NOT NULL
                         )
                         ORDER BY u.id ASC 
                         LIMIT 1
@@ -630,7 +630,7 @@ try {
                 // Prevent duplicate active accounts for the same unit
                 $chkOcc = $pdo->prepare("
                     SELECT id, name FROM users 
-                    WHERE unit_id = :uid AND role = 'tenant' AND is_active = 1 AND id != :tid 
+                    WHERE unit_id = :uid AND role = 'tenant' AND is_active = TRUE AND id != :tid 
                     LIMIT 1 
                     FOR UPDATE
                 ");
@@ -647,11 +647,11 @@ try {
                     exit;
                 }
 
-                // Restore account: set is_active = 1, is_archived = 0, deleted_at = NULL, unit_id = $targetUnitId
+                // Restore account: set is_active = TRUE, is_archived = FALSE, deleted_at = NULL, unit_id = $targetUnitId
                 $upd = $pdo->prepare("
                     UPDATE users 
-                    SET is_active = 1,
-                        is_archived = 0,
+                    SET is_active = TRUE,
+                        is_archived = FALSE,
                         deleted_at = NULL,
                         unit_id = :uid,
                         active_tenant_unit_id = :uid,
@@ -726,7 +726,7 @@ try {
                 $check->execute([':id' => $tenantId]);
                 $target = $check->fetch(PDO::FETCH_ASSOC);
 
-                if (!$target || ((int)($target['is_archived'] ?? 0) !== 1 && empty($target['deleted_at']))) {
+                if (!$target || (!filter_var($target['is_archived'] ?? false, FILTER_VALIDATE_BOOLEAN) && empty($target['deleted_at']))) {
                     $pdo->rollBack();
                     http_response_code(400);
                     echo json_encode(['status' => 'error', 'message' => 'Only archived tenant accounts can be permanently deleted.']);
@@ -771,17 +771,16 @@ try {
                 $decision = 'verified';
             }
 
-            $isVerifiedInt = ($decision === 'verified') ? 1 : 0;
+            $isVerifiedSql = ($decision === 'verified') ? 'TRUE' : 'FALSE';
             $update = $pdo->prepare("
                 UPDATE users 
                 SET verification_status = :status,
-                    is_verified = :is_verified,
+                    is_verified = {$isVerifiedSql},
                     id_verified_at = " . ($decision === 'verified' ? 'NOW()' : 'NULL') . "
                 WHERE id = :id AND role = 'tenant'
             ");
             $update->execute([
                 ':status' => $decision,
-                ':is_verified' => $isVerifiedInt,
                 ':id' => $tenantId
             ]);
 
@@ -830,7 +829,7 @@ try {
             // Concurrency-safe check: Is target unit occupied by another active tenant?
             $chkTarget = $pdo->prepare("
                 SELECT id, name FROM users 
-                WHERE unit_id = :uid AND role = 'tenant' AND is_active = 1 AND id != :tid 
+                WHERE unit_id = :uid AND role = 'tenant' AND is_active = TRUE AND id != :tid 
                 LIMIT 1 
                 FOR UPDATE
             ");
@@ -939,8 +938,8 @@ try {
                     WHERE email = :e 
                       AND id != :id 
                       AND role = 'tenant' 
-                      AND is_active = 1 
-                      AND (is_archived = 0 OR is_archived IS NULL)
+                      AND is_active = TRUE 
+                      AND (is_archived = FALSE OR is_archived IS NULL)
                     LIMIT 1
                 ");
                 $dupCheck->execute([':e' => $tEmail, ':id' => $tenantId]);
@@ -1075,7 +1074,7 @@ try {
             $pdo->beginTransaction();
             $unitOccupancyStmt = $pdo->prepare("
                 SELECT id, name FROM users 
-                WHERE unit_id = :unit_id AND role = 'tenant' AND is_active = 1 
+                WHERE unit_id = :unit_id AND role = 'tenant' AND is_active = TRUE 
                 LIMIT 1 
                 FOR UPDATE
             ");
@@ -1098,8 +1097,8 @@ try {
                 SELECT id FROM users 
                 WHERE email = :e 
                   AND role = 'tenant' 
-                  AND is_active = 1 
-                  AND (is_archived = 0 OR is_archived IS NULL)
+                  AND is_active = TRUE 
+                  AND (is_archived = FALSE OR is_archived IS NULL)
                 LIMIT 1 
                 FOR UPDATE
             ");
@@ -1119,7 +1118,7 @@ try {
                 SELECT id FROM users 
                 WHERE email = :e 
                   AND role = 'landlord' 
-                  AND is_active = 1
+                  AND is_active = TRUE
                 LIMIT 1 
                 FOR UPDATE
             ");
@@ -1135,7 +1134,7 @@ try {
             }
 
             // 1. Auto-generate sequential username: RC001, RC002, RC003, ...
-            $existingUsernamesStmt = $pdo->query("SELECT username FROM users WHERE username REGEXP '^RC[0-9]+$'");
+            $existingUsernamesStmt = $pdo->query("SELECT username FROM users WHERE username ~ '^RC[0-9]+$'");
             $existingUsernames = $existingUsernamesStmt->fetchAll(PDO::FETCH_COLUMN);
 
             $maxNum = 0;
@@ -1182,7 +1181,7 @@ try {
                     :unit_id, :monthly_rent, :username, :name, :email, :password_hash, 'tenant', 'unverified', :phone,
                     :birthday, :emergency_contact, :emergency_contact_name,
                     :emergency_contact_relationship, :emergency_contact_phone,
-                    :move_in_date, :total_occupants, :adults_count, :kids_count, 1, NOW()
+                    :move_in_date, :total_occupants, :adults_count, :kids_count, TRUE, NOW()
                 )
             ");
             $insertStmt->execute([
@@ -1256,7 +1255,7 @@ try {
                         verification_notes, created_at
                     ) VALUES (
                         :tenant_id, :unit_id, 'Advance Deposit', :cycle, :due_date, 3000.00, 0.00,
-                        NULL, 'unpaid', 'GCash / Bank Transfer', NULL, 0,
+                        NULL, 'unpaid', 'GCash / Bank Transfer', NULL, FALSE,
                         'Advance deposit required upon account creation', NOW()
                     )
                 ");
@@ -1332,8 +1331,8 @@ try {
                     }
 
                     $hasActiveAssignedTenant = !empty($spaceRow['assigned_tenant_id'])
-                        && (int)($spaceRow['tenant_is_active'] ?? 0) === 1
-                        && (int)($spaceRow['tenant_is_archived'] ?? 0) === 0;
+                        && filter_var($spaceRow['tenant_is_active'] ?? false, FILTER_VALIDATE_BOOLEAN)
+                        && !filter_var($spaceRow['tenant_is_archived'] ?? false, FILTER_VALIDATE_BOOLEAN);
 
                     if ($spaceRow['status'] !== 'available' || $hasActiveAssignedTenant) {
                         $pdo->rollBack();
@@ -1396,7 +1395,7 @@ try {
                         verification_notes, created_at
                     ) VALUES (
                         :tenant_id, :unit_id, 'Rent', :cycle, :due_date, :base_rent, :extra_fee, :breakdown, :amount_due, 0.00,
-                        NULL, 'unpaid', 'GCash / Bank Transfer', NULL, 0,
+                        NULL, 'unpaid', 'GCash / Bank Transfer', NULL, FALSE,
                         :vnotes, NOW()
                     )
                 ");

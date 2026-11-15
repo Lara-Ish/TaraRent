@@ -32,7 +32,15 @@ if ($user && isset($user['id'])) {
 
 // Resolve user avatar image URL dynamically from database record or uploaded face
 $userAvatarUrl = '';
-if (!empty($user['live_photo_filename'])) {
+if (!empty($user['profile_picture'])) {
+    $pic = (string)$user['profile_picture'];
+    if (file_exists(__DIR__ . '/' . $pic)) {
+        $userAvatarUrl = htmlspecialchars($pic);
+    } elseif (file_exists(__DIR__ . '/uploads/avatars/' . basename($pic))) {
+        $userAvatarUrl = 'uploads/avatars/' . htmlspecialchars(basename($pic));
+    }
+}
+if (empty($userAvatarUrl) && !empty($user['live_photo_filename'])) {
     if (file_exists(__DIR__ . '/uploads/id_verifications/' . $user['live_photo_filename'])) {
         $userAvatarUrl = 'uploads/id_verifications/' . htmlspecialchars($user['live_photo_filename']);
     } elseif (file_exists(__DIR__ . '/uploads/live_captures/' . $user['live_photo_filename'])) {
@@ -106,8 +114,8 @@ $tenantsStmt = $pdo->query("
     FROM users u
     LEFT JOIN units un ON u.unit_id = un.id
     WHERE u.role = 'tenant' 
-      AND u.is_active = 1
-      AND (u.is_archived = 0 OR u.is_archived IS NULL)
+      AND u.is_active = TRUE
+      AND (u.is_archived = FALSE OR u.is_archived IS NULL)
       AND u.deleted_at IS NULL
     ORDER BY un.unit_number ASC, u.name ASC
 ");
@@ -197,8 +205,8 @@ $payments = $pdo->query("
     FROM payments p
     JOIN users u ON p.tenant_id = u.id
     JOIN units un ON p.unit_id = un.id
-    WHERE (u.is_archived = 0 OR u.is_archived IS NULL)
-      AND u.is_active = 1
+    WHERE (u.is_archived = FALSE OR u.is_archived IS NULL)
+      AND u.is_active = TRUE
       AND u.deleted_at IS NULL
     ORDER BY p.id DESC
 ")->fetchAll();
@@ -249,7 +257,7 @@ $occupiedUnitsCount = count(array_filter($unitsWithTenants, fn($u) => count($u['
 $availableUnitsCount = max(0, count($units) - $occupiedUnitsCount);
 $archivedTenantsCount = (int)$pdo->query("
     SELECT COUNT(*) FROM users
-    WHERE role = 'tenant' AND (is_archived = 1 OR deleted_at IS NOT NULL)
+    WHERE role = 'tenant' AND (is_archived = TRUE OR deleted_at IS NOT NULL)
 ")->fetchColumn();
 ?>
 <!DOCTYPE html>
@@ -1936,6 +1944,50 @@ $archivedTenantsCount = (int)$pdo->query("
                   </div>
                 </div>
 
+                <!-- Profile Picture Customization Card -->
+                <form id="profilePictureForm" method="POST" action="api/profile_api.php" enctype="multipart/form-data" class="profile-picture-section" style="display: flex; align-items: center; gap: 24px; padding: 20px; background: rgba(255, 255, 255, 0.65); border: 1.5px solid rgba(226, 232, 240, 0.8); border-radius: 16px; margin-bottom: 24px; flex-wrap: wrap;">
+                  <input type="hidden" name="action" value="upload_profile_picture">
+                  <input type="hidden" name="user_id" value="<?= (int)($user['id'] ?? 0) ?>">
+
+                  <label for="profile_picture" class="avatar-preview-wrapper cursor-pointer" style="position: relative; width: 96px; height: 96px; flex-shrink: 0; cursor: pointer; display: block;" title="Click photo to choose new picture">
+                    <img id="avatarPreviewImg" src="<?= !empty($userAvatarUrl) ? $userAvatarUrl : '' ?>" alt="Profile Preview" style="width: 96px; height: 96px; border-radius: 50%; object-fit: cover; border: 3px solid #8b5cf6; box-shadow: 0 4px 14px rgba(139,92,246,0.25); display: <?= !empty($userAvatarUrl) ? 'block' : 'none' ?>;">
+                    <div id="avatarFallbackInitial" style="width: 96px; height: 96px; border-radius: 50%; background: linear-gradient(135deg, #7c3aed 0%, #a855f7 100%); color: #ffffff; display: <?= !empty($userAvatarUrl) ? 'none' : 'flex' ?>; align-items: center; justify-content: center; font-size: 38px; font-weight: 800; border: 3px solid #8b5cf6; box-shadow: 0 4px 14px rgba(139,92,246,0.25);">
+                      <?= htmlspecialchars($userInitial) ?>
+                    </div>
+                    <span style="position: absolute; bottom: 2px; right: 2px; width: 28px; height: 28px; background: #7c3aed; color: #fff; border-radius: 50%; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 6px rgba(0,0,0,0.25); border: 2px solid #fff; font-size: 13px;">
+                      📷
+                    </span>
+                  </label>
+
+                  <div class="avatar-info-controls" style="flex: 1; min-width: 220px;">
+                    <h3 style="font-size: 16px; font-weight: 800; color: #1e1b4b; margin: 0 0 4px 0;">Profile Picture</h3>
+                    <p style="font-size: 13px; color: #64748b; margin: 0 0 14px 0;">
+                      Click the avatar or choose a photo (JPEG, PNG, WEBP, maximum 5MB). This avatar will be visible on your master landlord header and communications.
+                    </p>
+
+                    <input type="file" id="profile_picture" name="profile_picture" accept="image/*" class="hidden" style="display: none;" onchange="previewProfilePicture(event)">
+
+                    <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                      <button type="button" class="clay-btn clay-btn-primary" id="btnChooseAvatar" style="padding: 7px 16px; font-size: 13px;" onclick="triggerProfilePictureInput()">
+                        📷 Choose Photo
+                      </button>
+
+                      <div id="avatarPendingActions" style="display: none; align-items: center; gap: 8px;">
+                        <button type="button" class="clay-btn btn-success" id="btnSaveAvatar" style="padding: 7px 16px; font-size: 13px; background: #10b981; color: #fff; border: none; border-radius: 10px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;" onclick="submitProfilePictureUpload()">
+                          <i data-lucide="check" style="width: 15px; height: 15px;"></i> Save Changes
+                        </button>
+                        <button type="button" class="clay-btn clay-btn-secondary" id="btnCancelAvatar" style="padding: 7px 14px; font-size: 13px; display: inline-flex; align-items: center; gap: 6px;" onclick="cancelProfilePictureSelection()">
+                          Cancel
+                        </button>
+                      </div>
+
+                      <button type="button" class="clay-btn" id="btnRemoveAvatar" style="padding: 7px 14px; font-size: 13px; color: #ef4444; background: rgba(239, 68, 68, 0.08); border: 1px solid rgba(239, 68, 68, 0.2); border-radius: 10px; cursor: pointer; display: <?= !empty($userAvatarUrl) ? 'inline-flex' : 'none' ?>; align-items: center; gap: 6px;" onclick="confirmRemoveProfilePicture()">
+                        <i data-lucide="trash-2" style="width: 15px; height: 15px;"></i> Remove Photo
+                      </button>
+                    </div>
+                  </div>
+                </form>
+
                 <div class="detail-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 18px; margin-bottom: 24px;">
                   <div class="detail-item">
                     <span class="detail-label">Full Name: </span>
@@ -3604,6 +3656,239 @@ $archivedTenantsCount = (int)$pdo->query("
       if (updateUrl && window.history && window.history.replaceState) {
         history.replaceState(null, '', `admin_dashboard.php?section=sectionProfile&tab=${tabName}`);
       }
+    }
+
+    // =========================================================================
+    // PROFILE PICTURE CUSTOMIZATION (LANDLORD)
+    // =========================================================================
+    let currentSavedAvatarUrl = <?= json_encode(!empty($userAvatarUrl) ? $userAvatarUrl : '') ?>;
+    let userDefaultInitial = <?= json_encode($userInitial) ?>;
+    let pendingAvatarFile = null;
+
+    function previewProfilePicture(e) {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+
+      const validTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/jpg'];
+      if (!validTypes.includes(file.type.toLowerCase()) && !file.type.startsWith('image/')) {
+        showToast('Invalid format. Please choose a JPG, PNG, or WEBP image.', 'error');
+        e.target.value = '';
+        return;
+      }
+
+      if (file.size > 5 * 1024 * 1024) {
+        showToast('Image file exceeds the 5MB size limit.', 'error');
+        e.target.value = '';
+        return;
+      }
+
+      pendingAvatarFile = file;
+
+      const reader = new FileReader();
+      reader.onload = function(evt) {
+        const previewImg = document.getElementById('avatarPreviewImg');
+        const fallbackInit = document.getElementById('avatarFallbackInitial');
+        if (previewImg) {
+          previewImg.src = evt.target.result;
+          previewImg.style.display = 'block';
+        }
+        if (fallbackInit) {
+          fallbackInit.style.display = 'none';
+        }
+        const pendingActions = document.getElementById('avatarPendingActions');
+        if (pendingActions) pendingActions.style.display = 'inline-flex';
+        const removeBtn = document.getElementById('btnRemoveAvatar');
+        if (removeBtn) removeBtn.style.display = 'none';
+        if (window.lucide && typeof window.lucide.createIcons === 'function') window.lucide.createIcons();
+      };
+      reader.readAsDataURL(file);
+    }
+
+    function triggerProfilePictureInput() {
+      const input = document.getElementById('profile_picture') || document.getElementById('profilePictureInput');
+      if (input) input.click();
+    }
+
+    function cancelProfilePictureSelection() {
+      pendingAvatarFile = null;
+      const input = document.getElementById('profile_picture') || document.getElementById('profilePictureInput');
+      if (input) input.value = '';
+
+      const previewImg = document.getElementById('avatarPreviewImg');
+      const fallbackInit = document.getElementById('avatarFallbackInitial');
+      const pendingActions = document.getElementById('avatarPendingActions');
+      const removeBtn = document.getElementById('btnRemoveAvatar');
+
+      if (pendingActions) pendingActions.style.display = 'none';
+
+      if (currentSavedAvatarUrl) {
+        if (previewImg) {
+          previewImg.src = currentSavedAvatarUrl;
+          previewImg.style.display = 'block';
+        }
+        if (fallbackInit) fallbackInit.style.display = 'none';
+        if (removeBtn) removeBtn.style.display = 'inline-flex';
+      } else {
+        if (previewImg) {
+          previewImg.src = '';
+          previewImg.style.display = 'none';
+        }
+        if (fallbackInit) {
+          fallbackInit.textContent = userDefaultInitial;
+          fallbackInit.style.display = 'flex';
+        }
+        if (removeBtn) removeBtn.style.display = 'none';
+      }
+      if (window.lucide && typeof window.lucide.createIcons === 'function') window.lucide.createIcons();
+    }
+
+    function submitProfilePictureUpload() {
+      const input = document.getElementById('profile_picture') || document.getElementById('profilePictureInput');
+      const file = pendingAvatarFile || (input && input.files && input.files[0]);
+      if (!file) {
+        showToast('Please select a photo first.', 'warning');
+        return;
+      }
+
+      const saveBtn = document.getElementById('btnSaveAvatar');
+      if (saveBtn) {
+        saveBtn.disabled = true;
+        saveBtn.innerHTML = 'Saving...';
+      }
+
+      const form = document.getElementById('profilePictureForm');
+      const formData = new FormData(form || undefined);
+      formData.set('action', 'upload_profile_picture');
+      formData.set('profile_picture', file);
+      formData.set('is_ajax', '1');
+
+      fetch('api/profile_api.php', {
+        method: 'POST',
+        body: formData
+      })
+      .then(res => res.json())
+      .then(data => {
+        if (saveBtn) {
+          saveBtn.disabled = false;
+          saveBtn.innerHTML = '<i data-lucide="check" style="width: 15px; height: 15px;"></i> Save Changes';
+          if (window.lucide && typeof window.lucide.createIcons === 'function') window.lucide.createIcons();
+        }
+
+        if (data.status === 'success') {
+          currentSavedAvatarUrl = data.profile_picture;
+          pendingAvatarFile = null;
+          if (input) input.value = '';
+
+          const pendingActions = document.getElementById('avatarPendingActions');
+          if (pendingActions) pendingActions.style.display = 'none';
+
+          const removeBtn = document.getElementById('btnRemoveAvatar');
+          if (removeBtn) removeBtn.style.display = 'inline-flex';
+
+          const stamp = Date.now();
+          const avatarUrlWithCache = data.profile_picture + '?t=' + stamp;
+
+          // Update header avatar badge
+          const headerBadge = document.getElementById('headerAvatarBadge');
+          if (headerBadge) {
+            headerBadge.innerHTML = `<img src="${avatarUrlWithCache}" alt="Profile" class="header-avatar-img">`;
+          }
+
+          // Update profile dropdown avatar
+          const dropCircle = document.querySelector('.fb-profile-avatar-circle');
+          if (dropCircle) {
+            dropCircle.innerHTML = `<img src="${avatarUrlWithCache}" alt="Profile">`;
+          }
+
+          // Update settings preview
+          const previewImg = document.getElementById('avatarPreviewImg');
+          if (previewImg) {
+            previewImg.src = avatarUrlWithCache;
+            previewImg.style.display = 'block';
+          }
+          const fallbackInit = document.getElementById('avatarFallbackInitial');
+          if (fallbackInit) fallbackInit.style.display = 'none';
+
+          if (window.lucide && typeof window.lucide.createIcons === 'function') window.lucide.createIcons();
+          showToast('Profile picture updated successfully!', 'success');
+        } else {
+          showToast(data.message || 'Failed to update profile picture.', 'error');
+        }
+      })
+      .catch(err => {
+        if (saveBtn) {
+          saveBtn.disabled = false;
+          saveBtn.innerHTML = '<i data-lucide="check" style="width: 15px; height: 15px;"></i> Save Changes';
+          if (window.lucide && typeof window.lucide.createIcons === 'function') window.lucide.createIcons();
+        }
+        showToast('Network error uploading profile picture.', 'error');
+      });
+    }
+
+    function confirmRemoveProfilePicture() {
+      if (!confirm('Are you sure you want to remove your profile picture and revert to the default circular initial icon?')) {
+        return;
+      }
+
+      const removeBtn = document.getElementById('btnRemoveAvatar');
+      if (removeBtn) removeBtn.disabled = true;
+
+      fetch('api/profile_api.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'remove_profile_picture' })
+      })
+      .then(res => res.json())
+      .then(data => {
+        if (removeBtn) removeBtn.disabled = false;
+
+        if (data.status === 'success') {
+          currentSavedAvatarUrl = '';
+          pendingAvatarFile = null;
+          userDefaultInitial = data.initial || userDefaultInitial;
+
+          const input = document.getElementById('profile_picture');
+          if (input) input.value = '';
+
+          const pendingActions = document.getElementById('avatarPendingActions');
+          if (pendingActions) pendingActions.style.display = 'none';
+
+          if (removeBtn) removeBtn.style.display = 'none';
+
+          // Update settings preview
+          const previewImg = document.getElementById('avatarPreviewImg');
+          if (previewImg) {
+            previewImg.src = '';
+            previewImg.style.display = 'none';
+          }
+          const fallbackInit = document.getElementById('avatarFallbackInitial');
+          if (fallbackInit) {
+            fallbackInit.textContent = userDefaultInitial;
+            fallbackInit.style.display = 'flex';
+          }
+
+          // Update header avatar badge
+          const headerBadge = document.getElementById('headerAvatarBadge');
+          if (headerBadge) {
+            headerBadge.innerHTML = `<span class="header-avatar-initial">${userDefaultInitial}</span>`;
+          }
+
+          // Update profile dropdown avatar
+          const dropCircle = document.querySelector('.fb-profile-avatar-circle');
+          if (dropCircle) {
+            dropCircle.innerHTML = `<div style="width: 44px; height: 44px; border-radius: 50%; background: #7c3aed; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 18px;">${userDefaultInitial}</div>`;
+          }
+
+          if (window.lucide && typeof window.lucide.createIcons === 'function') window.lucide.createIcons();
+          showToast('Profile picture removed.', 'success');
+        } else {
+          showToast(data.message || 'Failed to remove profile picture.', 'error');
+        }
+      })
+      .catch(err => {
+        if (removeBtn) removeBtn.disabled = false;
+        showToast('Network error removing profile picture.', 'error');
+      });
     }
 
     // Landlord Approves or Rejects Tenant ID Document

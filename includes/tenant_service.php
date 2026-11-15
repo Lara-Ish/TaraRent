@@ -170,16 +170,27 @@ class TenantService
         }
 
         try {
+            // PostgreSQL: FOR UPDATE cannot be applied to the nullable side of a LEFT JOIN.
+            // Lock the users row first, then fetch unit_number separately.
             $stmt = $pdo->prepare("
-                SELECT u.*, un.unit_number 
+                SELECT u.*
                 FROM users u
-                LEFT JOIN units un ON u.unit_id = un.id
                 WHERE u.id = :id AND u.role = 'tenant'
                 LIMIT 1
                 FOR UPDATE
             ");
             $stmt->execute([':id' => $tenantId]);
             $tenant = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            // Fetch unit_number separately if needed
+            if ($tenant && !empty($tenant['unit_id'])) {
+                $uStmt = $pdo->prepare("SELECT unit_number FROM units WHERE id = :uid LIMIT 1");
+                $uStmt->execute([':uid' => $tenant['unit_id']]);
+                $uRow = $uStmt->fetch(PDO::FETCH_ASSOC);
+                $tenant['unit_number'] = $uRow['unit_number'] ?? null;
+            } else if ($tenant) {
+                $tenant['unit_number'] = null;
+            }
 
             if (!$tenant) {
                 if ($startedTransaction) {
@@ -192,7 +203,9 @@ class TenantService
                 ];
             }
 
-            if ((int)($tenant['is_archived'] ?? 0) === 1 || (int)($tenant['is_active'] ?? 0) === 0 || !empty($tenant['deleted_at'])) {
+            $isArchived = filter_var($tenant['is_archived'] ?? false, FILTER_VALIDATE_BOOLEAN);
+            $isActive = filter_var($tenant['is_active'] ?? false, FILTER_VALIDATE_BOOLEAN);
+            if ($isArchived || !$isActive || !empty($tenant['deleted_at'])) {
                 if ($startedTransaction) {
                     $pdo->rollBack();
                 }
@@ -266,8 +279,8 @@ class TenantService
                         archived_monthly_rent = COALESCE(archived_monthly_rent, :a_rent),
                         archived_spaces_text = COALESCE(archived_spaces_text, :a_spaces),
                         unit_id = NULL,
-                        is_active = 1,
-                        is_archived = 0,
+                        is_active = TRUE,
+                        is_archived = FALSE,
                         updated_at = NOW() 
                     WHERE id = :id
                 ")->execute([
@@ -388,7 +401,9 @@ class TenantService
                 }
             }
 
-            if ((int)($target['is_archived'] ?? 0) === 1 || (int)($target['is_active'] ?? 1) === 0 || !empty($target['deleted_at'])) {
+            $isArchived = filter_var($target['is_archived'] ?? false, FILTER_VALIDATE_BOOLEAN);
+            $isActive = filter_var($target['is_active'] ?? true, FILTER_VALIDATE_BOOLEAN);
+            if ($isArchived || !$isActive || !empty($target['deleted_at'])) {
                 if ($startedTransaction) $pdo->rollBack();
                 return false;
             }
@@ -437,19 +452,19 @@ class TenantService
             // 4. Archive Tenant Account (Soft-deletion with permanent record preservation, guarding against double execution)
             $upd = $pdo->prepare("
                 UPDATE users 
-                SET is_active = 0,
-                    is_archived = 1,
+                SET is_active = FALSE,
+                    is_archived = TRUE,
                     rental_status = 'moved_out',
                     deleted_at = COALESCE(deleted_at, NOW()),
-                    move_out_date = COALESCE(:move_out_date, move_out_date, CURDATE()),
+                    move_out_date = COALESCE(:move_out_date, move_out_date, CURRENT_DATE),
                     archived_unit_number = :a_unit_num,
                     archived_monthly_rent = :a_rent,
                     archived_spaces_text = :a_spaces,
                     unit_id = NULL,
                     updated_at = NOW()
                 WHERE id = :id
-                  AND is_active = 1
-                  AND (is_archived = 0 OR is_archived IS NULL)
+                  AND is_active = TRUE
+                  AND (is_archived = FALSE OR is_archived IS NULL)
             ");
             $upd->execute([
                 ':move_out_date' => $explicitDate,
@@ -498,8 +513,8 @@ class TenantService
         $stmt = $pdo->query("
             SELECT * FROM users 
             WHERE role = 'tenant' 
-              AND is_active = 1 
-              AND (is_archived = 0 OR is_archived IS NULL)
+              AND is_active = TRUE 
+              AND (is_archived = FALSE OR is_archived IS NULL)
               AND rental_status = 'moved_out'
         ");
         $candidates = $stmt->fetchAll(PDO::FETCH_ASSOC);

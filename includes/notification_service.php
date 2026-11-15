@@ -52,7 +52,7 @@ class NotificationService
             INSERT INTO notifications 
                 (user_id, role, type, title, message, link, reference_id, reference_type, is_read, created_at)
             VALUES 
-                (:user_id, :role, :type, :title, :message, :link, :reference_id, :reference_type, 0, NOW())
+                (:user_id, :role, :type, :title, :message, :link, :reference_id, :reference_type, FALSE, NOW())
         ");
         $stmt->execute([
             ':user_id' => $userId,
@@ -107,7 +107,7 @@ class NotificationService
             SELECT u.id, u.name, u.email, u.role, u.unit_id, un.unit_number
             FROM users u
             LEFT JOIN units un ON u.unit_id = un.id
-            WHERE u.id = :uid AND u.is_active = 1
+            WHERE u.id = :uid AND u.is_active = TRUE
             LIMIT 1
         ");
         $uStmt->execute([':uid' => $userId]);
@@ -527,7 +527,7 @@ class NotificationService
             return;
         }
 
-        $stmt = $pdo->query("SELECT id FROM users WHERE role = 'landlord' AND is_active = 1");
+        $stmt = $pdo->query("SELECT id FROM users WHERE role = 'landlord' AND is_active = TRUE");
         $landlords = $stmt->fetchAll(PDO::FETCH_COLUMN);
 
         if (empty($landlords)) {
@@ -580,7 +580,7 @@ class NotificationService
      */
     public static function broadcastAnnouncement(PDO $pdo, string $title, string $message): int
     {
-        $stmt = $pdo->query("SELECT id, name, email FROM users WHERE role = 'tenant' AND is_active = 1");
+        $stmt = $pdo->query("SELECT id, name, email FROM users WHERE role = 'tenant' AND is_active = TRUE");
         $tenants = $stmt->fetchAll(PDO::FETCH_ASSOC);
         $count = 0;
 
@@ -642,7 +642,7 @@ class NotificationService
 
         foreach ($rows as &$r) {
             $r['time_ago'] = self::formatTimeAgo($r['created_at']);
-            $r['is_read'] = (int)$r['is_read'];
+            $r['is_read'] = filter_var($r['is_read'] ?? false, FILTER_VALIDATE_BOOLEAN) ? 1 : 0;
             $r['formatted_date'] = date('M j, Y • g:i A', strtotime($r['created_at']));
         }
 
@@ -662,7 +662,7 @@ class NotificationService
             $stmt = $pdo->prepare("
                 SELECT COUNT(*) FROM notifications 
                 WHERE user_id = :uid 
-                  AND is_read = 0
+                  AND is_read = FALSE
                   AND (
                     (type = 'payment' AND reference_type IN ('payment_submitted', 'payment_pending', 'payment_proof') AND title = 'Tenant Rent Payment Submission')
                     OR
@@ -670,7 +670,7 @@ class NotificationService
                   )
             ");
         } else {
-            $stmt = $pdo->prepare("SELECT COUNT(*) FROM notifications WHERE user_id = :uid AND is_read = 0");
+            $stmt = $pdo->prepare("SELECT COUNT(*) FROM notifications WHERE user_id = :uid AND is_read = FALSE");
         }
 
         $stmt->execute([':uid' => $userId]);
@@ -684,7 +684,7 @@ class NotificationService
     {
         $stmt = $pdo->prepare("
             UPDATE notifications 
-            SET is_read = 1, read_at = NOW() 
+            SET is_read = TRUE, read_at = NOW() 
             WHERE id = :id AND user_id = :uid
         ");
         return $stmt->execute([':id' => $notificationId, ':uid' => $userId]);
@@ -702,9 +702,9 @@ class NotificationService
         if ($userRole === 'landlord') {
             $stmt = $pdo->prepare("
                 UPDATE notifications 
-                SET is_read = 1, read_at = NOW() 
+                SET is_read = TRUE, read_at = NOW() 
                 WHERE user_id = :uid 
-                  AND is_read = 0
+                  AND is_read = FALSE
                   AND (
                     (type = 'payment' AND reference_type IN ('payment_submitted', 'payment_pending', 'payment_proof') AND title = 'Tenant Rent Payment Submission')
                     OR
@@ -714,8 +714,8 @@ class NotificationService
         } else {
             $stmt = $pdo->prepare("
                 UPDATE notifications 
-                SET is_read = 1, read_at = NOW() 
-                WHERE user_id = :uid AND is_read = 0
+                SET is_read = TRUE, read_at = NOW() 
+                WHERE user_id = :uid AND is_read = FALSE
             ");
         }
 

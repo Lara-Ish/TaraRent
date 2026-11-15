@@ -5,7 +5,7 @@
  * 1. Image preparation: receives live Base64 image and retrieves previously uploaded ID image
  * 2. OCR validation check
  * 3. Face++ Compare API cURL POST request with hardcoded credentials
- * 4. Strict evaluation (confidence >= 75) and updates users table: is_verified = 1
+ * 4. Strict evaluation (confidence >= 75) and updates users table: is_verified = TRUE
  */
 
 declare(strict_types=1);
@@ -150,7 +150,7 @@ if ($action === 'complete_liveness') {
 
     $updateStmt = $pdo->prepare("
         UPDATE users 
-        SET is_verified = 1,
+        SET is_verified = TRUE,
             verification_status = 'verified',
             id_verified_at = NOW(),
             verification_notes = :notes
@@ -541,22 +541,22 @@ $isConfidenceMatch = ($confidence >= 70.0) || ($threshold1e4 > 0 && $confidence 
 if ($isConfidenceMatch) {
     // Fallback & Commit Logic (Safe-Fail Mechanism):
     // If Successful: Replace the main ID columns with the new data and clear temporary holding fields.
-    // The tenant seamlessly remains is_verified = 1 under the new ID.
+    // The tenant seamlessly remains is_verified = TRUE under the new ID.
     $idFilenameToSave = $idFilename ?: ($accountUser['pending_id_path'] ?? ($accountUser['id_photo_filename'] ?? null));
     $idTypeToSave = !empty($idType) ? $idType : ($accountUser['pending_id_type'] ?? ($accountUser['id_type'] ?? null));
     $notes = sprintf('Face++ Verified: confidence %.2f%% (baseline >= 70.00%%, threshold 1e-4: %.2f%%). Auto-capture liveness verified.', $confidence, $threshold1e4);
 
     $updateStmt = $pdo->prepare("
         UPDATE users 
-        SET is_verified = 1,
+        SET is_verified = TRUE,
             verification_status = 'verified',
             id_type = :id_type,
             id_photo_filename = :id_photo,
             live_photo_filename = :live_face,
             pending_id_path = NULL,
             pending_id_type = NULL,
-            terms_accepted = 1,
-            privacy_acknowledged = 1,
+            terms_accepted = TRUE,
+            privacy_acknowledged = TRUE,
             id_verified_at = NOW(),
             verification_notes = :notes
         WHERE id = :id

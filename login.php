@@ -15,6 +15,13 @@ if (Auth::check()) {
         header('Location: admin_dashboard.php');
         exit;
     } else {
+        $pdo = Database::getConnection();
+        $tenantStatus = AccessControl::getTenantStatus($pdo, (int)($_SESSION['user_id'] ?? 0));
+        if ($tenantStatus['mode'] === 'silent_lockout') {
+            Auth::logout();
+            header('Location: login.php');
+            exit;
+        }
         header('Location: tenant_portal.php');
         exit;
     }
@@ -373,6 +380,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
       const candidateUris = [
         'assets/models',
+        '/TaraRent/assets/models',
         '/RentConnect/assets/models',
         'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model'
       ];

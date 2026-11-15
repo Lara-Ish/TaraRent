@@ -18,6 +18,7 @@ header('Content-Type: application/json; charset=utf-8');
 require_once __DIR__ . '/config/db.php';
 require_once __DIR__ . '/config/credentials.php';
 require_once __DIR__ . '/includes/verification_service.php';
+require_once __DIR__ . '/includes/access_control.php';
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     http_response_code(405);
@@ -115,20 +116,26 @@ if (isset($_SERVER['HTTP_X_MOCK_FACE_USER'])) {
     $matchedUser = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if ($matchedUser) {
-        $isArchived = ((int)($matchedUser['is_archived'] ?? 0) === 1)
-            || (($matchedUser['rental_status'] ?? '') === 'archived')
-            || !empty($matchedUser['deleted_at']);
-
-        if ($isArchived) {
-            http_response_code(403);
-            echo json_encode([
-                'status'  => 'error',
-                'message' => 'This account has been archived as the move-out process is complete.'
-            ]);
-            exit;
-        }
-
-        if ((int)($matchedUser['is_active'] ?? 0) !== 1) {
+        $mRole = strtolower((string)($matchedUser['role'] ?? 'tenant'));
+        if ($mRole === 'tenant') {
+            $tStatus = AccessControl::getTenantStatus($pdo, (int)$matchedUser['id']);
+            if ($tStatus['mode'] === 'silent_lockout') {
+                http_response_code(401);
+                echo json_encode([
+                    'status'  => 'error',
+                    'message' => 'Face not recognized. Please try again or use your password.'
+                ]);
+                exit;
+            }
+            if ($tStatus['mode'] === 'deactivated') {
+                http_response_code(403);
+                echo json_encode([
+                    'status'  => 'error',
+                    'message' => 'This account has been deactivated or removed by property management.'
+                ]);
+                exit;
+            }
+        } elseif (!filter_var($matchedUser['is_active'] ?? false, FILTER_VALIDATE_BOOLEAN)) {
             http_response_code(403);
             echo json_encode([
                 'status'  => 'error',
@@ -181,11 +188,11 @@ $stmt = $pdo->query("
            un.unit_number
     FROM users u
     LEFT JOIN units un ON u.unit_id = un.id
-    WHERE u.is_active = 1
-      AND (u.is_archived = 0 OR u.is_archived IS NULL)
+    WHERE u.is_active = TRUE
+      AND (u.is_archived = FALSE OR u.is_archived IS NULL)
       AND u.deleted_at IS NULL
       AND (u.rental_status != 'archived' OR u.rental_status IS NULL)
-      AND (u.is_verified = 1 OR u.verification_status = 'verified')
+      AND (u.is_verified = TRUE OR u.verification_status = 'verified')
       AND (u.live_photo_filename IS NOT NULL OR u.id_photo_filename IS NOT NULL)
     ORDER BY u.id_verified_at DESC, u.id DESC
 ");
@@ -228,6 +235,20 @@ foreach ($candidates as $cand) {
 
 // 6. Handle Match & Auto-Login Result
 if ($matchedUser !== null) {
+    $role = strtolower((string)$matchedUser['role']);
+
+    if ($role === 'tenant') {
+        $tStatus = AccessControl::getTenantStatus($pdo, (int)$matchedUser['id']);
+        if ($tStatus['mode'] === 'silent_lockout' || $tStatus['mode'] === 'deactivated') {
+            http_response_code(401);
+            echo json_encode([
+                'status'  => 'error',
+                'message' => 'Face not recognized. Please try again or use your password.'
+            ]);
+            exit;
+        }
+    }
+
     session_regenerate_id(true);
 
     $_SESSION['user_id']     = (int)$matchedUser['id'];
@@ -240,7 +261,6 @@ if ($matchedUser !== null) {
     $_SESSION['unit_number'] = $matchedUser['unit_number'] ?? null;
     $_SESSION['user']        = $matchedUser;
 
-    $role = strtolower((string)$matchedUser['role']);
     $redirectUrl = in_array($role, ['landlord', 'admin'], true) ? 'admin_dashboard.php' : 'tenant_portal.php';
 
     echo json_encode([

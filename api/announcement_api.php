@@ -58,7 +58,7 @@ try {
         $unitsStmt = $pdo->query("
             SELECT un.id as unit_id, un.unit_number, un.monthly_rent, u.id as tenant_id, u.name as tenant_name, u.email as tenant_email
             FROM units un
-            JOIN users u ON u.unit_id = un.id AND u.role = 'tenant' AND u.is_active = 1
+            JOIN users u ON u.unit_id = un.id AND u.role = 'tenant' AND u.is_active = TRUE
             ORDER BY un.unit_number ASC
         ");
         $activeUnits = $unitsStmt->fetchAll(PDO::FETCH_ASSOC);
@@ -113,7 +113,7 @@ try {
                        un.id as unit_id, un.unit_number, un.monthly_rent
                 FROM users u
                 JOIN units un ON u.unit_id = un.id
-                WHERE u.role = 'tenant' AND u.is_active = 1
+                WHERE u.role = 'tenant' AND u.is_active = TRUE
                   AND un.id IN ($placeholders)
                 ORDER BY un.unit_number ASC
             ");
@@ -125,7 +125,7 @@ try {
                        un.id as unit_id, un.unit_number, un.monthly_rent
                 FROM users u
                 JOIN units un ON u.unit_id = un.id
-                WHERE u.role = 'tenant' AND u.is_active = 1
+                WHERE u.role = 'tenant' AND u.is_active = TRUE
                 ORDER BY un.unit_number ASC
             ");
         }

@@ -89,18 +89,23 @@ try {
     $pdo->commit();
     echo "Transaction committed successfully.\n";
 
-    // 6. Reset AUTO_INCREMENT counters
-    echo "\n3. Resetting AUTO_INCREMENT counters...\n";
-    $pdo->exec("ALTER TABLE payments AUTO_INCREMENT = 1");
-    $pdo->exec("ALTER TABLE maintenance_tickets AUTO_INCREMENT = 1");
-    $pdo->exec("ALTER TABLE leases AUTO_INCREMENT = 1");
-    $pdo->exec("ALTER TABLE password_resets AUTO_INCREMENT = 1");
-    $pdo->exec("ALTER TABLE notifications AUTO_INCREMENT = 1");
-    $pdo->exec("ALTER TABLE announcement_recipients AUTO_INCREMENT = 1");
-    $pdo->exec("ALTER TABLE announcements AUTO_INCREMENT = 1");
-    $pdo->exec("ALTER TABLE email_logs AUTO_INCREMENT = 1");
-    $pdo->exec("ALTER TABLE users AUTO_INCREMENT = 2");
-    echo "   Table AUTO_INCREMENT counters successfully reset.\n";
+    // 6. Reset AUTO_INCREMENT / SERIAL sequence counters
+    echo "\n3. Resetting identity / sequence counters...\n";
+    $driver = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+    $tables = ['payments', 'maintenance_tickets', 'leases', 'password_resets', 'notifications', 'announcement_recipients', 'announcements', 'email_logs'];
+    foreach ($tables as $tbl) {
+        if ($driver === 'pgsql') {
+            $pdo->exec("ALTER SEQUENCE IF EXISTS {$tbl}_id_seq RESTART WITH 1");
+        } else {
+            $pdo->exec("ALTER TABLE {$tbl} AUTO_INCREMENT = 1");
+        }
+    }
+    if ($driver === 'pgsql') {
+        $pdo->exec("ALTER SEQUENCE IF EXISTS users_id_seq RESTART WITH 2");
+    } else {
+        $pdo->exec("ALTER TABLE users AUTO_INCREMENT = 2");
+    }
+    echo "   Table ID counters successfully reset.\n";
 
     // 7. Remove existing database backup files
     echo "\n4. Removing existing database backup files and backup copies...\n";
@@ -145,7 +150,7 @@ try {
     echo "\n6. Verifying apartment units...\n";
     $units = $pdo->query("
         SELECT u.id, u.unit_number, u.monthly_rent,
-               (SELECT COUNT(*) FROM users usr WHERE usr.unit_id = u.id AND usr.is_active = 1) AS occupant_count
+               (SELECT COUNT(*) FROM users usr WHERE usr.unit_id = u.id AND usr.is_active = TRUE) AS occupant_count
         FROM units u
         ORDER BY u.id ASC
     ")->fetchAll(PDO::FETCH_ASSOC);

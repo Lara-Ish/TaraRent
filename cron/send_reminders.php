@@ -53,8 +53,8 @@ try {
         WHERE p.status NOT IN ('paid', 'verified', 'pending_setup')
           AND p.amount_paid = 0
           AND p.due_date IS NOT NULL
-          AND DATEDIFF(p.due_date, CURDATE()) = 3
-          AND u.is_active = 1
+          AND (p.due_date - CURRENT_DATE) = 3
+          AND u.is_active = TRUE
     ");
     $upcoming3Stmt->execute();
     while ($row = $upcoming3Stmt->fetch(PDO::FETCH_ASSOC)) {
@@ -111,8 +111,8 @@ try {
         WHERE p.status NOT IN ('paid', 'verified', 'pending_setup')
           AND p.amount_paid = 0
           AND p.due_date IS NOT NULL
-          AND DATEDIFF(p.due_date, CURDATE()) = 1
-          AND u.is_active = 1
+          AND (p.due_date - CURRENT_DATE) = 1
+          AND u.is_active = TRUE
     ");
     $upcoming1Stmt->execute();
     while ($row = $upcoming1Stmt->fetch(PDO::FETCH_ASSOC)) {
@@ -169,8 +169,8 @@ try {
         WHERE p.status NOT IN ('paid', 'verified', 'pending_setup')
           AND p.amount_paid = 0
           AND p.due_date IS NOT NULL
-          AND p.due_date = CURDATE()
-          AND u.is_active = 1
+          AND p.due_date = CURRENT_DATE
+          AND u.is_active = TRUE
     ");
     $dueTodayStmt->execute();
     while ($row = $dueTodayStmt->fetch(PDO::FETCH_ASSOC)) {
@@ -224,11 +224,11 @@ try {
         FROM payments p
         JOIN users u ON p.tenant_id = u.id
         LEFT JOIN units un ON p.unit_id = un.id
-        WHERE (p.status = 'overdue' OR (p.status = 'pending' AND p.due_date < CURDATE()))
+        WHERE (p.status = 'overdue' OR (p.status = 'pending' AND p.due_date < CURRENT_DATE))
           AND p.status NOT IN ('paid', 'verified', 'pending_setup')
           AND p.amount_paid = 0
           AND p.due_date IS NOT NULL
-          AND u.is_active = 1
+          AND u.is_active = TRUE
     ");
     $overdueStmt->execute();
     while ($row = $overdueStmt->fetch(PDO::FETCH_ASSOC)) {
@@ -241,7 +241,7 @@ try {
             WHERE recipient_email = :e 
               AND template_type = 'payment_reminder_overdue' 
               AND reference_id = :ref 
-              AND sent_at >= DATE_SUB(NOW(), INTERVAL 3 DAY)
+              AND sent_at >= (NOW() - INTERVAL '3 DAY')
             LIMIT 1
         ");
         $chk->execute([':e' => $row['tenant_email'], ':ref' => $pid]);
@@ -290,8 +290,8 @@ try {
         JOIN users u ON s.active_tenant_id = u.id
         LEFT JOIN units un ON u.unit_id = un.id
         WHERE s.lease_end IS NOT NULL
-          AND DATEDIFF(s.lease_end, CURDATE()) = 30
-          AND u.is_active = 1
+          AND (s.lease_end - CURRENT_DATE) = 30
+          AND u.is_active = TRUE
     ");
     while ($row = $leaseStmt->fetch(PDO::FETCH_ASSOC)) {
         $tid = (int)$row['active_tenant_id'];

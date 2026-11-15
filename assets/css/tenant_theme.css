@@ -7,36 +7,42 @@
    ============================================================================ */
 
 body.tenant-portal-shell {
-  --tr-t-sidebar-bg: #EAD196;
-  --tr-t-sidebar-active: #B39359;
-  --tr-t-topbar-bg: #A78952;
-  --tr-t-search-bg: #F5E2AA;
-  --tr-t-olive-brown: #453112;
-  --tr-t-copper: #6E3A14;
-  --tr-t-card-border: #4A3010;
-  --tr-t-cream: #F7F4ED;
-  --tr-t-ink: #2A1B0A;
+  /* 60-30-10 Global Palette */
+  --tr-t-dominant-tan: #F5F0E6;
+  --tr-t-secondary-clay: #B89B72;
+  --tr-t-accent-roast: #4A3728;
+  --tr-t-accent-ink: #3E2723;
+
+  --tr-t-sidebar-bg: #B89B72;
+  --tr-t-sidebar-active: #9A7B4F;
+  --tr-t-topbar-bg: #B89B72;
+  --tr-t-search-bg: #F5F0E6;
+  --tr-t-olive-brown: #4A3728;
+  --tr-t-copper: #8C6D43;
+  --tr-t-card-border: #8C6D43;
+  --tr-t-cream: #F5F0E6;
+  --tr-t-ink: #3E2723;
   --tr-t-alert-red: #991B1B;
 
   /* Map legacy CSS custom properties inside Tenant scope for dropdowns, inputs & modals */
-  --clay-bg: #D9CAB2;
-  --clay-card-bg: #F7F3EB;
-  --clay-input-bg: #F3EAD9;
-  --clay-card-pressed: #E6D8BF;
-  --clay-primary: #A78952;
-  --clay-primary-light: #EAD196;
-  --clay-primary-dark: #6E3A14;
+  --clay-bg: #F5F0E6;
+  --clay-card-bg: #F5F0E6;
+  --clay-input-bg: #F5F0E6;
+  --clay-card-pressed: #E8D8B0;
+  --clay-primary: #4A3728;
+  --clay-primary-light: #B89B72;
+  --clay-primary-dark: #382618;
   --clay-primary-text: #FFFFFF;
-  --text-main: #2A1B0A;
-  --text-muted: #5A4121;
-  --text-light: #785D38;
-  --clay-border: rgba(74, 48, 16, 0.28);
-  --clay-card-shadow: 4px 6px 12px rgba(42, 24, 6, 0.36);
-  --clay-card-shadow-sm: 2px 4px 8px rgba(42, 24, 6, 0.22);
-  --clay-card-shadow-lg: 6px 10px 18px rgba(42, 24, 6, 0.44);
-  --clay-sunken-shadow: inset 0 2px 5px rgba(74, 48, 16, 0.14), inset 0 -1px 0 rgba(255, 255, 255, 0.65);
-  --clay-button-shadow: 0 3px 8px rgba(74, 48, 16, 0.24);
-  --clay-button-pressed-shadow: inset 0 2px 5px rgba(42, 24, 6, 0.32);
+  --text-main: #3E2723;
+  --text-muted: #7A6245;
+  --text-light: #9A7B4F;
+  --clay-border: rgba(140, 109, 67, 0.35);
+  --clay-card-shadow: 4px 6px 14px rgba(62, 39, 35, 0.22);
+  --clay-card-shadow-sm: 2px 4px 8px rgba(62, 39, 35, 0.15);
+  --clay-card-shadow-lg: 6px 12px 22px rgba(62, 39, 35, 0.28);
+  --clay-sunken-shadow: inset 0 2px 4px rgba(62, 39, 35, 0.12);
+  --clay-button-shadow: 0 3px 8px rgba(74, 55, 40, 0.32);
+  --clay-button-pressed-shadow: inset 0 2px 5px rgba(56, 38, 24, 0.45);
 
   font-family: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   color: var(--tr-t-ink);
@@ -44,8 +50,8 @@ body.tenant-portal-shell {
   margin: 0;
   min-height: 100vh;
   overflow-x: clip;
-  background-color: #D8C7AF;
-  background-image: linear-gradient(180deg, #ECEAE5 0%, #DAD0BF 42%, #C1A277 100%);
+  background-color: #F5F0E6;
+  background-image: linear-gradient(180deg, #FAF6EE 0%, #F5F0E6 42%, #E8D8B0 100%);
   background-attachment: fixed;
   -webkit-font-smoothing: antialiased;
 }
@@ -838,9 +844,9 @@ body.tenant-portal-shell .clay-card,
 body.tenant-portal-shell #tenantOverview .kpi-card,
 body.tenant-portal-shell #tenantOverview .analytics-grid > .clay-card {
   border-radius: 16px;
-  background: linear-gradient(180deg, #F6F3EC 0%, #DFD3BF 46%, #B49059 84%, #9C753C 100%);
-  border: 1.5px solid var(--tr-t-card-border);
-  box-shadow: 4px 6px 12px rgba(42, 24, 6, 0.45), 2px 3px 5px rgba(42, 24, 6, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.68);
+  background: #FFFFFF;
+  border: 2px solid #B89B72;
+  box-shadow: 0 4px 14px rgba(74, 55, 40, 0.08);
   box-sizing: border-box;
 }
 
@@ -856,7 +862,7 @@ body.tenant-portal-shell #tenantOverview .kpi-card {
 
 body.tenant-portal-shell #tenantOverview .kpi-card:hover {
   transform: translateY(-2px);
-  box-shadow: 6px 9px 16px rgba(42, 24, 6, 0.5), 2px 4px 6px rgba(42, 24, 6, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.78);
+  box-shadow: 0 8px 20px rgba(74, 55, 40, 0.14);
 }
 
 body.tenant-portal-shell #tenantOverview .kpi-top {
@@ -865,9 +871,9 @@ body.tenant-portal-shell #tenantOverview .kpi-top {
 }
 
 body.tenant-portal-shell #tenantOverview .kpi-label {
-  font-size: 12.5px;
-  font-weight: 900;
-  color: var(--tr-t-copper);
+  font-size: 13px;
+  font-weight: 800;
+  color: #7A6245;
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
@@ -877,20 +883,23 @@ body.tenant-portal-shell #tenantOverview .kpi-icon {
   height: 38px;
   border-radius: 10px;
   font-size: 18px;
-  background: rgba(255, 251, 242, 0.78);
-  border: 1px solid rgba(74, 48, 16, 0.28);
-  box-shadow: 1px 2px 5px rgba(42, 24, 6, 0.2);
+  background: rgba(74, 55, 40, 0.08);
+  color: #4A3728;
+  border: 1.5px solid rgba(140, 109, 67, 0.35);
+  box-shadow: 0 2px 5px rgba(74, 55, 40, 0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
-/* Large Bold White Metric Values with Dark Brown Outline Stroke */
+/* Large Bold Metric Values in 10% Accent Dark Roast Brown */
 body.tenant-portal-shell #tenantOverview .kpi-value {
   font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
   font-size: clamp(1.95rem, 2.5vw, 2.35rem);
   font-weight: 900;
-  color: #FFFFFF !important;
-  -webkit-text-stroke: 2.2px #4A2E0D;
-  paint-order: stroke fill;
-  text-shadow: 0 2px 4px rgba(42, 24, 6, 0.55);
+  color: #3E2723 !important;
+  -webkit-text-stroke: 0 !important;
+  text-shadow: none !important;
   line-height: 1.08;
   letter-spacing: 0.01em;
   margin-bottom: 8px;
@@ -900,11 +909,11 @@ body.tenant-portal-shell #tenantOverview .kpi-status-value.kpi-status-pending_se
   font-size: clamp(1.45rem, 1.95vw, 1.75rem);
 }
 
-/* Small Dark Brown / Black Card Subtext */
+/* Small Dark Brown / Tan Card Subtext */
 body.tenant-portal-shell #tenantOverview .kpi-subtitle {
   font-size: 12.5px;
-  font-weight: 700;
-  color: var(--tr-t-ink);
+  font-weight: 600;
+  color: #7A6245;
 }
 
 body.tenant-portal-shell .kpi-history-link {
@@ -917,14 +926,14 @@ body.tenant-portal-shell .kpi-history-link {
   font-family: inherit;
   font-size: 12.5px;
   font-weight: 800;
-  color: var(--tr-t-ink);
+  color: #4A3728;
   cursor: pointer;
   text-decoration: underline;
   text-underline-offset: 2px;
 }
 
 body.tenant-portal-shell .kpi-history-link:hover {
-  color: var(--tr-t-copper);
+  color: #382618;
 }
 
 /* Bottom 2-Column List Cards */
@@ -950,7 +959,7 @@ body.tenant-portal-shell #tenantOverview .analytics-grid > .clay-card {
 body.tenant-portal-shell #tenantOverview .analytics-grid .widget-header {
   margin-bottom: 0;
   padding-bottom: 12px;
-  border-bottom: 1px dashed rgba(74, 48, 16, 0.3);
+  border-bottom: 1px dashed rgba(140, 109, 67, 0.35);
   gap: 12px;
 }
 
@@ -959,38 +968,39 @@ body.tenant-portal-shell .clay-card .widget-title,
 body.tenant-portal-shell .clay-card-title {
   font-size: 17px;
   font-weight: 900;
-  color: var(--tr-t-copper);
+  color: #3E2723;
   letter-spacing: -0.015em;
   text-transform: uppercase;
 }
 
 body.tenant-portal-shell #tenantOverview .analytics-grid .widget-header p {
-  color: var(--tr-t-ink) !important;
+  color: #7A6245 !important;
   font-weight: 600;
 }
 
 body.tenant-portal-shell .clay-btn-secondary {
-  background: #FAF6EC;
-  color: #3B260E;
-  border: 1.5px solid #4A3010;
-  box-shadow: 2px 3px 6px rgba(42, 24, 6, 0.24);
+  background: #F5F0E6;
+  color: #3E2723;
+  border: 1.5px solid #8C6D43;
+  box-shadow: 0 2px 4px rgba(74, 55, 40, 0.1);
   font-weight: 800;
 }
 
 body.tenant-portal-shell .clay-btn-secondary:hover {
-  background: #FFFBF2;
+  background: #E8D8B0;
   color: #2A1B0A;
 }
 
 body.tenant-portal-shell .clay-btn-primary {
-  background: linear-gradient(180deg, #8A5D24 0%, #634013 100%);
+  background: #4A3728;
   color: #FFFFFF;
-  border: 1.5px solid #3D2508;
-  box-shadow: 2px 4px 10px rgba(42, 24, 6, 0.34);
+  border: 1.5px solid #382618;
+  box-shadow: 0 4px 10px rgba(74, 55, 40, 0.25);
+  font-weight: 800;
 }
 
 body.tenant-portal-shell .clay-btn-primary:hover {
-  background: linear-gradient(180deg, #99692B 0%, #6E4716 100%);
+  background: #382618;
 }
 
 body.tenant-portal-shell #tenantOverview .analytics-card-body {
@@ -1004,11 +1014,11 @@ body.tenant-portal-shell #tenantOverview .analytics-card-body {
 body.tenant-portal-shell #tenantOverview .analytics-card-body .ticket-item,
 body.tenant-portal-shell #tenantOverview .analytics-card-body > div[style*="border-radius"] {
   margin-bottom: 0;
-  background: rgba(252, 249, 242, 0.88) !important;
-  border: 1px solid rgba(74, 48, 16, 0.34) !important;
+  background: #F5F0E6 !important;
+  border: 1.5px solid rgba(140, 109, 67, 0.4) !important;
   border-radius: 12px !important;
-  box-shadow: 2px 3px 6px rgba(42, 24, 6, 0.16) !important;
-  color: var(--tr-t-ink);
+  box-shadow: 0 2px 5px rgba(74, 55, 40, 0.08) !important;
+  color: #3E2723 !important;
 }
 
 body.tenant-portal-shell #tenantOverview .analytics-empty-state {
@@ -1019,12 +1029,12 @@ body.tenant-portal-shell #tenantOverview .analytics-empty-state {
   min-height: 118px;
   padding: 18px;
   border-radius: 12px;
-  background: rgba(252, 249, 242, 0.72);
-  border: 1px dashed rgba(74, 48, 16, 0.38);
-  box-shadow: inset 0 1px 4px rgba(42, 24, 6, 0.12);
+  background: #F5F0E6;
+  border: 1.5px dashed #8C6D43;
+  box-shadow: inset 0 1px 4px rgba(74, 55, 40, 0.08);
   font-size: 13px;
   font-weight: 700;
-  color: var(--tr-t-ink);
+  color: #7A6245;
   text-align: center;
 }
 
@@ -1032,15 +1042,57 @@ body.tenant-portal-shell #tenantOverview .analytics-empty-state {
 body.tenant-portal-shell .clay-input,
 body.tenant-portal-shell .clay-select,
 body.tenant-portal-shell .clay-textarea {
-  background: #FAF6EC;
-  border: 1px solid rgba(74, 48, 16, 0.3);
-  color: var(--tr-t-ink);
+  background: #F5F0E6;
+  border: 1.5px solid #B89B72;
+  color: #3E2723;
+  border-radius: 10px;
+}
+
+body.tenant-portal-shell .clay-input:focus,
+body.tenant-portal-shell .clay-select:focus,
+body.tenant-portal-shell .clay-textarea:focus {
+  outline: none;
+  border-color: #4A3728;
+  box-shadow: 0 0 0 2px rgba(74, 55, 40, 0.25);
+}
+
+body.tenant-portal-shell .profile-sub-sidebar {
+  background: rgba(184, 155, 114, 0.15);
+  border: 1.5px solid #B89B72;
+  border-radius: 16px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+body.tenant-portal-shell .profile-subnav-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: 12px;
+  font-size: 13.5px;
+  font-weight: 700;
+  color: #3E2723;
+  background: transparent;
+  border: 1.5px solid transparent;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-align: left;
+  width: 100%;
+}
+
+body.tenant-portal-shell .profile-subnav-item:hover {
+  background: rgba(184, 155, 114, 0.25);
+  color: #3E2723;
 }
 
 body.tenant-portal-shell .profile-subnav-item.active {
-  background: linear-gradient(180deg, #B89A60 0%, #A3844B 100%);
-  color: #2A1B0A;
-  border: 1px solid #4A3010;
+  background: #B89B72 !important;
+  color: #FFFFFF !important;
+  border: 1.5px solid #8C6D43 !important;
+  font-weight: 800;
 }
 
 /* ============================================================================
@@ -1073,9 +1125,9 @@ body.tenant-portal-shell .maintenance-folder-tab {
   font-size: 15px;
   font-weight: 700;
   letter-spacing: 0.01em;
-  background: #FAF1DF;
-  color: #56380E;
-  border: 1.5px solid #4A3010;
+  background: #F5F0E6;
+  color: #3E2723;
+  border: 2px solid #8C6D43;
   border-bottom: none;
   border-top-left-radius: 16px;
   border-top-right-radius: 16px;
@@ -1084,14 +1136,14 @@ body.tenant-portal-shell .maintenance-folder-tab {
 }
 
 body.tenant-portal-shell .maintenance-folder-tab:hover:not(.active) {
-  background: #F3E4C8;
-  color: #3F2608;
+  background: #E8D8B0;
+  color: #2A1B0A;
 }
 
 body.tenant-portal-shell .maintenance-folder-tab.active {
-  background: #5E3F12 !important;
-  color: #FFFDF8 !important;
-  box-shadow: inset 0 1.5px 0 rgba(245, 217, 158, 0.28);
+  background: #B89B72 !important;
+  color: #FFFFFF !important;
+  box-shadow: inset 0 1.5px 0 rgba(255, 255, 255, 0.3);
 }
 
 body.tenant-portal-shell .maintenance-folder-tab .folder-tab-count {
@@ -1102,34 +1154,34 @@ body.tenant-portal-shell .maintenance-folder-tab .folder-tab-count {
   font-weight: 800;
   padding: 2px 9px;
   border-radius: 999px;
-  background: #F1E3C9;
-  color: #56380E;
-  border: 1px solid rgba(86, 56, 14, 0.2);
+  background: #E8D8B0;
+  color: #3E2723;
+  border: 1px solid #B89B72;
   line-height: 1.3;
 }
 
 body.tenant-portal-shell .maintenance-folder-tab.active .folder-tab-count {
-  background: rgba(245, 217, 158, 0.25);
-  color: #FFF8EB;
-  border-color: rgba(245, 217, 158, 0.48);
+  background: rgba(255, 255, 255, 0.25);
+  color: #FFFFFF;
+  border-color: rgba(255, 255, 255, 0.45);
 }
 
 body.tenant-portal-shell .maintenance-folder-body {
-  border: 1.5px solid #4A3010;
+  border: 2px solid #8C6D43;
   border-radius: 0 0 16px 16px;
-  background: linear-gradient(180deg, #A67E44 0%, #B8986A 28%, #CFC0AA 66%, #DDD4C6 100%);
+  background: #B89B72;
   padding: 28px 34px 34px;
   min-height: 520px;
-  box-shadow: 4px 6px 12px rgba(42, 24, 6, 0.45), 2px 3px 5px rgba(42, 24, 6, 0.24);
+  box-shadow: 0 10px 25px rgba(74, 55, 40, 0.15);
 }
 
 body.tenant-portal-shell #tenantMaintenance .maintenance-request-card {
   width: 100%;
   padding: 28px 34px 32px;
   border-radius: 14px;
-  background: linear-gradient(180deg, #A67E44 0%, #B8986A 28%, #CFC0AA 66%, #DDD4C6 100%);
-  border: 1.5px solid #4A3010;
-  box-shadow: 4px 6px 12px rgba(42, 24, 6, 0.45), 2px 3px 5px rgba(42, 24, 6, 0.24);
+  background: #B89B72;
+  border: 2px solid #8C6D43;
+  box-shadow: 0 10px 25px rgba(74, 55, 40, 0.15);
 }
 
 body.tenant-portal-shell #tenantMaintenance .maintenance-form-title {
@@ -1137,7 +1189,7 @@ body.tenant-portal-shell #tenantMaintenance .maintenance-form-title {
   font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
   font-size: clamp(1.6rem, 2.35vw, 2rem);
   font-weight: 900;
-  color: #6B410D;
+  color: #FFFFFF;
   letter-spacing: -0.02em;
   line-height: 1.15;
 }
@@ -1189,7 +1241,7 @@ body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-fie
   margin-bottom: 8px;
   font-size: 14.5px;
   font-weight: 800;
-  color: #362E25;
+  color: #FFFFFF;
   line-height: 1.25;
 }
 
@@ -1198,15 +1250,15 @@ body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-sel
 body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-textarea-input {
   width: 100%;
   box-sizing: border-box;
-  background: #FFFFFF;
-  color: #261909;
-  border: none;
-  border-radius: 1px;
-  box-shadow: 2px 3px 6px rgba(42, 24, 6, 0.24);
+  background: #F5F0E6 !important;
+  color: #3E2723 !important;
+  border: 1.5px solid rgba(140, 109, 67, 0.6) !important;
+  border-radius: 10px;
+  box-shadow: 0 2px 4px rgba(74, 55, 40, 0.08);
   font-family: inherit;
   font-size: 13.5px;
   font-weight: 600;
-  transition: box-shadow 0.16s ease;
+  transition: all 0.16s ease;
 }
 
 body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-text-input {
@@ -1216,7 +1268,7 @@ body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-tex
 
 body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-text-input::placeholder,
 body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-textarea-input::placeholder {
-  color: #B4AFA9;
+  color: #9C8262;
   font-weight: 500;
 }
 
@@ -1224,7 +1276,8 @@ body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-tex
 body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-select-trigger:focus,
 body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-textarea-input:focus {
   outline: none;
-  box-shadow: 0 0 0 2px #6B410D, 2px 4px 8px rgba(42, 24, 6, 0.28);
+  box-shadow: 0 0 0 2px #4A3728, 0 4px 10px rgba(74, 55, 40, 0.2);
+  border-color: #4A3728 !important;
 }
 
 body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-select-wrap {
@@ -1261,8 +1314,8 @@ body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-sel
   width: 13px;
   height: 13px;
   transform: translateY(-65%) rotate(45deg);
-  border-right: 1.8px solid #3B3530;
-  border-bottom: 1.8px solid #3B3530;
+  border-right: 1.8px solid #4A3728;
+  border-bottom: 1.8px solid #4A3728;
   pointer-events: none;
   transition: transform 0.15s ease;
 }
@@ -1275,25 +1328,27 @@ body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-sel
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #261909;
+  color: #3E2723;
 }
 
 body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-select-value.is-placeholder {
-  color: #9C948A;
+  color: #9C8262;
   font-weight: 500;
 }
 
 body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-select-menu {
   position: absolute;
-  top: calc(100% + 1px);
+  top: calc(100% + 4px);
   left: 0;
   right: 0;
   z-index: 60;
   display: none;
   flex-direction: column;
-  background: #DCDCDC;
-  border: 1px solid #A4A4A4;
-  box-shadow: 2px 5px 10px rgba(42, 24, 6, 0.26);
+  background: #F5F0E6;
+  border: 1.5px solid #8C6D43;
+  border-radius: 10px;
+  box-shadow: 0 8px 20px rgba(74, 55, 40, 0.2);
+  overflow: hidden;
 }
 
 body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-select-wrap.is-open .maintenance-select-menu {
@@ -1302,15 +1357,15 @@ body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-sel
 
 body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-select-option {
   width: 100%;
-  padding: 9px 12px;
-  background: #DCDCDC;
+  padding: 10px 14px;
+  background: #F5F0E6;
   border: none;
-  border-bottom: 1px solid #9E9E9E;
+  border-bottom: 1px solid rgba(140, 109, 67, 0.2);
   text-align: left;
   font-family: inherit;
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 600;
-  color: #23201D;
+  color: #3E2723;
   cursor: pointer;
   transition: background-color 0.12s ease;
 }
@@ -1321,7 +1376,8 @@ body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-sel
 
 body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-select-option:hover,
 body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-select-option.is-selected {
-  background: #CECECE;
+  background: #E8D8B0;
+  color: #2A1B0A;
 }
 
 body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-textarea-input {
@@ -1362,9 +1418,9 @@ body.tenant-portal-shell #tenantMaintenance .maintenance-radio-circle {
   width: 21px;
   height: 21px;
   border-radius: 50%;
-  background: #E4E3E1;
-  border: 1px solid rgba(90, 72, 48, 0.16);
-  box-shadow: 0 1px 2px rgba(42, 24, 6, 0.12);
+  background: #F5F0E6;
+  border: 1.5px solid #8C6D43;
+  box-shadow: 0 1px 2px rgba(74, 55, 40, 0.12);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1377,7 +1433,7 @@ body.tenant-portal-shell #tenantMaintenance .maintenance-radio-circle::after {
   width: 11px;
   height: 11px;
   border-radius: 50%;
-  background: #3B2209;
+  background: #4A3728;
   transform: scale(0);
   transition: transform 0.14s ease;
 }
@@ -1391,14 +1447,14 @@ body.tenant-portal-shell #tenantMaintenance .maintenance-radio-option input[type
 }
 
 body.tenant-portal-shell #tenantMaintenance .maintenance-radio-option input[type="radio"]:focus-visible + .maintenance-radio-circle {
-  outline: 2px solid #6B410D;
+  outline: 2px solid #4A3728;
   outline-offset: 2px;
 }
 
 body.tenant-portal-shell #tenantMaintenance .maintenance-radio-text {
   font-size: 13.5px;
-  font-weight: 700;
-  color: #2B241C;
+  font-weight: 800;
+  color: #FFFFFF;
   line-height: 1.2;
 }
 
@@ -1440,21 +1496,21 @@ body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-upl
   min-width: 225px;
   max-width: 100%;
   padding: 10px 24px;
-  background: #FFFFFF;
-  color: #4A3214;
-  border: none;
-  border-radius: 1px;
-  box-shadow: 2px 3px 6px rgba(42, 24, 6, 0.22);
+  background: #F5F0E6;
+  color: #3E2723;
+  border: 2px solid #8C6D43;
+  border-radius: 12px;
+  box-shadow: 0 2px 6px rgba(74, 55, 40, 0.15);
   font-size: 15px;
-  font-weight: 600;
+  font-weight: 700;
   cursor: pointer;
   transition: transform 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease;
 }
 
 body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-upload-btn-wrap:hover .maintenance-upload-btn:not(.clay-btn-locked) {
-  background: #FFFDF8;
+  background: #E8D8B0;
   transform: translateY(-1px);
-  box-shadow: 2px 5px 10px rgba(42, 24, 6, 0.28);
+  box-shadow: 0 4px 10px rgba(74, 55, 40, 0.22);
 }
 
 body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-upload-btn.clay-btn-locked {
@@ -1465,7 +1521,7 @@ body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-upl
 body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-upload-icon {
   width: 25px;
   height: 25px;
-  color: #3D240B;
+  color: #4A3728;
   flex-shrink: 0;
 }
 
@@ -1486,11 +1542,11 @@ body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-sub
 body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-submit-btn {
   min-width: 280px;
   padding: 13px 40px;
-  background: #F0CF7E;
-  color: #3B342C;
-  border: none;
-  border-radius: 1px;
-  box-shadow: 2px 3px 6px rgba(42, 24, 6, 0.22);
+  background: #4A3728 !important;
+  color: #FFFFFF !important;
+  border: 1.5px solid #382618 !important;
+  border-radius: 12px;
+  box-shadow: 0 4px 12px rgba(74, 55, 40, 0.28);
   font-family: inherit;
   font-size: 17.5px;
   font-weight: 900;
@@ -1500,9 +1556,9 @@ body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-sub
 }
 
 body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-submit-btn:hover:not(:disabled) {
-  background: #F5D78E;
+  background: #382618 !important;
   transform: translateY(-1px);
-  box-shadow: 2px 5px 10px rgba(42, 24, 6, 0.28);
+  box-shadow: 0 6px 16px rgba(74, 55, 40, 0.35);
 }
 
 body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-submit-btn:disabled {
@@ -1913,7 +1969,7 @@ body.tenant-portal-shell .report-status-pill--acknowledged {
   border-radius: 14px !important;
   background: rgba(255, 255, 255, 0.85) !important;
   padding: 24px 16px !important;
-  display: flex !important;
+  display: flex;
   flex-direction: column !important;
   align-items: center !important;
   justify-content: center !important;
@@ -1923,6 +1979,16 @@ body.tenant-portal-shell .report-status-pill--acknowledged {
   box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.02) !important;
   width: 100% !important;
   box-sizing: border-box !important;
+}
+.tararent-id-upload-zone.hidden,
+.tararent-id-upload-zone[style*="display: none"],
+#idDropZone.hidden,
+#idDropZone[style*="display: none"] {
+  display: none !important;
+}
+#idImagePreviewCard.hidden,
+#idImagePreviewCard[style*="display: none"] {
+  display: none !important;
 }
 .tararent-id-upload-zone:hover,
 .tararent-id-upload-zone.drag-over {

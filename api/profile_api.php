@@ -81,10 +81,10 @@ try {
             $input = $_POST;
         }
 
-        $action = trim((string)($input['action'] ?? 'change_password'));
+        $action = trim((string)($input['action'] ?? (isset($_FILES['profile_picture']) ? 'upload_profile_picture' : 'change_password')));
 
         // ACTION: Upload Profile Picture (Owner and Tenant)
-        if ($action === 'upload_profile_picture') {
+        if ($action === 'upload_profile_picture' || isset($_FILES['profile_picture'])) {
             if (!isset($_FILES['profile_picture']) || $_FILES['profile_picture']['error'] !== UPLOAD_ERR_OK) {
                 http_response_code(422);
                 echo json_encode([
@@ -150,9 +150,10 @@ try {
             $oldAvatar = $oldStmt->fetchColumn();
 
             $timestampStr = date('Ymd_His');
-            $randStr = bin2hex(random_bytes(4));
+            $randStr = bin2hex(random_bytes(6));
             $newFilename = sprintf('avatar_u%d_%s_%s.%s', $userId, $timestampStr, $randStr, $rawExt);
             $destination = $uploadDir . '/' . $newFilename;
+            $savedDbPath = 'uploads/avatars/' . $newFilename;
 
             if (!move_uploaded_file($picFile['tmp_name'], $destination)) {
                 http_response_code(500);
@@ -163,12 +164,12 @@ try {
                 exit;
             }
 
-            // Update database record
+            // Update database record using PostgreSQL UPDATE query
             $updStmt = $pdo->prepare("UPDATE users SET profile_picture = :pic WHERE id = :id");
-            $updStmt->execute([':pic' => $newFilename, ':id' => $userId]);
+            $updStmt->execute([':pic' => $savedDbPath, ':id' => $userId]);
 
             // Clean up old avatar file safely
-            if (!empty($oldAvatar) && $oldAvatar !== $newFilename) {
+            if (!empty($oldAvatar) && basename($oldAvatar) !== $newFilename) {
                 $oldPath = $uploadDir . '/' . basename($oldAvatar);
                 if (file_exists($oldPath) && is_file($oldPath)) {
                     @unlink($oldPath);
@@ -177,13 +178,30 @@ try {
 
             // Update session if current user
             if (isset($_SESSION['user']['id']) && (int)$_SESSION['user']['id'] === $userId) {
-                $_SESSION['user']['profile_picture'] = $newFilename;
+                $_SESSION['user']['profile_picture'] = $savedDbPath;
+            }
+
+            // Check if AJAX request or standard form submission
+            $isAjax = (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest') 
+                      || (isset($_SERVER['HTTP_ACCEPT']) && strpos($_SERVER['HTTP_ACCEPT'], 'application/json') !== false)
+                      || (!empty($_POST['is_ajax']));
+
+            if (!$isAjax && empty($_POST['is_ajax'])) {
+                $referer = $_SERVER['HTTP_REFERER'] ?? '';
+                if (!empty($referer)) {
+                    $sep = strpos($referer, '?') !== false ? '&' : '?';
+                    header('Location: ' . $referer . $sep . 'avatar=success');
+                } else {
+                    $redir = (Auth::isLandlord() ? 'admin_dashboard.php?section=sectionProfile&tab=accountInfo' : 'tenant_portal.php?section=tenantProfile&tab=accountInfo');
+                    header('Location: ../' . $redir . '&avatar=success');
+                }
+                exit;
             }
 
             echo json_encode([
                 'status' => 'success',
                 'message' => 'Profile picture updated successfully!',
-                'profile_picture' => 'uploads/avatars/' . $newFilename,
+                'profile_picture' => $savedDbPath,
                 'filename' => $newFilename
             ]);
             exit;
@@ -918,7 +936,7 @@ try {
 
             $updateStmt = $pdo->prepare("
                 UPDATE users 
-                SET is_verified = 1,
+                SET is_verified = TRUE,
                     verification_status = 'verified',
                     id_type = :id_type,
                     id_photo_filename = :id_photo,
@@ -1050,8 +1068,8 @@ try {
                     WHERE email = :e 
                       AND id != :id 
                       AND role = 'tenant' 
-                      AND is_active = 1 
-                      AND (is_archived = 0 OR is_archived IS NULL)
+                      AND is_active = TRUE 
+                      AND (is_archived = FALSE OR is_archived IS NULL)
                     LIMIT 1
                 ");
                 $dupCheck->execute([':e' => $email, ':id' => $userId]);
@@ -1123,17 +1141,16 @@ try {
                 exit;
             }
 
-            $isVerifiedInt = ($decision === 'verified') ? 1 : 0;
+            $isVerifiedSql = ($decision === 'verified') ? 'TRUE' : 'FALSE';
             $stmt = $pdo->prepare("
                 UPDATE users 
                 SET verification_status = :status,
-                    is_verified = :is_verified,
+                    is_verified = {$isVerifiedSql},
                     id_verified_at = " . ($decision === 'verified' ? 'NOW()' : 'NULL') . "
                 WHERE id = :id AND role = 'tenant'
             ");
             $stmt->execute([
                 ':status' => $decision,
-                ':is_verified' => $isVerifiedInt,
                 ':id' => $targetTenantId
             ]);
 

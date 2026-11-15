@@ -19,49 +19,67 @@ Auth::requireTenant();
 $user = Auth::user();
 $pdo = Database::getConnection();
 
-// Fetch fresh tenant user details (including verification status, archived state, and active state)
-$userStmt = $pdo->prepare("SELECT * FROM users WHERE id = :id LIMIT 1");
-$userStmt->execute([':id' => $user['id']]);
-$freshUser = $userStmt->fetch();
-if (!$freshUser) {
+// Fetch comprehensive tenant account status via centralized AccessControl
+$tenantStatus = AccessControl::getTenantStatus($pdo, (int)$user['id']);
+
+if (!$tenantStatus['found']) {
     Auth::logout();
     header('Location: login.php');
     exit;
 }
 
-// Lockout archived tenant accounts immediately and destroy any active session to prevent forced URL navigation
-$isArchivedUser = ((int)($freshUser['is_archived'] ?? 0) === 1)
-    || (($freshUser['rental_status'] ?? '') === 'archived')
-    || !empty($freshUser['deleted_at']);
-
-if ($isArchivedUser) {
+// Rule 2: Silent Lockout (Moved Out & Paid)
+// If the tenant's account is marked as moved out AND their outstanding balance is 0 or less,
+// completely deny access. Destroy session and silently redirect back to the login page without any specific error messages or notifications.
+if ($tenantStatus['mode'] === 'silent_lockout') {
     Auth::logout();
-    header('Location: login.php?msg=archived');
+    header('Location: login.php');
     exit;
 }
 
-if ((int)($freshUser['is_active'] ?? 0) !== 1) {
+if ($tenantStatus['mode'] === 'deactivated') {
     Auth::logout();
     header('Location: login.php?msg=deactivated');
     exit;
 }
-$user = $freshUser;
-$isTenantVerified = AccessControl::isUserVerifiedRow($user);
 
-// Strict Access Control: Moved-Out Tenants with Unpaid Balance
-$isMovedOutTenant = (($user['rental_status'] ?? '') === 'moved_out') && ((int)($user['is_active'] ?? 0) === 1);
+$freshUser = $tenantStatus['user'];
+$user = $freshUser;
+$isTenantVerified = $tenantStatus['is_verified'];
+$isMovedOutTenant = ($tenantStatus['mode'] === 'debt_collection');
+
+// Rule 3: Debt Collection Mode (Moved Out & Unpaid)
+// Restrict access exclusively to the Dashboard (for viewing history) and the Upload Payment page.
+// Hard-redirect any attempts to access Log Maintenance or Reports back to the Dashboard.
 if ($isMovedOutTenant) {
     $sec = trim((string)($_GET['section'] ?? 'tenantOverview'));
     if (!in_array($sec, ['tenantOverview', 'tenantPayments'], true)) {
-        header('Location: tenant_portal.php?section=tenantOverview&restricted=moved_out');
+        header('Location: tenant_portal.php?section=tenantOverview');
         exit;
     }
 }
 
+// Backend Protection: If a POST request is detected from an unverified user, abort and return access denied error.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && !$isTenantVerified) {
+    http_response_code(403);
+    header('Content-Type: application/json; charset=UTF-8');
+    echo json_encode([
+        'status'  => 'error',
+        'code'    => 'ACCESS_DENIED',
+        'message' => 'Access Denied: Please verify your identity to submit new records.'
+    ]);
+    exit;
+}
+
 // Resolve user avatar image URL dynamically from database record or uploaded avatar
 $userAvatarUrl = '';
-if (!empty($user['profile_picture']) && file_exists(__DIR__ . '/uploads/avatars/' . $user['profile_picture'])) {
-    $userAvatarUrl = 'uploads/avatars/' . htmlspecialchars($user['profile_picture']);
+if (!empty($user['profile_picture'])) {
+    $pic = (string)$user['profile_picture'];
+    if (file_exists(__DIR__ . '/' . $pic)) {
+        $userAvatarUrl = htmlspecialchars($pic);
+    } elseif (file_exists(__DIR__ . '/uploads/avatars/' . basename($pic))) {
+        $userAvatarUrl = 'uploads/avatars/' . htmlspecialchars(basename($pic));
+    }
 }
 
 // Extract first letter of user's first name dynamically for profile icon (circular initial)
@@ -262,7 +280,7 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
       border-radius: 14px !important;
       background: rgba(255, 255, 255, 0.75) !important;
       padding: 24px 16px !important;
-      display: flex !important;
+      display: flex;
       flex-direction: column !important;
       align-items: center !important;
       justify-content: center !important;
@@ -270,6 +288,16 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
       cursor: pointer !important;
       transition: all 0.2s ease !important;
       box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.02) !important;
+    }
+    .tararent-id-upload-zone.hidden,
+    .tararent-id-upload-zone[style*="display: none"],
+    #idDropZone.hidden,
+    #idDropZone[style*="display: none"] {
+      display: none !important;
+    }
+    #idImagePreviewCard.hidden,
+    #idImagePreviewCard[style*="display: none"] {
+      display: none !important;
     }
     .tararent-id-upload-zone:hover,
     .tararent-id-upload-zone.drag-over {
@@ -668,6 +696,7 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
       'is_verified'         => $isTenantVerified,
       'verification_status' => (string)($user['verification_status'] ?? 'unverified'),
       'is_moved_out_unpaid' => $isMovedOutTenant,
+      'tenant_status_mode'  => $tenantStatus['mode'] ?? 'active_verified',
   ];
   require __DIR__ . '/includes/sidebar.php';
   ?>
@@ -813,14 +842,14 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
         <!-- Dashboard Verification Notification Banner -->
         <div id="dashboardVerificationAlert" class="dashboard-verification-alert" style="display: none; margin: 0 0 24px 0; opacity: 1; transition: opacity 0.5s ease, transform 0.5s ease;"></div>
 
-        <div class="dashboard-header-bar">
+        <div class="dashboard-header-bar flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
           <div class="dashboard-title-group">
-            <h1>Welcome Home, <?= htmlspecialchars(explode(' ', $user['name'])[0]) ?>!</h1>
-            <p>Here is your residency overview for <?= htmlspecialchars($unit['unit_number']) ?>.</p>
+            <h1 class="text-2xl md:text-3xl font-black text-[#3E2723] tracking-wide mb-1">Welcome Home, <?= htmlspecialchars(explode(' ', $user['name'])[0]) ?>!</h1>
+            <p class="text-sm md:text-base font-semibold text-[#7A6245] m-0">Here is your residency overview for <?= htmlspecialchars($unit['unit_number']) ?>.</p>
           </div>
-          <div class="clay-badge <?= ($currentPayment && $currentPayment['status'] === 'pending_setup') ? 'badge-pending' : 'badge-paid' ?>" style="font-size: 13px; padding: 8px 18px;">
+          <div class="px-4 py-2 rounded-xl text-xs md:text-sm font-black <?= ($currentPayment && $currentPayment['status'] === 'pending_setup') ? 'bg-amber-100 text-amber-900 border border-amber-300' : 'bg-[#4A3728] text-white border border-[#382618]' ?> shadow-sm">
             <?php if ($currentPayment && $currentPayment['status'] === 'pending_setup'): ?>
-              <span style="display: inline-flex; align-items: center; gap: 6px;"><i data-lucide="clock" class="w-4 h-4" aria-hidden="true"></i> Rent Setup in Progress</span>
+              <span class="inline-flex items-center gap-1.5"><i data-lucide="clock" class="w-4 h-4" aria-hidden="true"></i> Rent Setup in Progress</span>
             <?php else: ?>
               Monthly Rent: ₱<?= number_format((float)$unit['monthly_rent'], 2) ?>
             <?php endif; ?>
@@ -884,27 +913,30 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
         </div>
         <?php endif; ?>
 
-        <div class="kpi-grid">
+        <!-- KPI Grid (30% Secondary Medium Clay Border, 60% Dominant White/Tan Body, 10% Accent Dark Roast Values & Icons) -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-5 mb-8">
           <!-- Active Rent Status -->
-          <div class="kpi-card clay-card-interactive">
-            <div class="kpi-top">
-              <span class="kpi-label">Current Rent Status</span>
-              <div class="kpi-icon kpi-icon-revenue"><i data-lucide="banknote" class="w-5 h-5" aria-hidden="true"></i></div>
+          <div class="bg-white/95 border-2 border-[#B89B72] rounded-2xl p-5 sm:p-6 shadow-md hover:shadow-lg transition-all flex flex-col justify-between min-h-[160px]">
+            <div class="flex items-center justify-between gap-3 mb-2">
+              <span class="text-xs font-black text-[#7A6245] uppercase tracking-wider">Current Rent Status</span>
+              <div class="w-10 h-10 rounded-xl bg-[#4A3728]/10 text-[#4A3728] border border-[#8C6D43]/30 flex items-center justify-center flex-shrink-0">
+                <i data-lucide="banknote" class="w-5 h-5" aria-hidden="true"></i>
+              </div>
             </div>
             <?php
               $rentStatusRaw = $currentPayment['status'] ?? 'paid';
               $rentStatusSlug = preg_replace('/[^a-z0-9_-]/', '', strtolower((string)$rentStatusRaw));
             ?>
-            <div class="kpi-value kpi-status-value kpi-status-<?= htmlspecialchars($rentStatusSlug) ?>">
+            <div class="text-2xl sm:text-3xl font-black text-[#3E2723] my-2">
               <?php if ($currentPayment && $currentPayment['status'] === 'pending_setup'): ?>
-                <span>Pending Setup</span>
+                <span class="text-amber-800 text-xl sm:text-2xl">Pending Setup</span>
               <?php else: ?>
                 <?= $currentPayment ? strtoupper(htmlspecialchars((string)$currentPayment['status'])) : 'PAID' ?>
               <?php endif; ?>
             </div>
-            <div class="kpi-subtitle">
+            <div class="text-xs sm:text-sm font-semibold text-[#7A6245]">
               <?php if ($currentPayment && $currentPayment['status'] === 'pending_setup'): ?>
-                <span style="color: #92400e; font-weight: 600;">Your rent details are being configured by the Owner.</span>
+                <span class="text-amber-800 font-semibold">Your rent details are being configured by the Owner.</span>
               <?php else: ?>
                 <span>₱<?= number_format((float)($currentPayment['amount_due'] ?? $unit['monthly_rent']), 2) ?> <?= !empty($currentPayment['due_date']) ? 'Due on ' . date('M j', strtotime($currentPayment['due_date'])) : 'Due on 5th' ?></span>
               <?php endif; ?>
@@ -912,93 +944,116 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
           </div>
 
           <!-- Active Maintenance Tickets -->
-          <div class="kpi-card clay-card-interactive">
-            <div class="kpi-top">
-              <span class="kpi-label">Active Maintenance</span>
-              <div class="kpi-icon kpi-icon-cost"><i data-lucide="wrench" class="w-5 h-5" aria-hidden="true"></i></div>
+          <div class="bg-white/95 border-2 border-[#B89B72] rounded-2xl p-5 sm:p-6 shadow-md hover:shadow-lg transition-all flex flex-col justify-between min-h-[160px]">
+            <div class="flex items-center justify-between gap-3 mb-2">
+              <span class="text-xs font-black text-[#7A6245] uppercase tracking-wider">Active Maintenance</span>
+              <div class="w-10 h-10 rounded-xl bg-[#4A3728]/10 text-[#4A3728] border border-[#8C6D43]/30 flex items-center justify-center flex-shrink-0">
+                <i data-lucide="wrench" class="w-5 h-5" aria-hidden="true"></i>
+              </div>
             </div>
-            <div class="kpi-value">
+            <div class="text-2xl sm:text-3xl font-black text-[#3E2723] my-2">
               <?= count(array_filter($myTickets, fn($t) => in_array($t['status'], ['Pending', 'On-Going', 'open', 'in_progress']))) ?>
             </div>
-            <div class="kpi-subtitle"><span>Dispatched to Landlord</span></div>
+            <div class="text-xs sm:text-sm font-semibold text-[#7A6245]">
+              <span>Dispatched to Landlord</span>
+            </div>
           </div>
 
           <!-- Total Resolved -->
-          <div class="kpi-card clay-card-interactive">
-            <div class="kpi-top">
-              <span class="kpi-label">Resolved Repairs</span>
-              <div class="kpi-icon kpi-icon-efficiency"><i data-lucide="check-circle-2" class="w-5 h-5" aria-hidden="true"></i></div>
+          <div class="bg-white/95 border-2 border-[#B89B72] rounded-2xl p-5 sm:p-6 shadow-md hover:shadow-lg transition-all flex flex-col justify-between min-h-[160px]">
+            <div class="flex items-center justify-between gap-3 mb-2">
+              <span class="text-xs font-black text-[#7A6245] uppercase tracking-wider">Resolved Repairs</span>
+              <div class="w-10 h-10 rounded-xl bg-[#4A3728]/10 text-[#4A3728] border border-[#8C6D43]/30 flex items-center justify-center flex-shrink-0">
+                <i data-lucide="check-circle-2" class="w-5 h-5" aria-hidden="true"></i>
+              </div>
             </div>
-            <div class="kpi-value">
+            <div class="text-2xl sm:text-3xl font-black text-[#3E2723] my-2">
               <?= count(array_filter($myTickets, fn($t) => in_array($t['status'], ['Done', 'resolved', 'closed']))) ?>
             </div>
-            <div class="kpi-subtitle">
-              <button type="button" class="kpi-history-link" onclick="switchTenantSection('tenantMaintenance', document.getElementById('navTenantMaintenance'))">
+            <div class="text-xs sm:text-sm font-semibold text-[#7A6245]">
+              <button type="button" class="font-black text-[#4A3728] hover:text-[#382618] underline transition-colors cursor-pointer" onclick="switchTenantSection('tenantMaintenance', document.getElementById('navTenantMaintenance'))">
                 View history →
               </button>
             </div>
           </div>
         </div>
 
-        <!-- Recent Activity Cards -->
-        <div class="analytics-grid">
-          <div class="clay-card">
-            <div class="widget-header">
+        <!-- Recent Activity Cards (30% Secondary Medium Clay Borders, 60% Dominant Tan Rows, 10% Accent Badges & CTAs) -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div class="bg-white/95 border-2 border-[#B89B72] rounded-2xl p-6 shadow-md flex flex-col justify-start">
+            <div class="flex items-center justify-between gap-4 pb-4 border-b border-dashed border-[#8C6D43]/30 mb-4">
               <div>
-                <h3 class="widget-title">Recent Maintenance Logs</h3>
-                <p style="font-size: 12.5px; color: var(--text-muted);">Recent repair requests for <?= htmlspecialchars($unit['unit_number']) ?></p>
+                <h3 class="text-lg font-black text-[#3E2723] uppercase tracking-wide m-0">Recent Maintenance Logs</h3>
+                <p class="text-xs font-semibold text-[#7A6245] mt-1 mb-0">Recent repair requests for <?= htmlspecialchars($unit['unit_number']) ?></p>
               </div>
-              <button type="button" class="clay-btn clay-btn-secondary" style="font-size: 12px; padding: 6px 14px;" onclick="switchTenantSection('tenantMaintenance', document.getElementById('navTenantMaintenance'))">
+              <button type="button" class="px-3.5 py-1.5 rounded-lg text-xs font-bold bg-[#F5F0E6] text-[#3E2723] border border-[#8C6D43] hover:bg-[#E8D8B0] shadow-sm transition-colors cursor-pointer" onclick="switchTenantSection('tenantMaintenance', document.getElementById('navTenantMaintenance'))">
                 View All
               </button>
             </div>
 
-            <div class="analytics-card-body">
+            <div class="flex-1 flex flex-col gap-2.5">
               <?php if (empty($myTickets)): ?>
-                <div class="analytics-empty-state">No maintenance requests logged yet.</div>
+                <div class="flex items-center justify-center p-8 rounded-xl bg-[#F5F0E6] border border-dashed border-[#8C6D43] text-[#7A6245] text-xs font-bold text-center">No maintenance requests logged yet.</div>
               <?php else: ?>
-                <?php foreach (array_slice($myTickets, 0, 3) as $tk): ?>
-                <div class="ticket-item clickable-ticket-item"
-                     style="cursor: pointer; transition: transform 0.15s ease, box-shadow 0.15s ease;"
+                <?php foreach (array_slice($myTickets, 0, 3) as $tk): 
+                  $tkStatus = $tk['status'] ?? 'Pending';
+                  $stLower = strtolower((string)$tkStatus);
+                  $statusBadgeClass = 'bg-amber-100 text-amber-900 border-amber-300';
+                  if (in_array($stLower, ['on-going', 'ongoing', 'assigned', 'in_progress'], true)) {
+                    $statusBadgeClass = 'bg-blue-100 text-blue-900 border-blue-300';
+                  } elseif (in_array($stLower, ['done', 'resolved', 'closed'], true)) {
+                    $statusBadgeClass = 'bg-green-100 text-green-900 border-green-300';
+                  }
+                ?>
+                <div class="flex items-center justify-between p-3.5 rounded-xl bg-[#F5F0E6] border border-[#8C6D43]/40 shadow-sm text-[#3E2723] hover:shadow-md transition-all cursor-pointer"
                      onclick="openTenantTicketModal(<?= htmlspecialchars(json_encode($tk), ENT_QUOTES, 'UTF-8') ?>)"
                      title="Click to view ticket details and owner response">
                   <div>
-                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 3px;">
-                      <span class="clay-badge" style="background: #e0e7ff; color: #4338ca; font-weight: 800; font-size: 10.5px;">#MT-<?= str_pad((string)$tk['id'], 4, '0', STR_PAD_LEFT) ?></span>
-                      <h4 style="font-size: 14.5px; font-weight: 700; color: #1e293b; margin: 0;"><?= htmlspecialchars($tk['title']) ?></h4>
+                    <div class="flex items-center gap-2 mb-1">
+                      <span class="bg-[#E8D8B0] text-[#3E2723] font-black text-[11px] px-2 py-0.5 rounded-md border border-[#8C6D43]/30">#MT-<?= str_pad((string)$tk['id'], 4, '0', STR_PAD_LEFT) ?></span>
+                      <h4 class="text-sm font-bold text-[#3E2723] m-0"><?= htmlspecialchars($tk['title']) ?></h4>
                     </div>
-                    <div class="ticket-meta">
-                      <span class="clay-badge badge-<?= strtolower($tk['category']) ?>"><?= $tk['category'] ?></span>
-                      <span class="ticket-date"><?= date('M j, Y', strtotime($tk['created_at'])) ?></span>
+                    <div class="flex items-center gap-2 text-xs text-[#7A6245] font-semibold">
+                      <span><?= htmlspecialchars($tk['category'] ?? 'General') ?></span>
+                      <span>•</span>
+                      <span><?= date('M j, Y', strtotime($tk['created_at'])) ?></span>
                     </div>
                   </div>
-                  <span class="clay-badge badge-<?= $tk['status'] === 'Done' ? 'done' : ($tk['status'] === 'On-Going' ? 'ongoing' : 'pending') ?>"><?= htmlspecialchars($tk['status']) ?></span>
+                  <span class="<?= $statusBadgeClass ?> border font-extrabold text-xs px-2.5 py-1 rounded-full shadow-sm"><?= htmlspecialchars($tkStatus) ?></span>
                 </div>
                 <?php endforeach; ?>
               <?php endif; ?>
             </div>
           </div>
 
-          <div class="clay-card">
-            <div class="widget-header">
+          <div class="bg-white/95 border-2 border-[#B89B72] rounded-2xl p-6 shadow-md flex flex-col justify-start">
+            <div class="flex items-center justify-between gap-4 pb-4 border-b border-dashed border-[#8C6D43]/30 mb-4">
               <div>
-                <h3 class="widget-title">Payment Receipts</h3>
-                <p style="font-size: 12.5px; color: var(--text-muted);">Verified receipts on file</p>
+                <h3 class="text-lg font-black text-[#3E2723] uppercase tracking-wide m-0">Payment Receipts</h3>
+                <p class="text-xs font-semibold text-[#7A6245] mt-1 mb-0">Verified receipts on file</p>
               </div>
-              <button type="button" class="clay-btn clay-btn-secondary" style="font-size: 12px; padding: 6px 14px;" onclick="switchTenantSection('tenantPayments', document.getElementById('navTenantPayments'))">
+              <button type="button" class="px-3.5 py-1.5 rounded-lg text-xs font-bold bg-[#4A3728] hover:bg-[#382618] text-white border border-[#382618] shadow-sm transition-colors cursor-pointer" onclick="switchTenantSection('tenantPayments', document.getElementById('navTenantPayments'))">
                 Upload New
               </button>
             </div>
 
-            <div class="analytics-card-body">
+            <div class="flex-1 flex flex-col gap-2.5">
               <?php if (empty($myPayments)): ?>
-                <div class="analytics-empty-state">No payments recorded yet.</div>
+                <div class="flex items-center justify-center p-8 rounded-xl bg-[#F5F0E6] border border-dashed border-[#8C6D43] text-[#7A6245] text-xs font-bold text-center">No payments recorded yet.</div>
               <?php else: ?>
-                <?php foreach (array_slice($myPayments, 0, 3) as $pay): ?>
-                <div style="display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; background: var(--clay-input-bg); border-radius: var(--radius-md); box-shadow: var(--clay-sunken-shadow);">
+                <?php foreach (array_slice($myPayments, 0, 3) as $pay): 
+                  $payStatus = strtolower((string)($pay['status'] ?? 'pending'));
+                  $payBadgeClass = 'bg-amber-100 text-amber-900 border-amber-300';
+                  if (in_array($payStatus, ['approved', 'paid', 'verified'], true)) {
+                    $payBadgeClass = 'bg-green-100 text-green-900 border-green-300';
+                  } elseif (in_array($payStatus, ['rejected', 'declined'], true)) {
+                    $payBadgeClass = 'bg-red-100 text-red-900 border-red-300';
+                  }
+                ?>
+                <div class="flex items-center justify-between p-3.5 rounded-xl bg-[#F5F0E6] border border-[#8C6D43]/40 shadow-sm text-[#3E2723]">
                   <div>
-                    <div style="font-size: 13.5px; font-weight: 700; color: #0f172a;"><?= !empty($pay['billing_cycle']) ? date('F Y', strtotime($pay['billing_cycle'])) : 'Pending Setup' ?></div>
-                    <div style="font-size: 11.5px; color: var(--text-muted);">
+                    <div class="text-sm font-bold text-[#3E2723]"><?= !empty($pay['billing_cycle']) ? date('F Y', strtotime($pay['billing_cycle'])) : 'Pending Setup' ?></div>
+                    <div class="text-xs font-semibold text-[#7A6245] mt-0.5">
                       <?php if ($pay['status'] === 'pending_setup'): ?>
                         Rent setup pending with landlord
                       <?php else: ?>
@@ -1007,9 +1062,9 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
                     </div>
                   </div>
                   <?php if ($pay['status'] === 'pending_setup'): ?>
-                    <span class="clay-badge" style="background: #fef3c7; color: #92400e; font-weight: 700; border: 1px solid rgba(245, 158, 11, 0.3); font-size: 10px;">PENDING SETUP</span>
+                    <span class="bg-amber-100 text-amber-900 border border-amber-300 font-bold text-[10px] px-2 py-0.5 rounded-full">PENDING SETUP</span>
                   <?php else: ?>
-                    <span class="clay-badge badge-<?= $pay['status'] ?>"><?= strtoupper($pay['status']) ?></span>
+                    <span class="<?= $payBadgeClass ?> border font-extrabold text-xs px-2.5 py-1 rounded-full shadow-sm"><?= strtoupper($pay['status']) ?></span>
                   <?php endif; ?>
                 </div>
                 <?php endforeach; ?>
@@ -1022,10 +1077,10 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
 
       <!-- CATEGORY 2: LOG MAINTENANCE -->
       <section id="tenantMaintenance" class="app-view-section">
-        <div class="maintenance-folder-shell" id="maintenanceFolderShell">
-          <div class="maintenance-folder-tabs" role="tablist" aria-label="Maintenance Views">
+        <div class="max-w-4xl mx-auto border-2 border-[#8C6D43] rounded-2xl shadow-xl overflow-hidden bg-[#B89B72]" id="maintenanceFolderShell">
+          <div class="flex items-stretch bg-[#F5F0E6] relative z-0" role="tablist" aria-label="Maintenance Views">
             <button type="button"
-                    class="maintenance-folder-tab active bg-[#5E3F12] text-[#FFFDF8]"
+                    class="flex-1 py-3.5 px-6 font-black text-sm md:text-base tracking-wide flex items-center justify-center gap-2 transition-all bg-[#B89B72] text-white rounded-tl-xl border-b-2 border-b-[#B89B72] z-10 cursor-pointer active"
                     id="btn-submit"
                     role="tab"
                     aria-selected="true"
@@ -1035,7 +1090,7 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
               <span>Submit Request</span>
             </button>
             <button type="button"
-                    class="maintenance-folder-tab bg-[#FAF1DF] text-[#56380E]"
+                    class="flex-1 py-3.5 px-6 font-bold text-sm md:text-base tracking-wide flex items-center justify-center gap-2 transition-all bg-[#F5F0E6] text-[#3E2723] rounded-tr-xl border-l border-b-2 border-[#8C6D43] hover:bg-[#E8D8B0] cursor-pointer"
                     id="btn-track"
                     role="tab"
                     aria-selected="false"
@@ -1043,14 +1098,31 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
                     onclick="toggleMaintenanceTabs('track')">
               <i data-lucide="list-checks" class="w-4 h-4"></i>
               <span>Track Requests</span>
-              <span id="tenantMaintenanceCountBadge" class="folder-tab-count"><?= count($myTickets) ?></span>
+              <span id="tenantMaintenanceCountBadge" class="ml-1.5 px-2 py-0.5 rounded-full text-xs font-black bg-[#E8D8B0] text-[#3E2723] border border-[#B89B72]"><?= count($myTickets) ?></span>
             </button>
           </div>
 
-          <div class="maintenance-folder-body" id="maintenanceFolderBody">
+          <div class="p-6 md:p-8 bg-[#B89B72]" id="maintenanceFolderBody">
             <!-- 1. SUBMIT SECTION -->
             <div id="submit-section" class="w-full">
-              <h2 class="maintenance-form-title text-center sm:text-left" style="margin: 0 0 22px 0; font-size: clamp(1.6rem, 2.35vw, 2rem); font-weight: 900; color: #6B410D;">Submit Maintenance Request</h2>
+              <h2 class="text-2xl md:text-3xl font-black text-white mb-6 tracking-wide text-center sm:text-left">Submit Maintenance Request</h2>
+
+              <?php if (!$isTenantVerified): ?>
+              <div class="mb-5 p-4 rounded-xl border border-amber-400 bg-amber-100 text-amber-950 flex items-center justify-between gap-3 shadow-md" role="alert">
+                <div class="flex items-center gap-3">
+                  <div class="p-2 rounded-lg bg-amber-200 text-amber-800 flex-shrink-0">
+                    <i data-lucide="eye" class="w-5 h-5" aria-hidden="true"></i>
+                  </div>
+                  <div>
+                    <p class="font-bold text-sm sm:text-base m-0">Viewing Mode: Please verify your identity to submit new records.</p>
+                    <p class="text-xs text-amber-900 mt-0.5 mb-0">You can explore existing repair requests freely. Complete verification to unlock submission.</p>
+                  </div>
+                </div>
+                <button type="button" onclick="openModal('verifyAccountModal')" class="flex-shrink-0 px-3.5 py-1.5 rounded-lg text-xs font-bold bg-[#4A3728] hover:bg-[#382618] text-white shadow-sm transition-colors cursor-pointer">
+                  Verify Now
+                </button>
+              </div>
+              <?php endif; ?>
 
               <form id="maintenanceForm" class="maintenance-request-form">
                 <div class="maintenance-form-grid">
@@ -1058,14 +1130,14 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
                   <div class="maintenance-form-left">
                     <div class="maintenance-field-group">
                       <label for="ticketTitle" class="maintenance-field-label">Issue:</label>
-                      <input type="text" id="ticketTitle" class="maintenance-text-input" placeholder="e.g. Bathroom sink pipe dripping" required>
+                      <input type="text" id="ticketTitle" class="w-full h-11 px-3.5 py-2.5 rounded-lg bg-[#F5F0E6] text-[#3E2723] font-semibold text-sm border border-[#8C6D43]/60 focus:outline-none focus:ring-2 focus:ring-[#4A3728] shadow-sm <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed bg-gray-200' : '' ?>" placeholder="e.g. Bathroom sink pipe dripping" required <?= !$isTenantVerified ? 'disabled' : '' ?>>
                     </div>
 
                     <div class="maintenance-meta-row">
                       <div class="maintenance-field-group">
                         <label for="ticketCategoryTrigger" class="maintenance-field-label">Repair Category:</label>
                         <div class="maintenance-select-wrap" id="ticketCategoryWrap">
-                          <select id="ticketCategory" class="maintenance-native-select-hidden" tabindex="-1" aria-hidden="true">
+                          <select id="ticketCategory" class="maintenance-native-select-hidden" tabindex="-1" aria-hidden="true" <?= !$isTenantVerified ? 'disabled' : '' ?>>
                             <option value="" disabled selected hidden></option>
                             <option value="Structural">Structural &amp; Masonry</option>
                             <option value="Plumbing">Plumbing &amp; Water System</option>
@@ -1076,10 +1148,11 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
                           </select>
                           <button type="button"
                                   id="ticketCategoryTrigger"
-                                  class="maintenance-select-trigger"
+                                  class="w-full h-11 px-3.5 py-2.5 rounded-lg bg-[#F5F0E6] text-[#3E2723] font-semibold text-sm border border-[#8C6D43]/60 focus:outline-none focus:ring-2 focus:ring-[#4A3728] shadow-sm flex items-center justify-between <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed pointer-events-none' : '' ?>"
                                   aria-haspopup="listbox"
                                   aria-expanded="false"
-                                  aria-controls="ticketCategoryMenu">
+                                  aria-controls="ticketCategoryMenu"
+                                  <?= !$isTenantVerified ? 'disabled' : '' ?>>
                             <span class="maintenance-select-value" id="ticketCategoryDisplay"></span>
                           </button>
                           <div class="maintenance-select-menu" id="ticketCategoryMenu" role="listbox" aria-label="Repair Category">
@@ -1097,22 +1170,22 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
                         <span class="maintenance-field-label" id="urgencyLevelLabel">Urgency Level:</span>
                         <div class="maintenance-urgency-list" role="radiogroup" aria-labelledby="urgencyLevelLabel">
                           <label class="maintenance-radio-option">
-                            <input type="radio" name="ticketPriority" value="urgent" checked>
+                            <input type="radio" name="ticketPriority" value="urgent" checked <?= !$isTenantVerified ? 'disabled' : '' ?>>
                             <span class="maintenance-radio-circle" aria-hidden="true"></span>
                             <span class="maintenance-radio-text">Very High</span>
                           </label>
                           <label class="maintenance-radio-option">
-                            <input type="radio" name="ticketPriority" value="high">
+                            <input type="radio" name="ticketPriority" value="high" <?= !$isTenantVerified ? 'disabled' : '' ?>>
                             <span class="maintenance-radio-circle" aria-hidden="true"></span>
                             <span class="maintenance-radio-text">High</span>
                           </label>
                           <label class="maintenance-radio-option">
-                            <input type="radio" name="ticketPriority" value="medium">
+                            <input type="radio" name="ticketPriority" value="medium" <?= !$isTenantVerified ? 'disabled' : '' ?>>
                             <span class="maintenance-radio-circle" aria-hidden="true"></span>
                             <span class="maintenance-radio-text">Medium</span>
                           </label>
                           <label class="maintenance-radio-option">
-                            <input type="radio" name="ticketPriority" value="low">
+                            <input type="radio" name="ticketPriority" value="low" <?= !$isTenantVerified ? 'disabled' : '' ?>>
                             <span class="maintenance-radio-circle" aria-hidden="true"></span>
                             <span class="maintenance-radio-text">Low</span>
                           </label>
@@ -1125,7 +1198,7 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
                   <div class="maintenance-form-right">
                     <div class="maintenance-field-group maintenance-desc-group">
                       <label for="ticketDesc" class="maintenance-field-label">Detailed Description:</label>
-                      <textarea id="ticketDesc" class="maintenance-textarea-input" placeholder="Describe and put the details of your issue." required></textarea>
+                      <textarea id="ticketDesc" class="w-full min-h-[220px] p-3.5 rounded-lg bg-[#F5F0E6] text-[#3E2723] font-semibold text-sm border border-[#8C6D43]/60 focus:outline-none focus:ring-2 focus:ring-[#4A3728] shadow-sm resize-none <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed bg-gray-200' : '' ?>" placeholder="Describe and put the details of your issue." required <?= !$isTenantVerified ? 'disabled' : '' ?>></textarea>
                     </div>
                   </div>
                 </div>
@@ -1135,9 +1208,9 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
                   <label for="ticketPhotos" class="maintenance-field-label">Attach photos of issue to be repaired:</label>
                   <div class="maintenance-upload-center">
                     <div class="maintenance-upload-btn-wrap">
-                      <input type="file" id="ticketPhotos" name="maintenance_photos[]" accept="image/*" multiple class="maintenance-file-input">
-                      <label for="ticketPhotos" class="maintenance-upload-btn">
-                        <i data-lucide="image" class="maintenance-upload-icon" aria-hidden="true"></i>
+                      <input type="file" id="ticketPhotos" name="maintenance_photos[]" accept="image/*" multiple class="maintenance-file-input" <?= !$isTenantVerified ? 'disabled' : '' ?>>
+                      <label for="ticketPhotos" class="inline-flex items-center justify-center gap-2.5 px-6 py-2.5 rounded-xl bg-[#F5F0E6] text-[#3E2723] font-bold text-sm border-2 border-[#8C6D43] shadow-md hover:bg-[#E8D8B0] transition cursor-pointer <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed pointer-events-none' : '' ?>">
+                        <i data-lucide="image" class="w-5 h-5 text-[#4A3728]" aria-hidden="true"></i>
                         <span id="ticketPhotosUploadLabel">Upload Photo</span>
                       </label>
                     </div>
@@ -1147,21 +1220,21 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
 
                 <!-- Centered Submit Request Button -->
                 <div class="maintenance-submit-row">
-                  <button type="submit" class="maintenance-submit-btn" id="btnLogTicket">Submit Request</button>
+                  <button type="submit" class="min-w-[260px] py-3.5 px-8 rounded-xl bg-[#4A3728] hover:bg-[#382618] text-white font-black text-base shadow-lg border border-[#382618] transition-all cursor-pointer <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed bg-gray-400 pointer-events-none' : '' ?>" id="btnLogTicket" <?= !$isTenantVerified ? 'disabled' : '' ?>>Submit Request</button>
                 </div>
               </form>
             </div>
 
             <!-- 2. TRACK SECTION -->
             <div id="track-section" class="w-full hidden">
-              <h2 class="maintenance-form-title text-center sm:text-left" style="margin: 0 0 22px 0; font-size: clamp(1.6rem, 2.35vw, 2rem); font-weight: 900; color: #6B410D;">Track your Maintenance Requests:</h2>
+              <h2 class="text-2xl md:text-3xl font-black text-white mb-6 tracking-wide text-center sm:text-left">Track Maintenance Requests</h2>
 
               <div id="ticketHistoryContainer" class="flex flex-col gap-6">
                 <?php if (empty($myTickets)): ?>
-                  <div class="text-center py-10 px-4 rounded bg-white/60 border border-[#D5C7B0] text-[#6B5129]">
+                  <div class="text-center py-12 px-6 rounded-2xl bg-[#F5F0E6] border-2 border-[#8C6D43]/40 text-[#7A6245]">
                     <i data-lucide="inbox" class="w-8 h-8 mx-auto mb-2 opacity-60"></i>
-                    <p class="font-bold text-base">No maintenance requests submitted yet.</p>
-                    <p class="text-xs text-[#8A7252] mt-1">Submit your first repair request using the "Submit Request" tab.</p>
+                    <p class="font-bold text-base m-0">No maintenance requests submitted yet.</p>
+                    <p class="text-xs text-[#7A6245] mt-1 mb-0">Submit your first repair request using the "Submit Request" tab.</p>
                   </div>
                 <?php else: ?>
                   <?php foreach ($myTickets as $index => $tk): 
@@ -1170,43 +1243,46 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
                     $tkCategory = !empty($tk['category']) ? $tk['category'] : 'General';
                     $progressPct = 25;
                     $stLower = strtolower((string)$tkStatus);
+                    $statusBadgeClass = 'bg-amber-100 text-amber-900 border-amber-300';
                     if (in_array($stLower, ['on-going', 'ongoing', 'assigned', 'in_progress'], true)) {
                       $progressPct = 65;
+                      $statusBadgeClass = 'bg-blue-100 text-blue-900 border-blue-300';
                     } elseif (in_array($stLower, ['done', 'resolved', 'closed'], true)) {
                       $progressPct = 100;
+                      $statusBadgeClass = 'bg-green-100 text-green-900 border-green-300';
                     }
                     $createdDateStr = !empty($tk['created_at']) ? date('M j, Y', strtotime($tk['created_at'])) : 'Recent';
                   ?>
-                  <div class="maintenance-track-card p-5 sm:p-6 rounded-lg bg-[#E8D4B0] border border-[#C5AE87] shadow-sm cursor-pointer hover:shadow-md transition-shadow" onclick="openTenantTicketModal(<?= htmlspecialchars(json_encode($tk), ENT_QUOTES, 'UTF-8') ?>)">
+                  <div class="maintenance-track-card p-5 sm:p-6 rounded-2xl bg-[#F5F0E6] border-2 border-[#8C6D43]/40 shadow-md cursor-pointer hover:shadow-lg transition-shadow" onclick="openTenantTicketModal(<?= htmlspecialchars(json_encode($tk), ENT_QUOTES, 'UTF-8') ?>)">
                     <!-- Top Row: Title, Date, and Badges -->
                     <div class="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
                       <div>
-                        <h3 class="text-lg sm:text-xl font-extrabold text-[#2A1B0A] m-0">
+                        <h3 class="text-lg sm:text-xl font-extrabold text-[#3E2723] m-0">
                           <?= $ticketNum ?>. <?= htmlspecialchars($tk['title']) ?>
                         </h3>
-                        <p class="text-xs sm:text-sm font-semibold text-[#56380E] mt-1 mb-0">
+                        <p class="text-xs sm:text-sm font-semibold text-[#7A6245] mt-1 mb-0">
                           Date Submitted: <?= htmlspecialchars($createdDateStr) ?>
                         </p>
                       </div>
                       <div class="flex items-center gap-2.5 flex-wrap sm:flex-nowrap">
-                        <span class="bg-white text-[#2A1B0A] font-extrabold text-sm px-4 py-1.5 rounded shadow-sm border border-[#D5C7B0] min-w-[90px] text-center">
+                        <span class="<?= $statusBadgeClass ?> border font-extrabold text-xs px-3.5 py-1.5 rounded-full shadow-sm min-w-[90px] text-center">
                           <?= htmlspecialchars($tkStatus) ?>
                         </span>
-                        <span class="bg-white text-[#2A1B0A] font-extrabold text-sm px-4 py-1.5 rounded shadow-sm border border-[#D5C7B0] min-w-[90px] text-center">
+                        <span class="bg-white/90 text-[#3E2723] border border-[#8C6D43]/30 font-bold text-xs px-3.5 py-1.5 rounded-full shadow-sm min-w-[90px] text-center">
                           <?= htmlspecialchars($tkCategory) ?>
                         </span>
                       </div>
                     </div>
 
                     <!-- Progress Bar -->
-                    <div class="w-full bg-white h-3.5 rounded-full overflow-hidden my-3.5 border border-[#4A3010]/20 shadow-inner">
-                      <div class="bg-[#4A3010] h-full rounded-full transition-all duration-300" style="width: <?= $progressPct ?>%;"></div>
+                    <div class="w-full bg-white/80 h-3.5 rounded-full overflow-hidden my-3.5 border border-[#8C6D43]/30 shadow-inner">
+                      <div class="bg-[#4A3728] h-full rounded-full transition-all duration-300" style="width: <?= $progressPct ?>%;"></div>
                     </div>
 
                     <!-- Issue Details Section -->
                     <div>
-                      <span class="block text-sm font-extrabold text-[#362E25] mb-1.5">Issue Details:</span>
-                      <div class="bg-white rounded p-4 text-sm text-[#3B3024] leading-relaxed shadow-sm min-h-[60px] whitespace-pre-line border border-[#E2D6C3]">
+                      <span class="block text-sm font-extrabold text-[#3E2723] mb-1.5">Issue Details:</span>
+                      <div class="bg-white/90 rounded-xl p-4 text-sm text-[#3E2723] leading-relaxed shadow-sm min-h-[60px] whitespace-pre-line border border-[#8C6D43]/20">
                         <?= nl2br(htmlspecialchars($tk['description'] ?? 'No additional details provided.')) ?>
                       </div>
                     </div>
@@ -1221,354 +1297,833 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
 
       <!-- CATEGORY 3: UPLOAD PAYMENT -->
       <section id="tenantPayments" class="app-view-section">
-        <div class="dashboard-header-bar">
-          <div class="dashboard-title-group">
-            <h1>Rent Payment &amp; Receipt Drop-Zone</h1>
-            <p>Upload bank transfer receipts or GCash confirmation slips for <?= htmlspecialchars($unit['unit_number']) ?>.</p>
+        <?php
+        // ---------------------------------------------------------------------
+        // Real-Time Supabase PostgreSQL Payments & Ledger Data
+        // ---------------------------------------------------------------------
+        $currentTenantId = (int)$user['id'];
+
+        // 1. Fetch all payment records for this tenant (ordered newest first)
+        $payQueryStmt = $pdo->prepare("
+            SELECT * FROM payments 
+            WHERE tenant_id = :tid 
+            ORDER BY billing_cycle DESC NULLS LAST, id DESC
+        ");
+        $payQueryStmt->execute([':tid' => $currentTenantId]);
+        $allTenantPayments = $payQueryStmt->fetchAll();
+
+        // 2. Compute outstanding rent balance, earliest due date, and unpaid ledger items
+        $tenantRentBalance = 0.00;
+        $unpaidBills = [];
+        $earliestDueDate = null;
+        $depositBill = null;
+        $rentBill = null;
+
+        foreach ($allTenantPayments as $p) {
+            $pType = $p['payment_type'] ?? 'Rent';
+            if ($pType === 'Advance Deposit' && !$depositBill) {
+                $depositBill = $p;
+            } elseif ($pType === 'Rent' && !$rentBill) {
+                $rentBill = $p;
+            }
+
+            $pStatus = strtolower((string)($p['status'] ?? ''));
+            $amtDue = (float)($p['amount_due'] ?? 0.0);
+            $amtPaid = (float)($p['amount_paid'] ?? 0.0);
+            $remaining = max(0.0, $amtDue - $amtPaid);
+
+            if (in_array($pStatus, ['unpaid', 'overdue', 'rejected', 'pending_setup', 'pending'], true) || $remaining > 0.01) {
+                if ($remaining > 0.01) {
+                    $tenantRentBalance += $remaining;
+                }
+                $unpaidBills[] = $p;
+                if (!empty($p['due_date'])) {
+                    if ($earliestDueDate === null || strtotime($p['due_date']) < strtotime($earliestDueDate)) {
+                        $earliestDueDate = $p['due_date'];
+                    }
+                }
+            }
+        }
+
+        // If no unpaid bills exist in the ledger, create a standard upcoming cycle entry so the form is always usable
+        if (empty($unpaidBills)) {
+            $currentMonthCycle = date('Y-m-01');
+            $unpaidBills[] = [
+                'id' => 0,
+                'payment_type' => 'Rent',
+                'billing_cycle' => $currentMonthCycle,
+                'due_date' => date('Y-m-05'),
+                'amount_due' => (float)($unit['monthly_rent'] ?? 3000.00),
+                'amount_paid' => 0.00,
+                'status' => 'unpaid'
+            ];
+        }
+
+        $rentBalanceDisplay = number_format($tenantRentBalance, 2);
+
+        if (!empty($earliestDueDate)) {
+            $nextDueDateDisplay = date('M d, Y', strtotime($earliestDueDate));
+        } elseif (!empty($rentBill['due_date'])) {
+            $nextDueDateDisplay = date('M d, Y', strtotime($rentBill['due_date']));
+        } elseif (!empty($allTenantPayments[0]['due_date'])) {
+            $nextDueDateDisplay = date('M d, Y', strtotime($allTenantPayments[0]['due_date']));
+        } else {
+            $nextDueDateDisplay = date('M 05, Y', strtotime('+1 month'));
+        }
+
+        $unitHeaderTitle = strtoupper(!empty($unit['unit_number']) ? $unit['unit_number'] : 'Unit 1') . ' PAYMENT';
+        ?>
+
+        <div class="max-w-4xl mx-auto space-y-6">
+
+          <!-- 1. STATIC TOP HEADER CARD (60% Dominant Light Beige with 30% Border & 10% Text) -->
+          <div class="bg-[#F5F0E6] border-2 border-[#8C6D43] rounded-2xl shadow-md p-6 text-center">
+            <h1 class="text-2xl md:text-3xl font-black text-[#3E2723] tracking-wider uppercase mb-2">
+              <?= htmlspecialchars($unitHeaderTitle) ?>
+            </h1>
+            <div class="flex flex-wrap items-center justify-center gap-x-12 gap-y-2 text-sm md:text-base font-bold text-[#7A6245]">
+              <div>Rent Balance: <span class="font-black text-[#3E2723]">Php <?= $rentBalanceDisplay ?></span></div>
+              <div>Next Due Date: <span class="font-black text-[#3E2723]"><?= htmlspecialchars($nextDueDateDisplay) ?></span></div>
+            </div>
           </div>
-        </div>
 
-        <div class="tenant-grid">
-          <!-- Drop-Zone Form Card -->
-          <div class="clay-card">
-            <div class="widget-header">
-              <div>
-                <h2 class="widget-title">Upload Payment Proof</h2>
-                <p style="font-size: 13px; color: var(--text-muted);">Submit verification for monthly rent</p>
-              </div>
-              <span class="widget-badge">Secure Ledger</span>
+          <!-- 2. UNIFIED PARENT FOLDER CONTAINER (30% Secondary Medium Clay bg-[#B89B72]) -->
+          <div class="border-2 border-[#8C6D43] rounded-2xl shadow-xl overflow-hidden bg-[#B89B72]">
+
+            <!-- Top Tab Bar -->
+            <div class="flex items-stretch bg-[#F5F0E6] relative z-0">
+              <!-- Active Tab: Upload Proof (30% Secondary Medium Clay bg-[#B89B72]) -->
+              <button type="button" id="tabBtnUpload" onclick="switchPaymentTab('upload')"
+                class="flex-1 py-3.5 px-6 font-black text-sm md:text-base tracking-wide flex items-center justify-center gap-2 transition-all bg-[#B89B72] text-white rounded-tl-xl border-b-2 border-b-[#B89B72] z-10 cursor-pointer">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                </svg>
+                <span>Upload Proof</span>
+              </button>
+
+              <!-- Inactive Tab: Payment Tracker (60% Dominant Light Beige bg-[#F5F0E6]) -->
+              <button type="button" id="tabBtnTracker" onclick="switchPaymentTab('tracker')"
+                class="flex-1 py-3.5 px-6 font-bold text-sm md:text-base tracking-wide flex items-center justify-center gap-2 transition-all bg-[#F5F0E6] text-[#3E2723] rounded-tr-xl border-l border-b-2 border-[#8C6D43] hover:bg-[#E8D8B0] cursor-pointer">
+                <svg class="w-5 h-5 text-[#4A3728]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+                </svg>
+                <span>Payment Tracker</span>
+                <span id="paymentCountBadge" class="ml-1.5 px-2 py-0.5 rounded-full text-xs font-black bg-[#E8D8B0] text-[#3E2723] border border-[#B89B72]">
+                  <?= count($allTenantPayments) ?>
+                </span>
+              </button>
             </div>
 
-            <!-- Payment Obligations Overview: Advance Deposit & Monthly Rent -->
-            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; margin-top: 14px; margin-bottom: 18px;">
-              <div style="padding: 14px 16px; border-radius: var(--radius-md); background: #f5f3ff; border: 1.5px solid #ddd6fe;">
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                  <span style="font-size: 11px; font-weight: 800; color: #6d28d9; text-transform: uppercase;">1. Advance Deposit</span>
-                  <span class="clay-badge" style="background: <?= ($depositBill && $depositBill['status'] === 'approved') ? '#d1fae5' : (($depositBill && $depositBill['status'] === 'pending') ? '#fef3c7' : '#fee2e2') ?>; color: <?= ($depositBill && $depositBill['status'] === 'approved') ? '#065f46' : (($depositBill && $depositBill['status'] === 'pending') ? '#92400e' : '#991b1b') ?>; font-size: 10px; font-weight: 800; padding: 2px 7px;">
-                    <?= $depositBill ? ($depositBill['status'] === 'pending' ? 'PENDING REVIEW' : strtoupper($depositBill['status'])) : 'UNPAID' ?>
-                  </span>
+            <!-- Main Content Area (30% Secondary Medium Clay bg-[#B89B72] Open Folder) -->
+            <div class="p-6 md:p-8 bg-[#B89B72]">
+
+              <!-- TAB 1: UPLOAD PROOF (ACTIVE) -->
+              <div id="tabContentUpload">
+                <h2 class="text-2xl md:text-3xl font-black text-white mb-6 tracking-wide">Upload Payment Proof</h2>
+
+                <?php if (!$isTenantVerified): ?>
+                <div class="mb-6 p-4 rounded-xl border border-amber-400 bg-amber-100 text-amber-950 flex items-center justify-between gap-3 shadow-md" role="alert">
+                  <div class="flex items-center gap-3">
+                    <div class="p-2 rounded-lg bg-amber-200 text-amber-800 flex-shrink-0">
+                      <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                    </div>
+                    <div>
+                      <p class="font-bold text-sm sm:text-base m-0">Viewing Mode: Please verify your identity to submit new records.</p>
+                      <p class="text-xs text-amber-900 mt-0.5 mb-0">You can explore billing cycles and historical receipts freely. Complete verification to unlock payment submission.</p>
+                    </div>
+                  </div>
+                  <button type="button" onclick="openModal('verifyAccountModal')" class="flex-shrink-0 px-3.5 py-1.5 rounded-lg text-xs font-bold bg-[#4A3728] hover:bg-[#382618] text-white shadow-sm transition-colors cursor-pointer">
+                    Verify Now
+                  </button>
                 </div>
-                <div style="font-size: 20px; font-weight: 800; color: #4c1d95; margin-top: 6px;">₱3,000.00</div>
-                <div style="font-size: 11.5px; color: #6b21a8; margin-top: 4px;">One-time security deposit upon account creation</div>
+                <?php endif; ?>
+
+                <!-- Two Summary Boxes -->
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-md mx-auto mb-6">
+                  <!-- Advance Deposit -->
+                  <div class="bg-white rounded-xl p-4 text-center shadow-md border border-[#8C6D43]/30">
+                    <div class="text-xs font-semibold text-gray-700">Advance Deposit:</div>
+                    <div class="text-base md:text-lg font-black text-gray-900 mt-0.5">Php <?= number_format((float)($depositBill['amount_due'] ?? 3000.00), 2) ?></div>
+                    <?php if ($depositBill && $depositBill['status'] === 'approved'): ?>
+                      <div class="text-xs font-black text-green-600 mt-0.5">Paid</div>
+                    <?php elseif ($depositBill && $depositBill['status'] === 'pending'): ?>
+                      <div class="text-xs font-black text-amber-600 mt-0.5">Pending</div>
+                    <?php else: ?>
+                      <div class="text-xs font-black text-red-600 mt-0.5">Unpaid</div>
+                    <?php endif; ?>
+                  </div>
+
+                  <!-- Monthly Rent -->
+                  <div class="bg-white rounded-xl p-4 text-center shadow-md border border-[#8C6D43]/30">
+                    <div class="text-xs font-semibold text-gray-700">Monthly Rent:</div>
+                    <div class="text-base md:text-lg font-black text-gray-900 mt-0.5">Php <?= number_format((float)($rentBill['amount_due'] ?? $myTotalMonthlyRent), 2) ?></div>
+                    <?php if ($rentBill && $rentBill['status'] === 'approved'): ?>
+                      <div class="text-xs font-black text-green-600 mt-0.5">Paid</div>
+                    <?php elseif ($rentBill && $rentBill['status'] === 'pending'): ?>
+                      <div class="text-xs font-black text-amber-600 mt-0.5">Pending</div>
+                    <?php else: ?>
+                      <div class="text-xs font-black text-red-600 mt-0.5">Unpaid</div>
+                    <?php endif; ?>
+                  </div>
+                </div>
+
+                <!-- Form -->
+                <form id="paymentUploadForm" onsubmit="return false;">
+                  <input type="hidden" id="payTargetPayment" name="payment_id" value="<?= !empty($unpaidBills[0]['id']) ? (int)$unpaidBills[0]['id'] : '0' ?>">
+
+                  <!-- Grid for Form Fields (60% Dominant Light Beige Form Inputs bg-[#F5F0E6]) -->
+                  <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4 mb-6">
+                    <!-- 1. Billing Month -->
+                    <div>
+                      <label for="payBillingMonth" class="block font-bold text-sm text-[#F5F0E6] mb-1.5">Billing Month:</label>
+                      <div class="relative">
+                        <select id="payBillingMonth" name="billing_month" onchange="handleBillingMonthChange()" class="w-full bg-[#F5F0E6] text-[#3E2723] font-bold text-sm px-4 py-2.5 rounded-xl border border-[#8C6D43]/60 shadow-md focus:outline-none focus:ring-2 focus:ring-[#4A3728] appearance-none pr-10 cursor-pointer <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed' : '' ?>" <?= !$isTenantVerified ? 'disabled' : '' ?>>
+                          <?php foreach ($unpaidBills as $idx => $ub): ?>
+                            <?php
+                            $cycleDate = !empty($ub['billing_cycle']) ? $ub['billing_cycle'] : date('Y-m-01');
+                            $cycleLabel = date('F Y', strtotime($cycleDate));
+                            $dueAmt = (float)($ub['amount_due'] ?? 3000.00) - (float)($ub['amount_paid'] ?? 0.00);
+                            $pType = !empty($ub['payment_type']) ? $ub['payment_type'] : 'Rent';
+                            ?>
+                            <option value="<?= htmlspecialchars($cycleDate) ?>"
+                                    data-id="<?= (int)($ub['id'] ?? 0) ?>"
+                                    data-type="<?= htmlspecialchars($pType) ?>"
+                                    data-amount="<?= number_format(max(0.0, $dueAmt), 2, '.', '') ?>"
+                                    <?= $idx === 0 ? 'selected' : '' ?>>
+                              <?= htmlspecialchars($cycleLabel) ?> – <?= htmlspecialchars($pType) ?> (Php <?= number_format(max(0.0, $dueAmt), 2) ?>)
+                            </option>
+                          <?php endforeach; ?>
+                        </select>
+                        <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3.5 text-[#7A6245]">
+                          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7"></path></svg>
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- 2. Payment Method -->
+                    <div>
+                      <label for="payMethod" class="block font-bold text-sm text-[#F5F0E6] mb-1.5">Payment Method:</label>
+                      <div class="relative">
+                        <select id="payMethod" name="payment_method" class="w-full bg-[#F5F0E6] text-[#3E2723] font-bold text-sm px-4 py-2.5 rounded-xl border border-[#8C6D43]/60 shadow-md focus:outline-none focus:ring-2 focus:ring-[#4A3728] appearance-none pr-10 cursor-pointer <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed' : '' ?>" <?= !$isTenantVerified ? 'disabled' : '' ?>>
+                          <option value="GCash" selected>GCash</option>
+                          <option value="Bank Transfer">Bank Transfer</option>
+                          <option value="Maya">Maya</option>
+                          <option value="Cash">Cash</option>
+                        </select>
+                        <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3.5 text-[#7A6245]">
+                          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7"></path></svg>
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- 3. Pay for -->
+                    <div>
+                      <label for="payFor" class="block font-bold text-sm text-[#F5F0E6] mb-1.5">Pay for:</label>
+                      <div class="relative">
+                        <select id="payFor" name="pay_for" class="w-full bg-[#F5F0E6] text-[#3E2723] font-bold text-sm px-4 py-2.5 rounded-xl border border-[#8C6D43]/60 shadow-md focus:outline-none focus:ring-2 focus:ring-[#4A3728] appearance-none pr-10 cursor-pointer <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed' : '' ?>" <?= !$isTenantVerified ? 'disabled' : '' ?>>
+                          <option value="Rent" <?= (!empty($unpaidBills[0]['payment_type']) && $unpaidBills[0]['payment_type'] === 'Rent') ? 'selected' : '' ?>>Monthly Rent</option>
+                          <option value="Advance Deposit" <?= (!empty($unpaidBills[0]['payment_type']) && $unpaidBills[0]['payment_type'] === 'Advance Deposit') ? 'selected' : '' ?>>Advance Deposit</option>
+                          <option value="Additional Space">Additional Space</option>
+                        </select>
+                        <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3.5 text-[#7A6245]">
+                          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7"></path></svg>
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- 4. Payment Amount (Required field, 60% Dominant Light Beige fill bg-[#F5F0E6]) -->
+                    <div>
+                      <label for="payAmount" class="block font-bold text-sm text-[#F5F0E6] mb-1.5">Payment Amount (Php):</label>
+                      <?php
+                      $initialPayAmount = !empty($unpaidBills[0]) ? max(0.0, (float)$unpaidBills[0]['amount_due'] - (float)$unpaidBills[0]['amount_paid']) : 3000.00;
+                      if ($initialPayAmount <= 0.01) $initialPayAmount = 3000.00;
+                      ?>
+                      <input type="number" step="0.01" min="1" name="amount" id="payAmount" required value="<?= number_format($initialPayAmount, 2, '.', '') ?>" placeholder="0.00" class="w-full bg-[#F5F0E6] text-[#3E2723] font-bold text-sm px-4 py-2.5 rounded-xl border border-[#8C6D43]/60 shadow-md placeholder-[#9A7B4F] focus:outline-none focus:ring-2 focus:ring-[#4A3728] <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed' : '' ?>" <?= !$isTenantVerified ? 'disabled' : '' ?>>
+                    </div>
+
+                    <!-- 5. Reference Number -->
+                    <div class="md:col-span-2">
+                      <label for="payReferenceNumber" class="block font-bold text-sm text-[#F5F0E6] mb-1.5">Reference Number:</label>
+                      <input type="text" id="payReferenceNumber" name="reference_number" placeholder="Enter reference number (e.g. 083948857486783)" class="w-full bg-[#F5F0E6] text-[#3E2723] font-bold text-sm px-4 py-2.5 rounded-xl border border-[#8C6D43]/60 shadow-md placeholder-[#9A7B4F] focus:outline-none focus:ring-2 focus:ring-[#4A3728] <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed' : '' ?>" <?= !$isTenantVerified ? 'disabled' : '' ?>>
+                    </div>
+                  </div>
+
+                  <!-- Dashed-Border Upload Zone (30% Secondary Overlay) -->
+                  <div id="receiptDropZone" class="border-2 border-dashed border-[#8C6D43] rounded-xl p-6 text-center max-w-lg mx-auto mb-6 bg-[#9A7B4F]/20 transition-all hover:bg-[#9A7B4F]/30 cursor-pointer <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed pointer-events-none' : '' ?>">
+                    <div class="font-bold text-sm text-[#F5F0E6] mb-3">Upload Photos of Payment Receipt:</div>
+                    <label for="receiptFileInput" class="inline-flex items-center gap-2 px-6 py-2 bg-[#F5F0E6] hover:bg-white text-[#3E2723] text-sm font-bold rounded shadow-sm border border-[#8C6D43] cursor-pointer transition-all">
+                      <svg class="w-4 h-4 text-[#4A3728]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                      + Add Photo
+                    </label>
+                    <input type="file" id="receiptFileInput" name="receipt" accept="image/*,.pdf" class="hidden" onchange="handleReceiptFileSelect(event)" <?= !$isTenantVerified ? 'disabled' : '' ?>>
+
+                    <!-- File preview card once attached -->
+                    <div id="filePreviewCard" class="hidden mt-4 inline-flex items-center gap-3 px-4 py-2 bg-white rounded-lg shadow-sm border border-[#8C6D43]/40 text-left">
+                      <span class="text-xl">📄</span>
+                      <div>
+                        <div id="previewFileName" class="text-xs font-bold text-[#3E2723] truncate max-w-[200px]">receipt.png</div>
+                        <div id="previewFileSize" class="text-[11px] text-[#7A6245]">1.2 MB</div>
+                      </div>
+                      <button type="button" id="btnRemoveFile" onclick="removeAttachedReceipt(event)" class="text-[#7A6245] hover:text-red-500 font-bold px-1.5" title="Remove photo">✕</button>
+                    </div>
+                  </div>
+
+                  <!-- Submit Proof Button (10% Accent Dark Roast Brown bg-[#4A3728]) -->
+                  <div class="text-center">
+                    <button type="button" id="btnUploadReceipt" class="px-14 py-3.5 bg-[#4A3728] hover:bg-[#382618] text-white font-black text-base uppercase rounded-xl shadow-lg transition-all cursor-pointer border border-[#382618] <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed bg-gray-400 text-gray-700 pointer-events-none border-transparent' : '' ?>" <?= !$isTenantVerified ? 'disabled' : '' ?>>
+                      Submit Proof
+                    </button>
+                  </div>
+                </form>
               </div>
 
-              <div style="padding: 14px 16px; border-radius: var(--radius-md); background: #f0fdf4; border: 1.5px solid #bbf7d0;">
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                  <span style="font-size: 11px; font-weight: 800; color: #15803d; text-transform: uppercase;">2. Monthly Rent</span>
-                  <span class="clay-badge" style="background: <?= ($rentBill && $rentBill['status'] === 'approved') ? '#d1fae5' : (($rentBill && $rentBill['status'] === 'pending') ? '#fef3c7' : '#fee2e2') ?>; color: <?= ($rentBill && $rentBill['status'] === 'approved') ? '#065f46' : (($rentBill && $rentBill['status'] === 'pending') ? '#92400e' : '#991b1b') ?>; font-size: 10px; font-weight: 800; padding: 2px 7px;">
-                    <?= $rentBill ? ($rentBill['status'] === 'pending' ? 'PENDING REVIEW' : strtoupper($rentBill['status'])) : 'UNPAID' ?>
-                  </span>
-                </div>
-                <div style="font-size: 20px; font-weight: 800; color: #14532d; margin-top: 6px;">₱<?= number_format((float)($rentBill['amount_due'] ?? $myTotalMonthlyRent), 2) ?></div>
-                <div style="font-size: 11.5px; color: #166534; margin-top: 4px;">
-                  Base rent ₱<?= number_format((float)($rentBill['base_rent_amount'] ?? 3000.00), 2) ?>
-                  <?php if (!empty($rentBill['additional_space_fee']) && (float)$rentBill['additional_space_fee'] > 0): ?>
-                    + ₱<?= number_format((float)$rentBill['additional_space_fee'], 2) ?> (<?= htmlspecialchars($rentBill['additional_spaces_breakdown'] ?? 'Additional Space') ?>)
-                  <?php elseif ($myAdditionalFee > 0): ?>
-                    + ₱<?= number_format($myAdditionalFee, 2) ?> (Additional Rental Space)
-                  <?php endif; ?>
-                </div>
-              </div>
-            </div>
+              <!-- TAB 2: PAYMENT TRACKER -->
+              <div id="tabContentTracker" class="hidden">
+                <h2 class="text-2xl md:text-3xl font-black text-white mb-6 tracking-wide">Payment Tracker and History</h2>
 
-            <!-- Target Bill Selection -->
-            <div style="margin-bottom: 16px;">
-              <label for="payTargetPayment" class="form-label">Payment Category / Bill</label>
-              <div class="select-wrapper">
-                <select id="payTargetPayment" class="clay-select" onchange="handleTargetBillChange()">
-                  <?php if (!empty($myPayments)): ?>
-                    <?php foreach ($myPayments as $py): ?>
-                      <option value="<?= $py['id'] ?>"
-                              data-type="<?= htmlspecialchars($py['payment_type'] ?? 'Rent') ?>"
-                              data-amount="<?= number_format((float)($py['amount_due'] ?? 3000.00), 2, '.', '') ?>"
-                              data-cycle="<?= htmlspecialchars($py['billing_cycle'] ?? date('Y-m-01')) ?>"
-                              <?= ($py['status'] !== 'approved' && (!isset($firstUnpaid) || !$firstUnpaid)) ? ($firstUnpaid = true ? 'selected' : '') : '' ?>>
-                        <?= htmlspecialchars($py['payment_type'] ?? 'Rent') ?> — ₱<?= number_format((float)($py['amount_due'] ?? 3000.00), 2) ?> (<?= strtoupper($py['status']) ?>)
-                      </option>
+                <div class="space-y-4">
+                  <?php if (!empty($allTenantPayments)): ?>
+                    <?php $itemNum = 1; foreach ($allTenantPayments as $py): ?>
+                      <?php
+                      $statusLower = strtolower((string)($py['status'] ?? ''));
+                      $displayAmount = (float)($py['amount_paid'] > 0 ? $py['amount_paid'] : ($py['amount_due'] ?? 3000.00));
+                      $cycleText = !empty($py['billing_cycle']) ? date('F Y', strtotime($py['billing_cycle'])) : 'Current';
+                      $payType = !empty($py['payment_type']) ? $py['payment_type'] : 'Rent';
+                      $submitDate = !empty($py['payment_date']) ? date('M j, Y', strtotime($py['payment_date'])) : (!empty($py['created_at']) ? date('M j, Y', strtotime($py['created_at'])) : date('M j, Y'));
+                      
+                      $refDisplay = 'N/A';
+                      if (!empty($py['payment_method']) && preg_match('/Ref:\s*([A-Za-z0-9_-]+)/i', $py['payment_method'], $m)) {
+                          $refDisplay = $m[1];
+                      } elseif (!empty($py['id'])) {
+                          $refDisplay = sprintf('0839488574%05d', $py['id']);
+                      }
+                      ?>
+                      <!-- Tracker Row Card (60% Dominant Light Beige Fill bg-[#F5F0E6]) -->
+                      <div class="flex items-center justify-between p-4 md:p-5 bg-[#F5F0E6] rounded-xl border border-[#8C6D43]/40 shadow-sm hover:bg-white transition-colors">
+                        <div>
+                          <div class="font-bold text-base md:text-lg text-[#3E2723]">
+                            <?= $itemNum++ ?>. <?= htmlspecialchars($cycleText) ?> <?= htmlspecialchars($payType) ?>
+                          </div>
+                          <div class="text-xs text-[#7A6245] mt-1 font-medium">
+                            Date Submitted: <?= htmlspecialchars($submitDate) ?>
+                          </div>
+                          <div class="text-xs text-[#7A6245] mt-0.5 font-medium">
+                            Ref No.: <?= htmlspecialchars($refDisplay) ?>
+                          </div>
+                        </div>
+                        <div class="text-right">
+                          <div class="font-black text-base md:text-lg text-[#3E2723]">
+                            PHP <?= number_format($displayAmount, 2) ?>
+                          </div>
+                          <div>
+                            <!-- Status Badges (10% Accent Layer) -->
+                            <?php if ($statusLower === 'approved'): ?>
+                              <span class="inline-block mt-2 px-4 py-1 bg-[#22c55e] text-white font-black text-xs uppercase rounded shadow-sm">Verified</span>
+                            <?php elseif ($statusLower === 'pending'): ?>
+                              <span class="inline-block mt-2 px-4 py-1 bg-[#f59e0b] text-white font-black text-xs uppercase rounded shadow-sm">Pending</span>
+                            <?php elseif ($statusLower === 'overdue'): ?>
+                              <span class="inline-block mt-2 px-4 py-1 bg-[#ef4444] text-white font-black text-xs uppercase rounded shadow-sm">Overdue</span>
+                            <?php elseif ($statusLower === 'rejected'): ?>
+                              <span class="inline-block mt-2 px-4 py-1 bg-[#ef4444] text-white font-black text-xs uppercase rounded shadow-sm">Rejected</span>
+                            <?php else: ?>
+                              <span class="inline-block mt-2 px-4 py-1 bg-[#ef4444] text-white font-black text-xs uppercase rounded shadow-sm">Unpaid</span>
+                            <?php endif; ?>
+                          </div>
+                        </div>
+                      </div>
                     <?php endforeach; ?>
                   <?php else: ?>
-                    <option value="0" data-type="Advance Deposit" data-amount="3000.00" data-cycle="<?= date('Y-m-01') ?>">
-                      Advance Deposit — ₱3,000.00 (UNPAID)
-                    </option>
-                    <option value="0" data-type="Rent" data-amount="3000.00" data-cycle="<?= date('Y-m-01') ?>">
-                      Monthly Rent — ₱3,000.00 (UNPAID)
-                    </option>
+                    <div class="p-8 bg-[#F5F0E6] rounded-xl border border-[#8C6D43]/40 text-center text-[#7A6245] font-bold">
+                      No payment records found yet. Submit your payment proof above to start tracking.
+                    </div>
                   <?php endif; ?>
-                </select>
-              </div>
-            </div>
-
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 14px; margin-bottom: 18px;">
-              <div class="form-group" style="margin-bottom: 0;">
-                <label for="payCycle" class="form-label">Billing Cycle</label>
-                <div class="select-wrapper">
-                  <select id="payCycle" class="clay-select">
-                    <?php if ($currentPayment && !empty($currentPayment['billing_cycle'])): ?>
-                      <option value="<?= htmlspecialchars($currentPayment['billing_cycle']) ?>" selected><?= date('F Y', strtotime($currentPayment['billing_cycle'])) ?></option>
-                    <?php endif; ?>
-                    <option value="<?= date('Y-m-01') ?>" selected><?= date('F Y') ?></option>
-                    <option value="<?= date('Y-m-01', strtotime('-1 month')) ?>"><?= date('F Y', strtotime('-1 month')) ?></option>
-                  </select>
                 </div>
               </div>
-              <div class="form-group" style="margin-bottom: 0;">
-                <label for="payAmount" class="form-label">Amount Paid</label>
-                <input type="number" id="payAmount" class="clay-input" value="3000.00" step="0.01">
-              </div>
-            </div>
 
-            <!-- Clay Drop-Zone -->
-            <div class="clay-dropzone" id="receiptDropZone">
-              <input type="file" id="receiptFileInput" class="dropzone-input" accept=".pdf,.png,.jpg,.jpeg,.webp">
-              <div class="dropzone-icon" style="display: inline-flex; align-items: center; justify-content: center;"><i data-lucide="file-text" class="w-8 h-8" aria-hidden="true"></i></div>
-              <h3 class="dropzone-title">Drag &amp; drop rent receipt here</h3>
-              <p class="dropzone-desc">or <strong>click to browse device</strong></p>
-              <div style="display: flex; justify-content: center; gap: 6px; margin-top: 14px;">
-                <span class="clay-badge badge-low" style="font-size: 10px;">PDF</span>
-                <span class="clay-badge badge-low" style="font-size: 10px;">PNG</span>
-                <span class="clay-badge badge-low" style="font-size: 10px;">JPG</span>
-                <span class="clay-badge badge-low" style="font-size: 10px;">Max 8MB</span>
-              </div>
             </div>
-
-            <!-- File Preview Card -->
-            <div class="file-preview-card" id="filePreviewCard">
-              <div class="file-preview-info">
-                <div class="file-preview-icon" style="display: inline-flex; align-items: center; justify-content: center;"><i data-lucide="paperclip" class="w-5 h-5" aria-hidden="true"></i></div>
-                <div>
-                  <div class="file-name" id="previewFileName">receipt.pdf</div>
-                  <div class="file-size" id="previewFileSize">1.2 MB</div>
-                </div>
-              </div>
-              <button type="button" class="btn-remove-file" id="btnRemoveFile" aria-label="Remove file"><i data-lucide="x" class="w-4 h-4" aria-hidden="true"></i></button>
-            </div>
-
-            <!-- Progress Track -->
-            <div class="clay-progress-wrapper" id="progressWrapper">
-              <div class="clay-progress-track">
-                <div class="clay-progress-fill" id="progressFill"></div>
-              </div>
-            </div>
-
-            <button type="button" class="clay-btn clay-btn-success clay-btn-full" id="btnUploadReceipt" style="margin-top: 20px;">
-              <span style="display: inline-flex; align-items: center; gap: 8px;"><i data-lucide="upload" class="w-4 h-4" aria-hidden="true"></i> Upload Payment</span>
-            </button>
           </div>
 
-          <!-- Payment History Card -->
-          <div class="clay-card">
-            <div class="widget-header">
-              <div>
-                <h2 class="widget-title">Historical Receipts Ledger</h2>
-                <p style="font-size: 13px; color: var(--text-muted);">Verified receipts on file for <?= htmlspecialchars($unit['unit_number']) ?></p>
-              </div>
-            </div>
-
-            <div style="display: flex; flex-direction: column; gap: 12px; margin-top: 16px;">
-              <?php if (empty($myPayments)): ?>
-                <p style="font-size: 13px; color: var(--text-muted); text-align: center; padding: 20px;">No payment records found.</p>
-              <?php else: ?>
-                <?php foreach ($myPayments as $py): ?>
-                <div style="display: flex; justify-content: space-between; align-items: flex-start; padding: 14px 18px; background: var(--clay-card-bg); border-radius: var(--radius-md); box-shadow: var(--clay-card-shadow-sm); border: 1px solid var(--clay-border); gap: 12px;">
-                  <div>
-                    <div style="display: flex; align-items: center; gap: 8px;">
-                      <span class="clay-badge" style="background: <?= ($py['payment_type'] ?? '') === 'Advance Deposit' ? '#ede9fe; color: #6d28d9; border: 1px solid rgba(109,40,217,0.25);' : '#eff6ff; color: #1d4ed8; border: 1px solid rgba(29,78,216,0.25);' ?> font-size: 10px; font-weight: 700; padding: 2px 7px;">
-                        <?= htmlspecialchars($py['payment_type'] ?? 'Rent') ?>
-                      </span>
-                      <span style="font-size: 14px; font-weight: 800; color: #0f172a;">
-                        <?= !empty($py['billing_cycle']) ? date('F Y', strtotime($py['billing_cycle'])) : 'Pending Setup' ?>
-                      </span>
-                    </div>
-                    <div style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">
-                      <?php if ($py['status'] === 'pending_setup'): ?>
-                        Amount: <?= $py['amount_due'] !== null ? '₱' . number_format((float)$py['amount_due'], 2) : 'Awaiting configuration by Owner' ?>
-                      <?php elseif ($py['status'] === 'unpaid'): ?>
-                        Amount Due: ₱<?= number_format((float)$py['amount_due'], 2) ?>
-                        <?php if (!empty($py['additional_space_fee']) && (float)$py['additional_space_fee'] > 0): ?>
-                          <span style="color: #7c3aed; font-weight: 700; font-size: 11.5px;">(includes ₱<?= number_format((float)$py['additional_space_fee'], 2) ?> space)</span>
-                        <?php endif; ?>
-                        (Due: <?= !empty($py['due_date']) ? date('M j, Y', strtotime($py['due_date'])) : 'Pending' ?>)
-                      <?php else: ?>
-                        ₱<?= number_format((float)$py['amount_paid'], 2) ?> paid on <?= $py['payment_date'] ?? 'Pending' ?>
-                        <?php if (!empty($py['additional_space_fee']) && (float)$py['additional_space_fee'] > 0): ?>
-                          <span style="color: #7c3aed; font-weight: 700; font-size: 11px;">(incl. ₱<?= number_format((float)$py['additional_space_fee'], 2) ?> space)</span>
-                        <?php endif; ?>
-                      <?php endif; ?>
-                    </div>
-                    <?php if (!empty($py['verification_notes'])): ?>
-                      <div style="font-size: 11.5px; color: <?= $py['status'] === 'rejected' ? '#b91c1c' : ($py['status'] === 'pending_setup' ? '#d97706' : '#047857') ?>; margin-top: 6px; font-weight: 600;">
-                        Feedback: <?= htmlspecialchars($py['verification_notes']) ?>
-                      </div>
-                    <?php endif; ?>
-                  </div>
-                  <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 8px;">
-                    <?php if ($py['status'] === 'pending_setup'): ?>
-                      <span class="clay-badge" style="background: #fef3c7; color: #92400e; font-weight: 700; border: 1px solid rgba(245, 158, 11, 0.3); font-size: 11px;">PENDING SETUP</span>
-                    <?php elseif ($py['status'] === 'unpaid'): ?>
-                      <div style="display: flex; align-items: center; gap: 6px;">
-                        <span class="clay-badge" style="background: #fee2e2; color: #991b1b; font-weight: 700; border: 1px solid rgba(239, 68, 68, 0.3); font-size: 11px;">UNPAID</span>
-                        <button type="button" class="clay-btn clay-btn-primary" style="padding: 4px 10px; font-size: 11px; font-weight: 700; border-radius: 6px;" onclick="selectBillToPay(<?= (int)$py['id'] ?>)">Pay</button>
-                      </div>
-                    <?php else: ?>
-                      <span class="clay-badge badge-<?= strtolower($py['status']) ?>" style="display: inline-flex; align-items: center; gap: 4px;">
-                        <?= $py['status'] === 'pending' ? 'PENDING VERIFICATION' : ($py['status'] === 'approved' ? '<i data-lucide="check" class="w-3.5 h-3.5" aria-hidden="true"></i> VERIFIED' : strtoupper($py['status'])) ?>
-                      </span>
-                    <?php endif; ?>
-                    <?php if ($py['receipt_filename']): ?>
-                      <a href="uploads/receipts/<?= htmlspecialchars($py['receipt_filename']) ?>" target="_blank" class="btn-inspect-proof" style="display: inline-flex; align-items: center; gap: 4px;"><i data-lucide="file-text" class="w-3.5 h-3.5" aria-hidden="true"></i> Proof</a>
-                    <?php endif; ?>
-                  </div>
-                </div>
-                <?php endforeach; ?>
-              <?php endif; ?>
-            </div>
-          </div>
         </div>
-
       </section>
 
       <!-- CATEGORY 4: SUBMIT GENERAL REPORT (NON-MAINTENANCE REQUESTS) -->
       <section id="tenantReport" class="app-view-section">
-        <div class="clay-card report-request-card">
-          <h2 class="report-form-title">Submit General Report</h2>
 
-          <form id="reportForm" class="maintenance-request-form">
-            <div class="maintenance-form-grid report-form-grid">
-              <!-- Left Column: Type of Request, Subject & Scope Guidance -->
-              <div class="maintenance-form-left">
-                <div class="maintenance-field-group">
-                  <label for="reportCategoryTrigger" class="maintenance-field-label">Type of Request:</label>
-                  <div class="maintenance-select-wrap" id="reportCategoryWrap">
-                    <select id="reportCategory" class="maintenance-native-select-hidden" tabindex="-1" aria-hidden="true">
-                      <option value="" disabled selected hidden></option>
-                      <option value="Additional Occupant Registration">Additional Occupant Registration</option>
-                      <option value="Pet Adoption/Registration">Pet Adoption/Registration</option>
-                      <option value="Unit Customization/Modification">Unit Customization/Modification</option>
-                      <option value="General Inquiry">General Inquiry</option>
-                      <option value="Other...">Other...</option>
-                    </select>
-                    <button type="button"
-                            id="reportCategoryTrigger"
-                            class="maintenance-select-trigger"
-                            aria-haspopup="listbox"
-                            aria-expanded="false"
-                            aria-controls="reportCategoryMenu">
-                      <span class="maintenance-select-value is-placeholder" id="reportCategoryDisplay">Select a request category...</span>
-                    </button>
-                    <div class="maintenance-select-menu" id="reportCategoryMenu" role="listbox" aria-label="Type of Request">
-                      <button type="button" class="maintenance-select-option" role="option" data-value="Additional Occupant Registration">Additional Occupant Registration</button>
-                      <button type="button" class="maintenance-select-option" role="option" data-value="Pet Adoption/Registration">Pet Adoption/Registration</button>
-                      <button type="button" class="maintenance-select-option" role="option" data-value="Unit Customization/Modification">Unit Customization/Modification</button>
-                      <button type="button" class="maintenance-select-option" role="option" data-value="General Inquiry">General Inquiry</button>
-                      <button type="button" class="maintenance-select-option" role="option" data-value="Other...">Other...</button>
-                    </div>
-                  </div>
-                </div>
+        <!-- ═══════════════════════════════════════════════════════════════════
+             REPORT AND APPROVAL REQUEST — TABBED NAVIGATION COMPONENT
+             Color Hierarchy (60-30-10 Rule):
+             • 60% Dominant (Light Beige): #E8D8B0 / #FAF5EC (Inputs, Tracker Container, Inactive Tab)
+             • 30% Secondary (Medium Brown): #B89B72 (Active Submit Tab & Submit Container)
+             • 10% Accent (Dark Brown): #4A3728 (Buttons, Headers, Progress Fill)
+             ═══════════════════════════════════════════════════════════════════ -->
+        <div class="w-full max-w-4xl mx-auto" id="approvalTabsContainer">
 
-                <div class="maintenance-field-group">
-                  <label for="reportSubject" class="maintenance-field-label">Subject:</label>
-                  <input type="text" id="reportSubject" class="maintenance-text-input" maxlength="160" placeholder="e.g. Request to register a small indoor pet or roommate" required>
-                </div>
+          <!-- ── Top Tab Bar ─────────────────────────────────────────────── -->
+          <div class="flex items-end gap-1.5" role="tablist" aria-label="Approval Request Navigation">
+            <!-- Tab 1: Submit Request (Active by default, connects seamlessly to Medium Brown container) -->
+            <button
+              type="button"
+              id="tabBtnSubmit"
+              role="tab"
+              aria-selected="true"
+              aria-controls="tabPaneSubmit"
+              onclick="switchApprovalTab('submit')"
+              class="relative z-10 px-6 py-3 rounded-t-2xl font-black text-sm sm:text-base tracking-wide
+                     bg-[#B89B72] text-[#261909] border-2 border-b-0 border-[#7C5A36]
+                     shadow-[0_-2px_6px_rgba(74,55,40,0.1)] transition-all cursor-pointer
+                     focus:outline-none focus:ring-2 focus:ring-[#4A3728]"
+              style="margin-bottom: -2px;">
+              Submit Request
+            </button>
 
-                <div class="report-helper-hint">
-                  Need a plumbing, electrical, or structural repair instead? Use <button type="button" onclick="switchTenantSection('tenantMaintenance', document.getElementById('navTenantMaintenance'))" style="background: none; border: none; padding: 0; color: #6E3A14; font-weight: 800; text-decoration: underline; cursor: pointer; font-family: inherit; font-size: inherit;">Log Maintenance</button> so it goes directly to the repair queue.
-                </div>
-              </div>
-
-              <!-- Right Column: Request Details -->
-              <div class="maintenance-form-right">
-                <div class="maintenance-field-group maintenance-desc-group">
-                  <label for="reportDetails" class="maintenance-field-label">Request Details:</label>
-                  <textarea id="reportDetails" class="maintenance-textarea-input report-textarea-input" placeholder="Provide details about the additional occupant, pet, or planned unit customization..." required></textarea>
-                </div>
-              </div>
-            </div>
-
-            <!-- Optional Supporting File/Photo Upload -->
-            <div class="maintenance-upload-section">
-              <label for="reportAttachments" class="maintenance-field-label">Attach supporting documents or photos (Optional):</label>
-              <div class="maintenance-upload-center">
-                <div class="maintenance-upload-btn-wrap">
-                  <input type="file" id="reportAttachments" name="report_attachments[]" accept="image/*,.pdf,application/pdf" multiple class="maintenance-file-input">
-                  <label for="reportAttachments" class="maintenance-upload-btn">
-                    <i data-lucide="upload" class="maintenance-upload-icon" aria-hidden="true"></i>
-                    <span id="reportAttachmentsLabel">Upload File/Photo</span>
-                  </label>
-                </div>
-              </div>
-              <div id="reportAttachmentsPreview" class="maintenance-photos-preview" style="display: none;"></div>
-            </div>
-
-            <!-- Centered Submit Report Button -->
-            <div class="maintenance-submit-row">
-              <button type="submit" class="maintenance-submit-btn" id="btnSubmitReport">Submit Report</button>
-            </div>
-          </form>
-        </div>
-
-        <!-- Submitted Reports History & Owner Decisions -->
-        <div class="clay-card report-history-card">
-          <div class="report-history-header">
-            <div>
-              <h3 class="report-history-title">My General Reports</h3>
-              <p style="margin: 3px 0 0; font-size: 12.5px; color: var(--text-muted);">Track owner approvals, acknowledgements, and remarks on your non-maintenance requests.</p>
-            </div>
-            <span class="clay-badge" id="tenantReportsCountBadge" style="background: #F3E4C6; color: #56380E; font-weight: 800;"><?= count($myReports) ?> <?= count($myReports) === 1 ? 'Report' : 'Reports' ?></span>
+            <!-- Tab 2: Status Tracker (Inactive by default, Light Beige background) -->
+            <button
+              type="button"
+              id="tabBtnTracker"
+              role="tab"
+              aria-selected="false"
+              aria-controls="tabPaneTracker"
+              onclick="switchApprovalTab('tracker')"
+              class="relative z-0 px-6 py-2.5 rounded-t-2xl font-bold text-sm sm:text-base tracking-wide
+                     bg-[#E8D8B0] text-[#5C3D1E] border-2 border-[#8C6D43]
+                     hover:bg-[#DFCE9F] transition-all cursor-pointer
+                     focus:outline-none focus:ring-2 focus:ring-[#4A3728]"
+              style="margin-bottom: -2px;">
+              Status Tracker
+            </button>
           </div>
 
-          <div id="reportHistoryContainer" class="report-history-list">
-            <?php if (empty($myReports)): ?>
-              <p id="noReportsMsg" style="font-size: 13px; color: var(--text-muted); text-align: center; padding: 18px 8px; margin: 0;">No general reports submitted yet.</p>
-            <?php else: ?>
-              <?php foreach ($myReports as $rep): ?>
-                <?php
-                  $repSt = $rep['status'] ?: 'Pending';
-                  $repStSlug = strtolower($repSt);
-                  $repPayloadAttr = htmlspecialchars(json_encode($rep, JSON_UNESCAPED_UNICODE), ENT_QUOTES, 'UTF-8');
-                  $repFiles = array_values(array_filter(array_map('trim', explode(',', (string)($rep['attachment_path'] ?? '')))));
-                ?>
-                <div class="report-history-item" role="button" tabindex="0" onclick='openTenantReportModal(<?= $repPayloadAttr ?>)' onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openTenantReportModal(<?= $repPayloadAttr ?>);}">
-                  <div style="min-width: 0; flex: 1;">
-                    <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 5px;">
-                      <span class="clay-badge" style="background: #F3E4C6; color: #56380E; font-weight: 800; font-size: 11px;">#GR-<?= str_pad((string)$rep['id'], 4, '0', STR_PAD_LEFT) ?></span>
-                      <span style="font-size: 11.5px; font-weight: 700; color: #6E3A14; background: #EFE3CC; padding: 2px 8px; border-radius: 999px;"><?= htmlspecialchars($rep['category']) ?></span>
-                      <span style="font-size: 11.5px; color: var(--text-muted); font-weight: 600;"><?= date('M j, Y', strtotime($rep['created_at'])) ?></span>
-                      <?php if (!empty($repFiles)): ?>
-                        <span style="display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 700; color: #56380E;"><i data-lucide="paperclip" class="w-3.5 h-3.5" aria-hidden="true"></i> <?= count($repFiles) ?> <?= count($repFiles) === 1 ? 'file' : 'files' ?></span>
-                      <?php endif; ?>
-                    </div>
-                    <h4 style="margin: 0; font-size: 14.5px; font-weight: 800; color: #261909;"><?= htmlspecialchars($rep['subject']) ?></h4>
-                    <?php if (!empty(trim((string)($rep['owner_remarks'] ?? '')))): ?>
-                      <div style="display: flex; align-items: center; gap: 5px; font-size: 12px; color: #4A3214; margin-top: 6px; font-weight: 600;">
-                        <i data-lucide="message-square" class="w-3.5 h-3.5 shrink-0" aria-hidden="true"></i> <span>Owner remarks: <?= htmlspecialchars(mb_strimwidth(trim((string)$rep['owner_remarks']), 0, 80, '...')) ?></span>
-                      </div>
-                    <?php endif; ?>
-                  </div>
-                  <span class="report-status-pill report-status-pill--<?= htmlspecialchars($repStSlug) ?>"><?= htmlspecialchars(strtoupper($repSt)) ?></span>
-                </div>
-              <?php endforeach; ?>
+          <!-- ── Tab 1: "Submit Request" Pane (Active State) ─────────────── -->
+          <div
+            id="tabPaneSubmit"
+            role="tabpanel"
+            aria-labelledby="tabBtnSubmit"
+            class="relative z-0 rounded-b-3xl rounded-tr-3xl border-2 border-[#7C5A36]
+                   bg-[#B89B72] p-6 sm:p-9 shadow-xl">
+
+            <!-- Card Header: Large Dark Text -->
+            <h2 class="text-2xl sm:text-4xl font-black text-[#3E2723] text-center mb-7 tracking-wide drop-shadow-sm">
+              Report and Approval Request
+            </h2>
+
+            <?php if (!$isTenantVerified): ?>
+            <div class="mb-6 p-4 rounded-xl border border-amber-300 bg-amber-50 text-amber-900 flex items-center justify-between gap-3 shadow-sm" role="alert">
+              <div class="flex items-center gap-3">
+                <i data-lucide="eye" class="w-5 h-5 text-amber-700 flex-shrink-0" aria-hidden="true"></i>
+                <p class="font-bold text-xs sm:text-sm m-0">Viewing Mode: Verify your identity to submit new approval requests.</p>
+              </div>
+              <button type="button" onclick="openModal('verifyAccountModal')" class="flex-shrink-0 px-3.5 py-1.5 rounded-lg text-xs font-bold bg-[#4A3728] text-white hover:bg-[#382618] transition-colors cursor-pointer">
+                Verify Now
+              </button>
+            </div>
             <?php endif; ?>
+
+            <form id="approvalForm" class="flex flex-col gap-5" autocomplete="off">
+              <!-- Form Layout: Two-Column Label & Input Grid -->
+              <div class="grid grid-cols-1 md:grid-cols-[180px_1fr] items-center gap-2 sm:gap-4">
+                <label for="requestCategory" class="font-black text-sm sm:text-base text-[#2E1A0C]">
+                  Request Category:
+                </label>
+                <div class="relative">
+                  <select
+                    id="requestCategory"
+                    name="category"
+                    required
+                    <?= !$isTenantVerified ? 'disabled' : '' ?>
+                    class="w-full appearance-none rounded-xl border-2 border-[#7C5A36]
+                           bg-[#FAF5EC] text-[#2E1A0C] font-semibold text-sm sm:text-base
+                           px-4 py-3 pr-10 shadow-inner
+                           focus:outline-none focus:ring-2 focus:ring-[#4A3728] focus:border-[#4A3728]
+                           transition-colors cursor-pointer <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed' : '' ?>">
+                    <option value="" disabled selected hidden>Select a request category...</option>
+                    <option value="Unit Customization">Unit Customization</option>
+                    <option value="Pet Addition">Pet Addition</option>
+                    <option value="Appliance or Wi-Fi Installation">Appliance or Wi-Fi Installation</option>
+                    <option value="Additional Occupant">Additional Occupant</option>
+                    <option value="Vehicle Parking Request">Vehicle Parking Request</option>
+                    <option value="Move-Out or Lease Renewal Notice">Move-Out or Lease Renewal Notice</option>
+                    <option value="Key Duplication or Replacement">Key Duplication or Replacement</option>
+                  </select>
+                  <div class="pointer-events-none absolute inset-y-0 right-3.5 flex items-center text-[#5C3D1E]">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
+                    </svg>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Request Specification -->
+              <div class="grid grid-cols-1 md:grid-cols-[180px_1fr] items-center gap-2 sm:gap-4">
+                <label for="requestSpecification" class="font-black text-sm sm:text-base text-[#2E1A0C]">
+                  Request Specification:
+                </label>
+                <input
+                  type="text"
+                  id="requestSpecification"
+                  name="specification"
+                  placeholder="e.g. Add Dog (Golden Retriever)"
+                  maxlength="160"
+                  required
+                  <?= !$isTenantVerified ? 'disabled' : '' ?>
+                  class="w-full rounded-xl border-2 border-[#7C5A36]
+                         bg-[#FAF5EC] text-[#2E1A0C] font-semibold text-sm sm:text-base
+                         px-4 py-3 placeholder-[#9E835F] shadow-inner
+                         focus:outline-none focus:ring-2 focus:ring-[#4A3728] focus:border-[#4A3728]
+                         transition-colors <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed' : '' ?>">
+              </div>
+
+              <!-- Describe your Request -->
+              <div class="grid grid-cols-1 md:grid-cols-[180px_1fr] items-start gap-2 sm:gap-4">
+                <label for="requestDescription" class="font-black text-sm sm:text-base text-[#2E1A0C] pt-2">
+                  Describe your Request:
+                </label>
+                <textarea
+                  id="requestDescription"
+                  name="description"
+                  rows="4"
+                  placeholder="Describe and put the details of your request."
+                  required
+                  <?= !$isTenantVerified ? 'disabled' : '' ?>
+                  class="w-full rounded-xl border-2 border-[#7C5A36]
+                         bg-[#FAF5EC] text-[#2E1A0C] font-semibold text-sm sm:text-base
+                         px-4 py-3 placeholder-[#9E835F] shadow-inner resize-none
+                         focus:outline-none focus:ring-2 focus:ring-[#4A3728] focus:border-[#4A3728]
+                         transition-colors <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed' : '' ?>"></textarea>
+              </div>
+
+              <!-- Upload Supporting Document/Photo Zone with Dashed Border -->
+              <div class="w-full mt-1">
+                <input
+                  type="file"
+                  id="requestAttachments"
+                  name="request_attachments[]"
+                  accept="image/*,.pdf"
+                  multiple
+                  class="hidden"
+                  <?= !$isTenantVerified ? 'disabled' : '' ?>
+                  onchange="handleRequestFileSelect(this)">
+                <label
+                  for="requestAttachments"
+                  id="uploadDashedZone"
+                  class="flex items-center justify-center gap-3 w-full rounded-xl
+                         border-2 border-dashed border-[#7C5A36]
+                         bg-[#FAF5EC]/70 text-[#3E2723] hover:bg-[#FAF5EC]
+                         py-5 px-4 text-center transition-all cursor-pointer shadow-sm
+                         <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed pointer-events-none' : '' ?>">
+                  <span class="font-bold text-sm sm:text-base text-[#3E2723]">
+                    Upload Supporting Document/Photo
+                  </span>
+                  <!-- Upload Arrow Icon -->
+                  <svg class="w-6 h-6 text-[#3E2723]" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M12 12V4m0 0L8 8m4-4l4 4"/>
+                  </svg>
+                </label>
+                <div id="requestFilePreview" class="flex flex-wrap gap-2 mt-2"></div>
+              </div>
+
+              <!-- Submit Request Button (10% Dark Brown Accent Color) -->
+              <div class="flex justify-center mt-3">
+                <button
+                  type="submit"
+                  id="btnSubmitApproval"
+                  <?= !$isTenantVerified ? 'disabled' : '' ?>
+                  class="min-w-[240px] sm:min-w-[280px] py-3.5 px-8 rounded-xl font-black text-lg tracking-wide
+                         text-white bg-[#4A3728] hover:bg-[#382618] active:bg-[#2A1A0E]
+                         border-2 border-[#2D1B0E] shadow-lg hover:shadow-xl hover:-translate-y-0.5
+                         transition-all cursor-pointer <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed pointer-events-none' : '' ?>">
+                  Submit Request
+                </button>
+              </div>
+
+              <!-- Exact Disclaimer Below Submit Button -->
+              <p class="text-xs sm:text-sm text-[#3E2723] font-semibold text-center mt-2 mb-0 italic">
+                *Disclaimer: sagot mo to lahat ng cost dito tenant pero iaapprove muna ni owner
+              </p>
+            </form>
+          </div>
+
+          <!-- ── Tab 2: "Status Tracker" Pane (Hidden State) ─────────────── -->
+          <div
+            id="tabPaneTracker"
+            role="tabpanel"
+            aria-labelledby="tabBtnTracker"
+            class="hidden relative z-0 rounded-b-3xl rounded-tr-3xl border-2 border-[#8C6D43]
+                   bg-[#E8D8B0] p-6 sm:p-9 shadow-xl">
+
+            <!-- Card Header: Large Dark Text -->
+            <h2 class="text-2xl sm:text-3xl font-black text-[#3E2723] mb-6 tracking-wide">
+              Owner Approval Status Tracker and History:
+            </h2>
+
+            <!-- Tracker List Flex Container -->
+            <div id="trackerList" class="flex flex-col gap-5">
+
+              <?php if (empty($myReports)): ?>
+              <!-- Default Demo/Sample Tracker Item matching the exact prompt specification -->
+              <div class="flex flex-col gap-3 rounded-2xl border-2 border-[#8C6D43]/40 bg-white/60 p-5 sm:p-6 shadow-sm">
+                <!-- Top row: Request Title on left, White category badge on right -->
+                <div class="flex items-start justify-between gap-3 flex-wrap">
+                  <h3 class="text-base sm:text-lg font-black text-[#3E2723] leading-snug m-0">
+                    1. Pet Addition: Add Dog (Golden Retriever)
+                  </h3>
+                  <span class="flex-shrink-0 px-4 py-1.5 rounded-lg bg-white border border-[#8C6D43]/30
+                               text-[#3E2723] font-black text-xs sm:text-sm shadow-sm text-center">
+                    Pet Addition
+                  </span>
+                </div>
+
+                <!-- Date -->
+                <p class="text-xs font-bold text-[#664D36] m-0">
+                  Date Submitted: Nov 14, 2026
+                </p>
+
+                <!-- Progress Bar: Filled portion Dark Brown, Empty track White -->
+                <div class="mt-1">
+                  <div class="w-full h-3.5 rounded-full bg-white border border-[#8C6D43]/30 overflow-hidden shadow-inner">
+                    <div class="h-full rounded-full bg-[#4A3728] w-1/2 transition-all duration-500"></div>
+                  </div>
+                  <p class="text-xs font-black text-[#4A3728] mt-1.5 text-right m-0">
+                    Pending Owner Approval
+                  </p>
+                </div>
+
+                <!-- Request Details and Description: Label above White read-only box -->
+                <div class="mt-2">
+                  <label class="block text-xs font-black text-[#3E2723] mb-1.5">
+                    Request Details and Description:
+                  </label>
+                  <div class="w-full rounded-xl border border-[#8C6D43]/40 bg-white p-4 text-sm font-medium text-[#3E2723] min-h-[80px] shadow-inner leading-relaxed">
+                    Requesting approval to keep a trained Golden Retriever in Unit 1. All necessary vaccination documents and care arrangements are complete and ready for review.
+                  </div>
+                </div>
+              </div>
+              <?php else: ?>
+              <?php foreach ($myReports as $idx => $rep):
+                $repStatus    = trim((string)($rep['status'] ?? 'Pending'));
+                $repCategory  = htmlspecialchars($rep['category'] ?? 'General Request');
+                $repSubject   = htmlspecialchars($rep['subject'] ?? 'Untitled Request');
+                $repDetails   = htmlspecialchars($rep['details'] ?? ($rep['description'] ?? ''));
+                $repDate      = !empty($rep['created_at']) ? date('M d, Y', strtotime($rep['created_at'])) : date('M d, Y');
+                $repOwnerNote = htmlspecialchars(trim((string)($rep['owner_remarks'] ?? '')));
+                $repNum       = $idx + 1;
+
+                $stLower = strtolower($repStatus);
+                $barPct  = match($stLower) {
+                  'approved', 'done', 'resolved' => 100,
+                  'in_progress', 'under review', 'ongoing' => 60,
+                  'rejected', 'cancelled' => 100,
+                  default => 50,
+                };
+                $barColor = match($stLower) {
+                  'approved', 'done', 'resolved' => '#2D6A4F',
+                  'rejected', 'cancelled' => '#7A1C1C',
+                  default => '#4A3728',
+                };
+                $statusLabel = match($stLower) {
+                  'pending' => 'Pending Owner Approval',
+                  'approved' => 'Approved by Owner',
+                  'rejected' => 'Request Declined',
+                  default => ucfirst($repStatus),
+                };
+              ?>
+              <div class="flex flex-col gap-3 rounded-2xl border-2 border-[#8C6D43]/40 bg-white/60 p-5 sm:p-6 shadow-sm">
+                <!-- Top row: Request Title on left, White category badge on right -->
+                <div class="flex items-start justify-between gap-3 flex-wrap">
+                  <h3 class="text-base sm:text-lg font-black text-[#3E2723] leading-snug m-0">
+                    <?= $repNum ?>. <?= $repCategory ?>: <?= $repSubject ?>
+                  </h3>
+                  <span class="flex-shrink-0 px-4 py-1.5 rounded-lg bg-white border border-[#8C6D43]/30
+                               text-[#3E2723] font-black text-xs sm:text-sm shadow-sm text-center">
+                    <?= $repCategory ?>
+                  </span>
+                </div>
+
+                <!-- Date -->
+                <p class="text-xs font-bold text-[#664D36] m-0">
+                  Date Submitted: <?= $repDate ?>
+                </p>
+
+                <!-- Progress Bar: Filled portion Dark Brown, Empty track White -->
+                <div class="mt-1">
+                  <div class="w-full h-3.5 rounded-full bg-white border border-[#8C6D43]/30 overflow-hidden shadow-inner">
+                    <div class="h-full rounded-full transition-all duration-500" style="width: <?= $barPct ?>%; background-color: <?= $barColor ?>;"></div>
+                  </div>
+                  <p class="text-xs font-black mt-1.5 text-right m-0" style="color: <?= $barColor ?>;">
+                    <?= $statusLabel ?>
+                  </p>
+                </div>
+
+                <?php if (!empty($repOwnerNote)): ?>
+                <div class="p-3 rounded-xl bg-white/90 border border-[#8C6D43]/30 text-xs font-semibold text-[#4A3728]">
+                  <span class="font-black">Owner Remark:</span> <?= $repOwnerNote ?>
+                </div>
+                <?php endif; ?>
+
+                <!-- Request Details and Description: Label above White read-only box -->
+                <div class="mt-2">
+                  <label class="block text-xs font-black text-[#3E2723] mb-1.5">
+                    Request Details and Description:
+                  </label>
+                  <div class="w-full rounded-xl border border-[#8C6D43]/40 bg-white p-4 text-sm font-medium text-[#3E2723] min-h-[80px] shadow-inner leading-relaxed whitespace-pre-wrap">
+                    <?= !empty($repDetails) ? $repDetails : '<span class="text-[#9E835F] italic">No description provided.</span>' ?>
+                  </div>
+                </div>
+              </div>
+              <?php endforeach; ?>
+              <?php endif; ?>
+
+            </div>
           </div>
         </div>
+
+        <!-- ── Vanilla JavaScript for Tab Switching & Upload Handling ── -->
+        <script>
+        /**
+         * switchApprovalTab:
+         * Toggles the 'hidden' class between the two content sections.
+         * Dynamically swaps styles so active tab seamlessly connects to container below.
+         */
+        function switchApprovalTab(tabName) {
+          const tabBtnSubmit = document.getElementById('tabBtnSubmit');
+          const tabBtnTracker = document.getElementById('tabBtnTracker');
+          const tabPaneSubmit = document.getElementById('tabPaneSubmit');
+          const tabPaneTracker = document.getElementById('tabPaneTracker');
+
+          if (!tabBtnSubmit || !tabBtnTracker || !tabPaneSubmit || !tabPaneTracker) return;
+
+          if (tabName === 'submit') {
+            // Show Submit pane, hide Tracker pane
+            tabPaneSubmit.classList.remove('hidden');
+            tabPaneTracker.classList.add('hidden');
+
+            // Style Submit Tab as Active (Medium Brown seamless connect)
+            tabBtnSubmit.setAttribute('aria-selected', 'true');
+            tabBtnSubmit.className = "relative z-10 px-6 py-3 rounded-t-2xl font-black text-sm sm:text-base tracking-wide bg-[#B89B72] text-[#261909] border-2 border-b-0 border-[#7C5A36] shadow-[0_-2px_6px_rgba(74,55,40,0.1)] transition-all cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#4A3728]";
+            tabBtnSubmit.style.marginBottom = "-2px";
+
+            // Style Tracker Tab as Inactive (Light Beige)
+            tabBtnTracker.setAttribute('aria-selected', 'false');
+            tabBtnTracker.className = "relative z-0 px-6 py-2.5 rounded-t-2xl font-bold text-sm sm:text-base tracking-wide bg-[#E8D8B0] text-[#5C3D1E] border-2 border-[#8C6D43] hover:bg-[#DFCE9F] transition-all cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#4A3728]";
+            tabBtnTracker.style.marginBottom = "-2px";
+
+          } else if (tabName === 'tracker') {
+            // Show Tracker pane, hide Submit pane
+            tabPaneTracker.classList.remove('hidden');
+            tabPaneSubmit.classList.add('hidden');
+
+            // Style Tracker Tab as Active (Light Beige seamless connect)
+            tabBtnTracker.setAttribute('aria-selected', 'true');
+            tabBtnTracker.className = "relative z-10 px-6 py-3 rounded-t-2xl font-black text-sm sm:text-base tracking-wide bg-[#E8D8B0] text-[#261909] border-2 border-b-0 border-[#8C6D43] shadow-[0_-2px_6px_rgba(74,55,40,0.1)] transition-all cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#4A3728]";
+            tabBtnTracker.style.marginBottom = "-2px";
+
+            // Style Submit Tab as Inactive (Medium Brown recessed)
+            tabBtnSubmit.setAttribute('aria-selected', 'false');
+            tabBtnSubmit.className = "relative z-0 px-6 py-2.5 rounded-t-2xl font-bold text-sm sm:text-base tracking-wide bg-[#B89B72]/70 text-[#261909]/80 border-2 border-[#7C5A36] hover:bg-[#B89B72] transition-all cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#4A3728]";
+            tabBtnSubmit.style.marginBottom = "-2px";
+          }
+        }
+
+        /**
+         * Handle file selection preview chips
+         */
+        function handleRequestFileSelect(input) {
+          const preview = document.getElementById('requestFilePreview');
+          if (!preview) return;
+          preview.innerHTML = '';
+          if (input.files && input.files.length > 0) {
+            Array.from(input.files).forEach(f => {
+              const chip = document.createElement('span');
+              chip.className = 'inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#4A3728] text-white text-xs font-bold shadow-sm';
+              chip.textContent = '📎 ' + (f.name.length > 25 ? f.name.substring(0, 22) + '...' : f.name);
+              preview.appendChild(chip);
+            });
+          }
+        }
+
+        // Form Submission with Feedback & Redirection to Tracker
+        document.addEventListener('DOMContentLoaded', () => {
+          const form = document.getElementById('approvalForm');
+          if (!form) return;
+
+          form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const btn = document.getElementById('btnSubmitApproval');
+            if (btn) {
+              btn.disabled = true;
+              btn.textContent = 'Submitting...';
+            }
+
+            try {
+              const formData = new FormData();
+              formData.append('category', document.getElementById('requestCategory').value);
+              formData.append('subject', document.getElementById('requestSpecification').value);
+              formData.append('details', document.getElementById('requestDescription').value);
+
+              const fileInput = document.getElementById('requestAttachments');
+              if (fileInput && fileInput.files.length > 0) {
+                for (let i = 0; i < fileInput.files.length; i++) {
+                  formData.append('report_attachments[]', fileInput.files[i]);
+                }
+              }
+
+              const res = await fetch('api/report_api.php', {
+                method: 'POST',
+                body: formData
+              });
+              const data = await res.json();
+
+              if (data.status === 'success') {
+                if (typeof showToast === 'function') {
+                  showToast('Request submitted successfully! Awaiting owner approval.', 'success');
+                } else {
+                  alert('Request submitted successfully!');
+                }
+                form.reset();
+                document.getElementById('requestFilePreview').innerHTML = '';
+                switchApprovalTab('tracker');
+                setTimeout(() => location.reload(), 1200);
+              } else {
+                if (typeof showToast === 'function') {
+                  showToast(data.message || 'Failed to submit request.', 'error');
+                } else {
+                  alert(data.message || 'Failed to submit request.');
+                }
+              }
+            } catch (err) {
+              if (typeof showToast === 'function') {
+                showToast('Network error while submitting request.', 'error');
+              } else {
+                alert('Network error while submitting request.');
+              }
+            } finally {
+              if (btn) {
+                btn.disabled = false;
+                btn.textContent = 'Submit Request';
+              }
+            }
+          });
+        });
+        </script>
+
       </section>
 
       <!-- CATEGORY 5: RESIDENT PROFILE (VIEW WITH INTERNAL SUB-SIDEBAR) -->
       <section id="tenantProfile" class="app-view-section">
-        <div class="dashboard-header-bar">
+        <div class="dashboard-header-bar flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
           <div class="dashboard-title-group">
-            <h1>Resident Profile &amp; Settings</h1>
-            <p>Manage your account information, residency verification, and login security.</p>
+            <h1 class="text-2xl md:text-3xl font-black text-[#3E2723] tracking-wide mb-1">Resident Profile &amp; Settings</h1>
+            <p class="text-sm md:text-base font-semibold text-[#7A6245] m-0">Manage your account information, residency verification, and login security.</p>
           </div>
         </div>
 
         <div class="profile-view-container">
-          <!-- Internal Sub-Sidebar with exactly two options -->
-          <div class="profile-sub-sidebar">
-            <button type="button" class="profile-subnav-item active" id="tenantSubnavAccount" onclick="switchProfileSubTab('accountInfo', this)">
+          <!-- Internal Sub-Sidebar with exactly two options (30% Secondary Medium Clay bg-[#B89B72]) -->
+          <div class="profile-sub-sidebar bg-[#B89B72]/15 border-2 border-[#B89B72] rounded-2xl p-3 flex flex-col gap-2">
+            <button type="button" class="profile-subnav-item active flex items-center gap-3 px-4 py-3 rounded-xl font-bold text-sm bg-[#B89B72] text-white border-2 border-[#8C6D43] transition-all cursor-pointer" id="tenantSubnavAccount" onclick="switchProfileSubTab('accountInfo', this)">
               <span class="subnav-icon">👤</span>
               <span>Account Information</span>
             </button>
-            <button type="button" class="profile-subnav-item" id="tenantSubnavPassword" onclick="switchProfileSubTab('changePassword', this)">
+            <button type="button" class="profile-subnav-item flex items-center gap-3 px-4 py-3 rounded-xl font-bold text-sm text-[#3E2723] hover:bg-[#B89B72]/20 border-2 border-transparent transition-all cursor-pointer" id="tenantSubnavPassword" onclick="switchProfileSubTab('changePassword', this)">
               <span class="subnav-icon">🔒</span>
               <span>Change Password</span>
             </button>
@@ -1582,23 +2137,23 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
               <!-- Verification Notification Bar inside Account Information (6s duration, Soft Red Warning / Soft Green Success) -->
               <div id="accountInfoVerificationAlert" class="account-info-verification-alert" style="display: none; margin-bottom: 22px; opacity: 1; transition: opacity 0.5s ease, transform 0.5s ease;"></div>
 
-              <div class="clay-card">
-                <div class="clay-card-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 22px; flex-wrap: wrap; gap: 12px;">
+              <div class="bg-white/95 border-2 border-[#B89B72] rounded-2xl p-6 sm:p-8 shadow-md">
+                <div class="flex justify-between items-center mb-6 flex-wrap gap-3 pb-4 border-b border-dashed border-[#8C6D43]/30">
                   <div>
-                    <h2 class="clay-card-title">Account Information</h2>
-                    <p class="clay-card-subtitle">Personal records and unit assignment details</p>
+                    <h2 class="text-xl sm:text-2xl font-black text-[#3E2723] tracking-wide m-0">Account Information</h2>
+                    <p class="text-xs sm:text-sm font-semibold text-[#7A6245] mt-1 mb-0">Personal records and unit assignment details</p>
                   </div>
-                  <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-                    <button type="button" class="clay-btn clay-btn-secondary" style="padding: 7px 16px; font-size: 12.5px;" onclick="openEditAccountInfoModal()">
+                  <div class="flex items-center gap-2.5 flex-wrap">
+                    <button type="button" class="px-4 py-2 rounded-xl text-xs sm:text-sm font-bold bg-[#F5F0E6] text-[#3E2723] border border-[#8C6D43] hover:bg-[#E8D8B0] shadow-sm transition-colors cursor-pointer" onclick="openEditAccountInfoModal()">
                       ✏️ Edit Information
                     </button>
                     <?php if (($user['verification_status'] ?? 'unverified') !== 'verified'): ?>
                       <?php if (($user['verification_status'] ?? '') === 'pending'): ?>
-                        <span class="clay-badge badge-pending" style="font-size: 13px; padding: 7px 16px;">
+                        <span class="bg-amber-100 text-amber-900 border border-amber-300 font-bold text-xs px-3.5 py-1.5 rounded-full shadow-sm flex items-center gap-1.5">
                           <span>⏳</span> Pending Review
                         </span>
                       <?php else: ?>
-                        <span class="clay-badge badge-unverified" style="font-size: 13px; padding: 7px 16px;">
+                        <span class="bg-red-100 text-red-900 border border-red-300 font-bold text-xs px-3.5 py-1.5 rounded-full shadow-sm flex items-center gap-1.5">
                           <span>⚠️</span> Unverified Account
                         </span>
                       <?php endif; ?>
@@ -1606,125 +2161,131 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
                   </div>
                 </div>
 
-                <!-- Profile Picture Customization Card -->
-                <div class="profile-picture-section" style="display: flex; align-items: center; gap: 24px; padding: 20px; background: rgba(255, 255, 255, 0.65); border: 1.5px solid rgba(226, 232, 240, 0.8); border-radius: 16px; margin-bottom: 24px; flex-wrap: wrap;">
-                  <div class="avatar-preview-wrapper" style="position: relative; width: 96px; height: 96px; flex-shrink: 0;">
-                    <img id="avatarPreviewImg" src="<?= !empty($userAvatarUrl) ? $userAvatarUrl : '' ?>" alt="Profile Preview" style="width: 96px; height: 96px; border-radius: 50%; object-fit: cover; border: 3px solid #8b5cf6; box-shadow: 0 4px 14px rgba(139,92,246,0.25); display: <?= !empty($userAvatarUrl) ? 'block' : 'none' ?>;">
-                    <div id="avatarFallbackInitial" style="width: 96px; height: 96px; border-radius: 50%; background: linear-gradient(135deg, #7c3aed 0%, #a855f7 100%); color: #ffffff; display: <?= !empty($userAvatarUrl) ? 'none' : 'flex' ?>; align-items: center; justify-content: center; font-size: 38px; font-weight: 800; border: 3px solid #8b5cf6; box-shadow: 0 4px 14px rgba(139,92,246,0.25);">
+                <!-- Profile Picture Customization Card (60% Dominant Light Tan bg-[#F5F0E6], 30% Secondary border-[#B89B72]) -->
+                <form id="profilePictureForm" method="POST" action="api/profile_api.php" enctype="multipart/form-data" class="flex items-center gap-6 p-5 rounded-2xl bg-[#F5F0E6] border border-[#B89B72] mb-6 flex-wrap shadow-sm">
+                  <input type="hidden" name="action" value="upload_profile_picture">
+                  <input type="hidden" name="user_id" value="<?= (int)($user['id'] ?? 0) ?>">
+
+                  <label for="profile_picture" class="avatar-preview-wrapper relative w-24 h-24 flex-shrink-0 cursor-pointer block" title="Click photo to choose new picture">
+                    <img id="avatarPreviewImg" src="<?= !empty($userAvatarUrl) ? $userAvatarUrl : '' ?>" alt="Profile Preview" style="width: 96px; height: 96px; border-radius: 50%; object-fit: cover; border: 3px solid #8C6D43; box-shadow: 0 4px 14px rgba(74, 55, 40, 0.2); display: <?= !empty($userAvatarUrl) ? 'block' : 'none' ?>;">
+                    <div id="avatarFallbackInitial" style="width: 96px; height: 96px; border-radius: 50%; background: #B89B72; color: #ffffff; display: <?= !empty($userAvatarUrl) ? 'none' : 'flex' ?>; align-items: center; justify-content: center; font-size: 38px; font-weight: 800; border: 3px solid #8C6D43; box-shadow: 0 4px 14px rgba(74, 55, 40, 0.2);">
                       <?= htmlspecialchars($userInitial) ?>
                     </div>
-                  </div>
+                    <span class="absolute bottom-0 right-0 w-7 h-7 rounded-full bg-[#4A3728] text-white flex items-center justify-center border-2 border-white shadow-sm text-xs">
+                      📷
+                    </span>
+                  </label>
 
-                  <div class="avatar-info-controls" style="flex: 1; min-width: 220px;">
-                    <h3 style="font-size: 16px; font-weight: 800; color: #1e1b4b; margin: 0 0 4px 0;">Profile Picture</h3>
-                    <p style="font-size: 13px; color: #64748b; margin: 0 0 14px 0;">
-                      Upload a JPEG or PNG photo (maximum 2MB). This avatar will be visible on your tenant dashboard and messages.
+                  <div class="avatar-info-controls flex-1 min-w-[220px]">
+                    <h3 class="text-base font-black text-[#3E2723] m-0 mb-1">Profile Picture</h3>
+                    <p class="text-xs font-semibold text-[#7A6245] m-0 mb-3.5">
+                      Click the avatar or choose a photo (JPEG, PNG, WEBP, maximum 5MB). This avatar will be visible on your tenant dashboard and messages.
                     </p>
 
-                    <input type="file" id="profileAvatarInput" accept="image/jpeg,image/png,image/jpg" style="display: none;" onchange="handleProfilePictureSelect(event)">
+                    <input type="file" id="profile_picture" name="profile_picture" accept="image/*" class="hidden" style="display: none;" onchange="previewProfilePicture(event)">
 
-                    <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-                      <button type="button" class="clay-btn clay-btn-primary" id="btnChooseAvatar" style="padding: 7px 16px; font-size: 13px;" onclick="triggerProfilePictureInput()">
+                    <div class="flex items-center gap-2.5 flex-wrap">
+                      <button type="button" class="px-4 py-2 rounded-xl text-xs sm:text-sm font-bold bg-[#4A3728] hover:bg-[#382618] text-white border border-[#382618] shadow-sm transition-colors cursor-pointer" id="btnChooseAvatar" onclick="triggerProfilePictureInput()">
                         📷 Choose Photo
                       </button>
 
                       <div id="avatarPendingActions" style="display: none; align-items: center; gap: 8px;">
-                        <button type="button" class="clay-btn btn-success" id="btnSaveAvatar" style="padding: 7px 16px; font-size: 13px; background: #10b981; color: #fff; border: none; border-radius: 10px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;" onclick="submitProfilePictureUpload()">
+                        <button type="button" class="px-4 py-2 rounded-xl text-xs sm:text-sm font-bold bg-green-600 hover:bg-green-700 text-white shadow-sm transition-colors cursor-pointer inline-flex items-center gap-1.5" id="btnSaveAvatar" onclick="submitProfilePictureUpload()">
                           <i data-lucide="check" style="width: 15px; height: 15px;"></i> Save Changes
                         </button>
-                        <button type="button" class="clay-btn clay-btn-secondary" id="btnCancelAvatar" style="padding: 7px 14px; font-size: 13px; display: inline-flex; align-items: center; gap: 6px;" onclick="cancelProfilePictureSelection()">
+                        <button type="button" class="px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold bg-[#F5F0E6] text-[#3E2723] border border-[#8C6D43] hover:bg-[#E8D8B0] shadow-sm transition-colors cursor-pointer inline-flex items-center gap-1.5" id="btnCancelAvatar" onclick="cancelProfilePictureSelection()">
                           Cancel
                         </button>
                       </div>
 
-                      <button type="button" class="clay-btn" id="btnRemoveAvatar" style="padding: 7px 14px; font-size: 13px; color: #ef4444; background: rgba(239, 68, 68, 0.08); border: 1px solid rgba(239, 68, 68, 0.2); border-radius: 10px; cursor: pointer; display: <?= !empty($userAvatarUrl) ? 'inline-flex' : 'none' ?>; align-items: center; gap: 6px;" onclick="confirmRemoveProfilePicture()">
+                      <button type="button" class="px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold text-red-600 bg-red-50 hover:bg-red-100 border border-red-200 transition-colors cursor-pointer inline-flex items-center gap-1.5" id="btnRemoveAvatar" style="display: <?= !empty($userAvatarUrl) ? 'inline-flex' : 'none' ?>;" onclick="confirmRemoveProfilePicture()">
                         <i data-lucide="trash-2" style="width: 15px; height: 15px;"></i> Remove Photo
                       </button>
                     </div>
                   </div>
-                </div>
+                </form>
 
-                <div class="detail-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 18px; margin-bottom: 24px;">
-                  <div class="detail-item">
-                    <span class="detail-label">Full Name:</span>
-                    <span class="detail-value" id="profileFullName" style="font-size: 15px; font-weight: 700;"><?= htmlspecialchars($user['name']) ?></span>
+                <div class="detail-grid grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
+                  <div class="p-3.5 rounded-xl bg-[#F5F0E6] border border-[#8C6D43]/30">
+                    <span class="block text-xs font-bold text-[#7A6245]">Full Name:</span>
+                    <span class="block text-sm sm:text-base font-extrabold text-[#3E2723] mt-0.5" id="profileFullName"><?= htmlspecialchars($user['name']) ?></span>
                   </div>
-                  <div class="detail-item">
-                    <span class="detail-label">Username:</span>
-                    <span class="detail-value" style="font-size: 15px; font-weight: 700;"><?= htmlspecialchars($user['username']) ?></span>
+                  <div class="p-3.5 rounded-xl bg-[#F5F0E6] border border-[#8C6D43]/30">
+                    <span class="block text-xs font-bold text-[#7A6245]">Username:</span>
+                    <span class="block text-sm sm:text-base font-extrabold text-[#3E2723] mt-0.5"><?= htmlspecialchars($user['username']) ?></span>
                   </div>
-                  <div class="detail-item">
-                    <span class="detail-label">Assigned Unit:</span>
-                    <span class="detail-value" style="font-size: 15px; font-weight: 700;"><?= htmlspecialchars($unit['unit_number']) ?></span>
+                  <div class="p-3.5 rounded-xl bg-[#F5F0E6] border border-[#8C6D43]/30">
+                    <span class="block text-xs font-bold text-[#7A6245]">Assigned Unit:</span>
+                    <span class="block text-sm sm:text-base font-extrabold text-[#3E2723] mt-0.5"><?= htmlspecialchars($unit['unit_number']) ?></span>
                   </div>
-                  <div class="detail-item">
-                    <span class="detail-label">Monthly Rent:</span>
-                    <span class="detail-value" style="font-size: 15px; font-weight: 700;">₱<?= number_format((float)$unit['monthly_rent'], 2) ?></span>
+                  <div class="p-3.5 rounded-xl bg-[#F5F0E6] border border-[#8C6D43]/30">
+                    <span class="block text-xs font-bold text-[#7A6245]">Monthly Rent:</span>
+                    <span class="block text-sm sm:text-base font-extrabold text-[#3E2723] mt-0.5">₱<?= number_format((float)$unit['monthly_rent'], 2) ?></span>
                   </div>
-                  <div class="detail-item">
-                    <span class="detail-label">Email Address:</span>
-                    <span class="detail-value" style="font-size: 15px; font-weight: 700;"><?= htmlspecialchars($user['email'] ?? 'Not set') ?></span>
+                  <div class="p-3.5 rounded-xl bg-[#F5F0E6] border border-[#8C6D43]/30">
+                    <span class="block text-xs font-bold text-[#7A6245]">Email Address:</span>
+                    <span class="block text-sm sm:text-base font-extrabold text-[#3E2723] mt-0.5"><?= htmlspecialchars($user['email'] ?? 'Not set') ?></span>
                   </div>
-                  <div class="detail-item">
-                    <span class="detail-label">Phone Number:</span>
-                    <span class="detail-value" style="font-size: 15px; font-weight: 700;"><?= htmlspecialchars($user['phone'] ?? 'Not set') ?></span>
+                  <div class="p-3.5 rounded-xl bg-[#F5F0E6] border border-[#8C6D43]/30">
+                    <span class="block text-xs font-bold text-[#7A6245]">Phone Number:</span>
+                    <span class="block text-sm sm:text-base font-extrabold text-[#3E2723] mt-0.5"><?= htmlspecialchars($user['phone'] ?? 'Not set') ?></span>
                   </div>
-                  <div class="detail-item">
-                    <span class="detail-label">Emergency Contact:</span>
-                    <span class="detail-value" style="font-size: 15px; font-weight: 700;"><?= htmlspecialchars($user['emergency_contact_name'] ?? $user['emergency_contact'] ?? 'Not set') ?></span>
+                  <div class="p-3.5 rounded-xl bg-[#F5F0E6] border border-[#8C6D43]/30">
+                    <span class="block text-xs font-bold text-[#7A6245]">Emergency Contact:</span>
+                    <span class="block text-sm sm:text-base font-extrabold text-[#3E2723] mt-0.5"><?= htmlspecialchars($user['emergency_contact_name'] ?? $user['emergency_contact'] ?? 'Not set') ?></span>
                   </div>
-                  <div class="detail-item">
-                    <span class="detail-label">Emergency Phone:</span>
-                    <span class="detail-value" style="font-size: 15px; font-weight: 700;"><?= htmlspecialchars($user['emergency_contact_phone'] ?? 'Not set') ?></span>
+                  <div class="p-3.5 rounded-xl bg-[#F5F0E6] border border-[#8C6D43]/30">
+                    <span class="block text-xs font-bold text-[#7A6245]">Emergency Phone:</span>
+                    <span class="block text-sm sm:text-base font-extrabold text-[#3E2723] mt-0.5"><?= htmlspecialchars($user['emergency_contact_phone'] ?? 'Not set') ?></span>
                   </div>
-                  <div class="detail-item">
-                    <span class="detail-label">Date of Birth:</span>
-                    <span class="detail-value" style="font-size: 15px; font-weight: 700;">
+                  <div class="p-3.5 rounded-xl bg-[#F5F0E6] border border-[#8C6D43]/30">
+                    <span class="block text-xs font-bold text-[#7A6245]">Date of Birth:</span>
+                    <span class="block text-sm sm:text-base font-extrabold text-[#3E2723] mt-0.5">
                       <?= !empty($user['birthday']) ? date('F j, Y', strtotime($user['birthday'])) : 'Not set' ?>
                     </span>
                   </div>
-                  <div class="detail-item">
-                    <span class="detail-label">Role:</span>
-                    <span class="detail-value" style="font-size: 15px; font-weight: 700; text-transform: capitalize;"><?= htmlspecialchars($user['role']) ?></span>
+                  <div class="p-3.5 rounded-xl bg-[#F5F0E6] border border-[#8C6D43]/30">
+                    <span class="block text-xs font-bold text-[#7A6245]">Role:</span>
+                    <span class="block text-sm sm:text-base font-extrabold text-[#3E2723] mt-0.5 capitalize"><?= htmlspecialchars($user['role']) ?></span>
                   </div>
                 </div>
 
                 <?php if (($user['verification_status'] ?? 'unverified') !== 'verified'): ?>
                 <!-- Verification Action / Status Container -->
-                <div id="accountVerificationSection" style="margin-top: 24px; padding-top: 20px; border-top: 2px dashed rgba(166, 180, 204, 0.4);">
+                <div id="accountVerificationSection" class="mt-6 pt-5 border-t border-dashed border-[#8C6D43]/30">
                   <?php if (($user['verification_status'] ?? 'unverified') === 'unverified'): ?>
-                    <div style="background: #fff1f2; border: 1.5px solid #fecdd3; border-radius: var(--radius-lg); padding: 18px 22px;">
-                      <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px;">
+                    <div class="p-5 rounded-2xl bg-rose-50 border border-rose-200">
+                      <div class="flex items-center justify-between flex-wrap gap-4">
                         <div>
                           <?php if (!empty($user['verification_notes'])): ?>
-                            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 4px;">
-                              <span style="font-size: 20px; color: #e11d48;">✕</span>
-                              <div style="font-size: 15px; font-weight: 800; color: #9f1239;">Identity Verification Failed — Account Remains Unverified</div>
+                            <div class="flex items-center gap-2 mb-1">
+                              <span class="text-xl text-rose-600 font-bold">✕</span>
+                              <div class="text-sm font-extrabold text-rose-900">Identity Verification Failed — Account Remains Unverified</div>
                             </div>
-                            <div style="font-size: 13px; color: #881337; margin-bottom: 6px;">
+                            <div class="text-xs text-rose-800 mb-1.5">
                               <?= htmlspecialchars(str_replace('Rejected: ', '', $user['verification_notes'])) ?>
                             </div>
-                            <div style="font-size: 12px; color: #9f1239; font-weight: 600;">
+                            <div class="text-xs text-rose-900 font-semibold">
                               Please re-verify your account with a clear government-issued ID to unlock resident features.
                             </div>
                           <?php else: ?>
-                            <div style="font-size: 15px; font-weight: 800; color: #9f1239; margin-bottom: 4px;">Identity Verification Required</div>
-                            <div style="font-size: 13px; color: #881337;">Verify your account with a government ID to unlock your rental dashboard capabilities.</div>
+                            <div class="text-sm font-extrabold text-rose-900 mb-1">Identity Verification Required</div>
+                            <div class="text-xs text-rose-800">Verify your account with a government ID to unlock your rental dashboard capabilities.</div>
                           <?php endif; ?>
                         </div>
-                        <button type="button" class="clay-btn clay-btn-primary" style="padding: 10px 22px; font-size: 13.5px;" onclick="goToAccountVerification()">
+                        <button type="button" class="px-5 py-2.5 rounded-xl font-black text-xs sm:text-sm bg-[#4A3728] hover:bg-[#382618] text-white shadow-md transition-colors cursor-pointer" onclick="goToAccountVerification()">
                           <?= !empty($user['verification_notes']) ? 'Re-Verify Account' : 'Verify Account' ?>
                         </button>
                       </div>
                     </div>
                   <?php elseif (($user['verification_status'] ?? '') === 'pending'): ?>
-                    <div style="background: #fffbeb; border: 1.5px solid #fde68a; border-radius: var(--radius-lg); padding: 18px 22px;">
-                      <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px;">
+                    <div class="p-5 rounded-2xl bg-amber-50 border border-amber-200">
+                      <div class="flex items-center justify-between flex-wrap gap-4">
                         <div>
-                          <div style="font-size: 15px; font-weight: 800; color: #92400e; margin-bottom: 4px;">Verification Under Review</div>
-                          <div style="font-size: 13px; color: #78350f;">Your submitted documents are currently being audited by management. Full functionality will be enabled upon approval.</div>
+                          <div class="text-sm font-extrabold text-amber-900 mb-1">Verification Under Review</div>
+                          <div class="text-xs text-amber-800">Your submitted documents are currently being audited by management. Full functionality will be enabled upon approval.</div>
                         </div>
-                        <span class="clay-badge badge-pending" style="font-size: 13px; padding: 7px 16px;">
+                        <span class="bg-amber-100 text-amber-900 border border-amber-300 font-bold text-xs px-3.5 py-1.5 rounded-full shadow-sm flex items-center gap-1.5">
                           <span>⏳</span> In Review
                         </span>
                       </div>
@@ -1734,20 +2295,20 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
                 <?php endif; ?>
                 <?php if (($user['verification_status'] ?? 'unverified') === 'verified'): ?>
                 <!-- Verified Tenant ID Card & Update Trigger -->
-                <div id="verifiedAccountSection" style="margin-top: 24px; padding-top: 20px; border-top: 2px dashed rgba(166, 180, 204, 0.4);">
-                  <div style="background: rgba(34, 197, 94, 0.08); border: 1.5px solid rgba(34, 197, 94, 0.25); border-radius: var(--radius-lg); padding: 18px 22px;">
-                    <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px;">
+                <div id="verifiedAccountSection" class="mt-6 pt-5 border-t border-dashed border-[#8C6D43]/30">
+                  <div class="p-5 rounded-2xl bg-green-50 border border-green-200">
+                    <div class="flex items-center justify-between flex-wrap gap-4">
                       <div>
-                        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
-                          <span style="display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; background: #16a34a; color: #fff; font-size: 13px; font-weight: bold;">✓</span>
-                          <div style="font-size: 15px; font-weight: 800; color: #15803d;">Identity Verified Resident</div>
+                        <div class="flex items-center gap-2 mb-1">
+                          <span class="w-5 h-5 rounded-full bg-green-600 text-white flex items-center justify-center text-xs font-bold">✓</span>
+                          <div class="text-sm font-extrabold text-green-900">Identity Verified Resident</div>
                         </div>
-                        <div style="font-size: 13px; color: #166534;">
+                        <div class="text-xs text-green-800">
                           Verified with <?= htmlspecialchars($user['id_type'] ?? 'Government ID') ?>
                           <?= !empty($user['id_verified_at']) ? ' on ' . date('F j, Y', strtotime($user['id_verified_at'])) : '' ?>.
                         </div>
                       </div>
-                      <button type="button" class="clay-btn" id="btnUpdateId" style="padding: 9px 18px; font-size: 13px; background: #ffffff; color: #15803d; border: 1.5px solid #16a34a; border-radius: 10px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; font-weight: 700;" onclick="openVerifyAccountModal(true)">
+                      <button type="button" class="px-4 py-2 rounded-xl text-xs sm:text-sm font-bold bg-white text-green-800 border border-green-600 hover:bg-green-50 shadow-sm transition-colors cursor-pointer inline-flex items-center gap-1.5" id="btnUpdateId" onclick="openVerifyAccountModal(true)">
                         <i data-lucide="refresh-cw" class="w-4 h-4"></i>
                         <span>Update ID Document</span>
                       </button>
@@ -1760,30 +2321,30 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
 
             <!-- Sub-Tab 2: Change Password -->
             <div id="paneChangePassword" class="profile-tab-pane">
-              <div class="clay-card" style="max-width: 600px;">
-                <div class="clay-card-header" style="margin-bottom: 22px;">
-                  <h2 class="clay-card-title">Change Password</h2>
-                  <p class="clay-card-subtitle">Keep your account secure by updating your password regularly</p>
+              <div class="bg-white/95 border-2 border-[#B89B72] rounded-2xl p-6 sm:p-8 shadow-md max-w-[600px]">
+                <div class="mb-6 pb-4 border-b border-dashed border-[#8C6D43]/30">
+                  <h2 class="text-xl sm:text-2xl font-black text-[#3E2723] tracking-wide m-0">Change Password</h2>
+                  <p class="text-xs sm:text-sm font-semibold text-[#7A6245] mt-1 mb-0">Keep your account secure by updating your password regularly</p>
                 </div>
 
-                <form id="changePasswordForm">
-                  <div class="form-group">
-                    <label class="form-label" for="profCurrentPass">Current Password <span class="req">*</span></label>
-                    <input type="password" id="profCurrentPass" class="clay-input" placeholder="Enter existing password" required autocomplete="current-password">
+                <form id="changePasswordForm" class="flex flex-col gap-4">
+                  <div class="flex flex-col gap-1.5">
+                    <label class="font-bold text-xs sm:text-sm text-[#3E2723]" for="profCurrentPass">Current Password <span class="text-red-600">*</span></label>
+                    <input type="password" id="profCurrentPass" class="w-full h-11 px-3.5 py-2.5 rounded-lg bg-[#F5F0E6] text-[#3E2723] font-semibold text-sm border border-[#B89B72] focus:outline-none focus:ring-2 focus:ring-[#4A3728] shadow-sm" placeholder="Enter existing password" required autocomplete="current-password">
                   </div>
 
-                  <div class="form-group">
-                    <label class="form-label" for="profNewPass">New Password <span class="req">*</span></label>
-                    <input type="password" id="profNewPass" class="clay-input" placeholder="At least 6 characters" minlength="6" required autocomplete="new-password">
+                  <div class="flex flex-col gap-1.5">
+                    <label class="font-bold text-xs sm:text-sm text-[#3E2723]" for="profNewPass">New Password <span class="text-red-600">*</span></label>
+                    <input type="password" id="profNewPass" class="w-full h-11 px-3.5 py-2.5 rounded-lg bg-[#F5F0E6] text-[#3E2723] font-semibold text-sm border border-[#B89B72] focus:outline-none focus:ring-2 focus:ring-[#4A3728] shadow-sm" placeholder="At least 6 characters" minlength="6" required autocomplete="new-password">
                   </div>
 
-                  <div class="form-group">
-                    <label class="form-label" for="profConfirmPass">Confirm New Password <span class="req">*</span></label>
-                    <input type="password" id="profConfirmPass" class="clay-input" placeholder="Confirm new password" minlength="6" required autocomplete="new-password">
+                  <div class="flex flex-col gap-1.5">
+                    <label class="font-bold text-xs sm:text-sm text-[#3E2723]" for="profConfirmPass">Confirm New Password <span class="text-red-600">*</span></label>
+                    <input type="password" id="profConfirmPass" class="w-full h-11 px-3.5 py-2.5 rounded-lg bg-[#F5F0E6] text-[#3E2723] font-semibold text-sm border border-[#B89B72] focus:outline-none focus:ring-2 focus:ring-[#4A3728] shadow-sm" placeholder="Confirm new password" minlength="6" required autocomplete="new-password">
                   </div>
 
-                  <div style="margin-top: 24px;">
-                    <button type="submit" class="clay-btn clay-btn-primary" id="btnSavePassword" style="min-width: 180px;">
+                  <div class="mt-4">
+                    <button type="submit" class="min-w-[180px] py-3 px-6 rounded-xl bg-[#4A3728] hover:bg-[#382618] text-white font-black text-sm sm:text-base shadow-md border border-[#382618] transition-all cursor-pointer" id="btnSavePassword">
                       Update Password
                     </button>
                   </div>
@@ -1806,49 +2367,49 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
        Allows tenant to update phone, email, and emergency contact details
        ===================================================================== -->
   <div class="modal-backdrop" id="editAccountInfoModal" style="display: none; pointer-events: none;">
-    <div class="clay-modal" style="max-width: 500px;">
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+    <div class="clay-modal bg-[#FCFBF9] border-2 border-[#B89B72] rounded-2xl p-6 sm:p-8 shadow-2xl" style="max-width: 500px;">
+      <div class="flex justify-between items-center mb-5 pb-3 border-b border-dashed border-[#8C6D43]/30">
         <div>
-          <h2 style="font-size: 20px; font-weight: 800; color: #0f172a; margin: 0 0 2px 0;">Edit Account Information</h2>
-          <p style="font-size: 12.5px; color: var(--text-muted); margin: 0;">Update your contact details and emergency contact records</p>
+          <h2 class="text-xl font-black text-[#3E2723] m-0 mb-0.5">Edit Account Information</h2>
+          <p class="text-xs font-semibold text-[#7A6245] m-0">Update your contact details and emergency contact records</p>
         </div>
-        <button type="button" class="modal-close-btn btn-remove-file" onclick="closeModal('editAccountInfoModal')" title="Close" aria-label="Close"><i data-lucide="x" class="w-4 h-4" aria-hidden="true"></i></button>
+        <button type="button" class="modal-close-btn text-[#4A3728] hover:text-[#382618] p-1.5 rounded-lg hover:bg-[#4A3728]/10 transition-colors cursor-pointer" onclick="closeModal('editAccountInfoModal')" title="Close" aria-label="Close"><i data-lucide="x" class="w-5 h-5" aria-hidden="true"></i></button>
       </div>
 
       <form id="editAccountInfoForm">
-        <div class="form-group" style="margin-bottom: 14px;">
-          <label class="form-label" for="editEmail">Email Address</label>
-          <input type="email" id="editEmail" name="email" class="clay-input" value="<?= htmlspecialchars($user['email'] ?? '') ?>" placeholder="your.email@example.com">
+        <div class="form-group mb-3.5">
+          <label class="font-bold text-xs text-[#3E2723] block mb-1.5" for="editEmail">Email Address</label>
+          <input type="email" id="editEmail" name="email" class="w-full h-10 px-3.5 py-2 rounded-lg bg-[#F5F0E6] text-[#3E2723] font-semibold text-sm border border-[#B89B72] focus:outline-none focus:ring-2 focus:ring-[#4A3728] shadow-sm" value="<?= htmlspecialchars($user['email'] ?? '') ?>" placeholder="your.email@example.com">
         </div>
 
-        <div class="form-group" style="margin-bottom: 16px;">
-          <label class="form-label" for="editPhone">Phone Number</label>
-          <input type="tel" id="editPhone" name="phone" class="clay-input" value="<?= htmlspecialchars($user['phone'] ?? '') ?>" placeholder="+63 900 000 0000">
+        <div class="form-group mb-4">
+          <label class="font-bold text-xs text-[#3E2723] block mb-1.5" for="editPhone">Phone Number</label>
+          <input type="tel" id="editPhone" name="phone" class="w-full h-10 px-3.5 py-2 rounded-lg bg-[#F5F0E6] text-[#3E2723] font-semibold text-sm border border-[#B89B72] focus:outline-none focus:ring-2 focus:ring-[#4A3728] shadow-sm" value="<?= htmlspecialchars($user['phone'] ?? '') ?>" placeholder="+63 900 000 0000">
         </div>
 
-        <div style="background: var(--clay-input-bg); border-radius: var(--radius-md); padding: 14px; box-shadow: var(--clay-sunken-shadow); margin-bottom: 18px;">
-          <div style="font-size: 13px; font-weight: 800; color: #0f172a; margin-bottom: 10px; display: flex; align-items: center; gap: 6px;">
+        <div class="bg-[#F5F0E6] border border-[#B89B72] rounded-xl p-4 shadow-sm mb-4">
+          <div class="text-xs font-black text-[#3E2723] mb-2.5 flex items-center gap-1.5">
             <i data-lucide="phone-call" class="w-4 h-4 text-rose-600" aria-hidden="true"></i> Emergency Contact Details
           </div>
-          <div class="form-group" style="margin-bottom: 10px;">
-            <label class="form-label" for="editEmergencyName" style="font-size: 11.5px;">Contact Person's Full Name</label>
-            <input type="text" id="editEmergencyName" name="emergency_contact_name" class="clay-input" value="<?= htmlspecialchars($user['emergency_contact_name'] ?? $user['emergency_contact'] ?? '') ?>" placeholder="e.g. Maria Santos">
+          <div class="form-group mb-2.5">
+            <label class="font-semibold text-[11px] text-[#7A6245] block mb-1" for="editEmergencyName">Contact Person's Full Name</label>
+            <input type="text" id="editEmergencyName" name="emergency_contact_name" class="w-full h-9 px-3 py-1.5 rounded-lg bg-white text-[#3E2723] font-semibold text-xs border border-[#B89B72] focus:outline-none focus:ring-1 focus:ring-[#4A3728] shadow-sm" value="<?= htmlspecialchars($user['emergency_contact_name'] ?? $user['emergency_contact'] ?? '') ?>" placeholder="e.g. Maria Santos">
           </div>
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-            <div class="form-group" style="margin-bottom: 0;">
-              <label class="form-label" for="editEmergencyRel" style="font-size: 11.5px;">Relationship</label>
-              <input type="text" id="editEmergencyRel" name="emergency_contact_relationship" class="clay-input" value="<?= htmlspecialchars($user['emergency_contact_relationship'] ?? '') ?>" placeholder="e.g. Mother, Spouse">
+          <div class="grid grid-cols-2 gap-2.5">
+            <div class="form-group mb-0">
+              <label class="font-semibold text-[11px] text-[#7A6245] block mb-1" for="editEmergencyRel">Relationship</label>
+              <input type="text" id="editEmergencyRel" name="emergency_contact_relationship" class="w-full h-9 px-3 py-1.5 rounded-lg bg-white text-[#3E2723] font-semibold text-xs border border-[#B89B72] focus:outline-none focus:ring-1 focus:ring-[#4A3728] shadow-sm" value="<?= htmlspecialchars($user['emergency_contact_relationship'] ?? '') ?>" placeholder="e.g. Mother, Spouse">
             </div>
-            <div class="form-group" style="margin-bottom: 0;">
-              <label class="form-label" for="editEmergencyPhone" style="font-size: 11.5px;">Contact Number</label>
-              <input type="tel" id="editEmergencyPhone" name="emergency_contact_phone" class="clay-input" value="<?= htmlspecialchars($user['emergency_contact_phone'] ?? '') ?>" placeholder="+63 900 000 0000">
+            <div class="form-group mb-0">
+              <label class="font-semibold text-[11px] text-[#7A6245] block mb-1" for="editEmergencyPhone">Contact Number</label>
+              <input type="tel" id="editEmergencyPhone" name="emergency_contact_phone" class="w-full h-9 px-3 py-1.5 rounded-lg bg-white text-[#3E2723] font-semibold text-xs border border-[#B89B72] focus:outline-none focus:ring-1 focus:ring-[#4A3728] shadow-sm" value="<?= htmlspecialchars($user['emergency_contact_phone'] ?? '') ?>" placeholder="+63 900 000 0000">
             </div>
           </div>
         </div>
 
-        <div style="display: flex; gap: 12px; margin-top: 20px;">
-          <button type="button" class="clay-btn clay-btn-secondary" style="flex: 1;" onclick="closeEditAccountInfoModal()">Cancel</button>
-          <button type="submit" class="clay-btn clay-btn-primary" id="btnSaveAccountInfo" style="flex: 2;">Save Information</button>
+        <div class="flex gap-3 mt-5">
+          <button type="button" class="flex-1 py-2.5 px-4 rounded-xl font-bold text-sm bg-[#F5F0E6] text-[#3E2723] border border-[#8C6D43] hover:bg-[#E8D8B0] shadow-sm transition-colors cursor-pointer" onclick="closeEditAccountInfoModal()">Cancel</button>
+          <button type="submit" class="flex-[2] py-2.5 px-5 rounded-xl font-black text-sm bg-[#4A3728] hover:bg-[#382618] text-white border border-[#382618] shadow-md transition-colors cursor-pointer" id="btnSaveAccountInfo">Save Information</button>
         </div>
       </form>
     </div>
@@ -1900,54 +2461,54 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
        MODAL: TENANT VIEW MAINTENANCE TICKET DETAILS & OWNER RESPONSE
        ===================================================================== -->
   <div class="modal-backdrop" id="tenantTicketModal" style="display: none; pointer-events: none;">
-    <div class="clay-modal" style="max-width: 580px; width: 95%; max-height: 90vh; overflow-y: auto;">
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; border-bottom: 1px solid rgba(166, 180, 204, 0.2); padding-bottom: 12px;">
+    <div class="clay-modal bg-[#FCFBF9] border-2 border-[#B89B72] rounded-2xl p-6 sm:p-8 shadow-2xl" style="max-width: 580px; width: 95%; max-height: 90vh; overflow-y: auto;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; border-bottom: 1px dashed rgba(140, 109, 67, 0.3); padding-bottom: 12px;">
         <div style="display: flex; align-items: center; gap: 10px;">
-          <span class="clay-badge" id="ttModalIdBadge" style="background: #e0e7ff; color: #4338ca; font-weight: 800; font-size: 13px;">#MT-0001</span>
+          <span class="clay-badge" id="ttModalIdBadge" style="background: #F5F0E6; color: #4A3728; border: 1px solid #B89B72; font-weight: 800; font-size: 13px;">#MT-0001</span>
           <div>
-            <h2 style="font-size: 19px; font-weight: 800; color: #0f172a; margin: 0;" id="ttModalTitle">Issue Title</h2>
-            <p style="font-size: 12px; color: var(--text-muted); margin: 2px 0 0 0;">Maintenance request details and status tracking</p>
+            <h2 style="font-size: 19px; font-weight: 800; color: #3E2723; margin: 0;" id="ttModalTitle">Issue Title</h2>
+            <p style="font-size: 12px; color: #7A6245; margin: 2px 0 0 0;">Maintenance request details and status tracking</p>
           </div>
         </div>
-        <button type="button" class="modal-close-btn btn-remove-file" onclick="closeModal('tenantTicketModal')" title="Close" aria-label="Close"><i data-lucide="x" class="w-4 h-4" aria-hidden="true"></i></button>
+        <button type="button" class="modal-close-btn text-[#4A3728] hover:text-[#382618] p-1.5 rounded-lg hover:bg-[#4A3728]/10 transition-colors cursor-pointer" onclick="closeModal('tenantTicketModal')" title="Close" aria-label="Close"><i data-lucide="x" class="w-5 h-5" aria-hidden="true"></i></button>
       </div>
 
       <!-- Metadata Badges -->
       <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px;">
-        <span class="clay-badge" id="ttModalUnit" style="background: #e0e7ff; color: #4338ca; font-weight: 800;">Unit</span>
+        <span class="clay-badge" id="ttModalUnit" style="background: #F5F0E6; color: #4A3728; border: 1px solid #B89B72; font-weight: 800;">Unit</span>
         <span class="clay-badge" id="ttModalCategory">Category</span>
         <span class="clay-badge" id="ttModalPriority">Priority</span>
         <span class="clay-badge" id="ttModalStatus">Status</span>
       </div>
 
       <!-- Full Problem Description -->
-      <div style="background: var(--clay-input-bg); border-radius: var(--radius-md); padding: 14px 16px; margin-bottom: 16px; box-shadow: var(--clay-sunken-shadow);">
-        <div style="font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; margin-bottom: 6px;">Full Description of the Problem</div>
-        <p id="ttModalDesc" style="font-size: 13.5px; color: #1e293b; line-height: 1.5; white-space: pre-wrap; margin: 0;"></p>
+      <div style="background: #F5F0E6; border: 1px solid #B89B72; border-radius: var(--radius-md); padding: 14px 16px; margin-bottom: 16px;">
+        <div style="font-size: 11px; font-weight: 700; color: #7A6245; text-transform: uppercase; margin-bottom: 6px;">Full Description of the Problem</div>
+        <p id="ttModalDesc" style="font-size: 13.5px; color: #3E2723; line-height: 1.5; white-space: pre-wrap; margin: 0;"></p>
       </div>
 
       <!-- Attached Photos / Attachments -->
       <div id="ttModalPhotosSection" style="margin-bottom: 16px; display: none;">
-        <div style="font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; margin-bottom: 6px;">Attached Photos</div>
+        <div style="font-size: 11px; font-weight: 700; color: #7A6245; text-transform: uppercase; margin-bottom: 6px;">Attached Photos</div>
         <div id="ttModalPhotosContainer" style="display: flex; gap: 8px; flex-wrap: wrap;"></div>
       </div>
 
       <!-- Owner's Response / Remarks -->
       <div id="ttModalOwnerResponseSection" style="margin-bottom: 16px;">
-        <div style="font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; margin-bottom: 6px;">Owner's Response &amp; Remarks</div>
-        <div id="ttModalOwnerResponseBox" style="background: #f0fdf4; border: 1.5px solid #bbf7d0; border-radius: var(--radius-md); padding: 14px 16px; color: #166534; font-size: 13.5px; line-height: 1.5;">
+        <div style="font-size: 11px; font-weight: 700; color: #7A6245; text-transform: uppercase; margin-bottom: 6px;">Owner's Response &amp; Remarks</div>
+        <div id="ttModalOwnerResponseBox" style="background: #FFF9EE; border: 1.5px solid rgba(181, 143, 83, 0.35); border-radius: var(--radius-md); padding: 14px 16px; color: #4A3214; font-size: 13.5px; line-height: 1.5;">
           <span id="ttModalOwnerResponseText">Awaiting response from property owner.</span>
         </div>
       </div>
 
       <!-- Timestamps & Status Info -->
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 12px; color: var(--text-muted); border-top: 1px solid rgba(166, 180, 204, 0.2); padding-top: 12px; margin-bottom: 18px;">
-        <div>Date Submitted: <strong id="ttModalDateSubmitted" style="color: #0f172a;">-</strong></div>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 12px; color: #7A6245; border-top: 1px dashed rgba(140, 109, 67, 0.3); padding-top: 12px; margin-bottom: 18px;">
+        <div>Date Submitted: <strong id="ttModalDateSubmitted" style="color: #3E2723;">-</strong></div>
         <div>Date Resolved: <span id="ttModalDateResolved" style="color: #047857; font-weight: 600;">-</span></div>
       </div>
 
       <div style="display: flex; justify-content: flex-end;">
-        <button type="button" class="clay-btn clay-btn-primary" onclick="closeTenantTicketModal()" style="padding: 10px 24px;">Close</button>
+        <button type="button" class="py-2.5 px-6 rounded-xl font-black text-sm bg-[#4A3728] hover:bg-[#382618] text-white border border-[#382618] shadow-md transition-colors cursor-pointer" onclick="closeTenantTicketModal()">Close</button>
       </div>
     </div>
   </div>
@@ -1956,49 +2517,49 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
        MODAL: GENERAL REPORT DETAILS & OWNER DECISION (TENANT READ-ONLY)
        ===================================================================== -->
   <div class="modal-backdrop" id="tenantReportModal" style="display: none; pointer-events: none;">
-    <div class="clay-modal" style="max-width: 560px; width: 100%; max-height: 90vh; overflow-y: auto;">
-      <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px;">
+    <div class="clay-modal bg-[#FCFBF9] border-2 border-[#B89B72] rounded-2xl p-6 sm:p-8 shadow-2xl" style="max-width: 560px; width: 100%; max-height: 90vh; overflow-y: auto;">
+      <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; border-bottom: 1px dashed rgba(140, 109, 67, 0.3); padding-bottom: 12px;">
         <div style="padding-right: 12px;">
           <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px;">
-            <span class="clay-badge" id="trModalIdBadge" style="background: #F3E4C6; color: #56380E; font-weight: 800; font-size: 12px;">#GR-0001</span>
+            <span class="clay-badge" id="trModalIdBadge" style="background: #F5F0E6; color: #4A3728; border: 1px solid #B89B72; font-weight: 800; font-size: 12px;">#GR-0001</span>
             <span class="report-status-pill report-status-pill--pending" id="trModalStatus">PENDING</span>
           </div>
-          <h2 style="font-size: 19px; font-weight: 800; color: #261909; margin: 0;" id="trModalSubject">Report Subject</h2>
+          <h2 style="font-size: 19px; font-weight: 800; color: #3E2723; margin: 0;" id="trModalSubject">Report Subject</h2>
         </div>
-        <button type="button" class="modal-close-btn btn-icon-close" onclick="closeModal('tenantReportModal')" title="Close" aria-label="Close"><i data-lucide="x" class="w-4 h-4" aria-hidden="true"></i></button>
+        <button type="button" class="modal-close-btn text-[#4A3728] hover:text-[#382618] p-1.5 rounded-lg hover:bg-[#4A3728]/10 transition-colors cursor-pointer" onclick="closeModal('tenantReportModal')" title="Close" aria-label="Close"><i data-lucide="x" class="w-5 h-5" aria-hidden="true"></i></button>
       </div>
 
       <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px;">
-        <span class="clay-badge" id="trModalUnit" style="background: #F3E4C6; color: #56380E; font-weight: 800;">Unit</span>
-        <span class="clay-badge" id="trModalCategory" style="background: #EFE3CC; color: #6E3A14; font-weight: 700;">Category</span>
+        <span class="clay-badge" id="trModalUnit" style="background: #F5F0E6; color: #4A3728; border: 1px solid #B89B72; font-weight: 800;">Unit</span>
+        <span class="clay-badge" id="trModalCategory" style="background: #F5F0E6; color: #4A3728; border: 1px solid #B89B72; font-weight: 700;">Category</span>
       </div>
 
       <div style="margin-bottom: 16px;">
-        <div style="font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;">Request Details</div>
-        <div style="background: #f8fafc; border: 1.5px solid var(--clay-border); border-radius: var(--radius-md); padding: 14px;">
-          <p id="trModalDetails" style="font-size: 13.5px; color: #1e293b; line-height: 1.55; white-space: pre-wrap; margin: 0;"></p>
+        <div style="font-size: 11px; font-weight: 700; color: #7A6245; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;">Request Details</div>
+        <div style="background: #F5F0E6; border: 1px solid #B89B72; border-radius: var(--radius-md); padding: 14px;">
+          <p id="trModalDetails" style="font-size: 13.5px; color: #3E2723; line-height: 1.55; white-space: pre-wrap; margin: 0;"></p>
         </div>
       </div>
 
       <div id="trModalAttachmentsSection" style="margin-bottom: 16px; display: none;">
-        <div style="font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;">Supporting Files &amp; Photos</div>
+        <div style="font-size: 11px; font-weight: 700; color: #7A6245; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;">Supporting Files &amp; Photos</div>
         <div id="trModalAttachmentsContainer" style="display: flex; gap: 8px; flex-wrap: wrap;"></div>
       </div>
 
       <div style="margin-bottom: 16px;">
-        <div style="font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;">Owner Response / Remarks</div>
+        <div style="font-size: 11px; font-weight: 700; color: #7A6245; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;">Owner Response / Remarks</div>
         <div id="trModalOwnerRemarksBox" style="background: #FFF9EE; border: 1.5px solid rgba(181, 143, 83, 0.35); border-radius: var(--radius-md); padding: 14px 16px; color: #4A3214; font-size: 13.5px; line-height: 1.5;">
           <span id="trModalOwnerRemarksText">Awaiting owner review.</span>
         </div>
       </div>
 
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 12px; color: var(--text-muted); border-top: 1px solid rgba(166, 180, 204, 0.25); padding-top: 12px; margin-bottom: 18px;">
-        <div>Date Submitted: <strong id="trModalDateSubmitted" style="color: #0f172a;">-</strong></div>
-        <div>Reviewed At: <span id="trModalReviewedAt" style="color: #56380E; font-weight: 700;">Pending review</span></div>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 12px; color: #7A6245; border-top: 1px dashed rgba(140, 109, 67, 0.3); padding-top: 12px; margin-bottom: 18px;">
+        <div>Date Submitted: <strong id="trModalDateSubmitted" style="color: #3E2723;">-</strong></div>
+        <div>Reviewed At: <span id="trModalReviewedAt" style="color: #4A3728; font-weight: 700;">Pending review</span></div>
       </div>
 
       <div style="display: flex; justify-content: flex-end;">
-        <button type="button" class="clay-btn clay-btn-primary" onclick="closeTenantReportModal()" style="padding: 10px 24px;">Close</button>
+        <button type="button" class="py-2.5 px-6 rounded-xl font-black text-sm bg-[#4A3728] hover:bg-[#382618] text-white border border-[#382618] shadow-md transition-colors cursor-pointer" onclick="closeTenantReportModal()">Close</button>
       </div>
     </div>
   </div>
@@ -2007,27 +2568,27 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
        MODAL: TARARENT 3D IDENTITY VERIFICATION INTERFACE
        ===================================================================== -->
   <div class="modal-backdrop" id="verifyAccountModal" style="display: none; pointer-events: none; align-items: center; justify-content: center; z-index: 10000;">
-    <div class="tararent-verification-modal-box relative w-full max-w-[500px] bg-[#FCFBF9] border-[1.5px] border-[#56380E]/20 rounded-3xl p-6 sm:p-8 shadow-2xl overflow-y-auto max-h-[92vh]" onclick="event.stopPropagation()" style="position: relative; width: 100%; max-width: 500px; background: #FCFBF9; border: 1.5px solid rgba(86, 56, 14, 0.22); border-radius: 24px; padding: 28px 28px 24px; box-shadow: 0 20px 48px rgba(43, 33, 22, 0.22), 0 4px 12px rgba(86, 56, 14, 0.08); box-sizing: border-box; max-height: 92vh; overflow-y: auto; pointer-events: auto;">
+    <div class="tararent-verification-modal-box relative w-full max-w-[500px] bg-[#FCFBF9] border-2 border-[#B89B72] rounded-3xl p-6 sm:p-8 shadow-2xl overflow-y-auto max-h-[92vh]" onclick="event.stopPropagation()" style="position: relative; width: 100%; max-width: 500px; background: #FCFBF9; border: 2px solid #B89B72; border-radius: 24px; padding: 28px 28px 24px; box-shadow: 0 20px 48px rgba(43, 33, 22, 0.22); box-sizing: border-box; max-height: 92vh; overflow-y: auto; pointer-events: auto;">
       <!-- Absolute Top-Right Close Button with Clean Lucide Icon -->
       <button type="button" 
-              class="tararent-modal-close-btn modal-close-btn absolute top-4 right-4 sm:top-5 sm:right-5 w-9 h-9 rounded-full bg-[#56380E]/10 hover:bg-[#56380E]/20 text-[#56380E] hover:text-[#2B2116] flex items-center justify-center transition-all cursor-pointer border-0 z-50 focus:outline-none" 
+              class="tararent-modal-close-btn modal-close-btn absolute top-4 right-4 sm:top-5 sm:right-5 w-9 h-9 rounded-full bg-[#4A3728]/10 hover:bg-[#4A3728]/20 text-[#4A3728] hover:text-[#382618] flex items-center justify-center transition-all cursor-pointer border-0 z-50 focus:outline-none" 
               onclick="closeModal('verifyAccountModal')" 
               title="Close" 
               aria-label="Close"
-              style="position: absolute; top: 18px; right: 18px; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; border-radius: 9999px; background: rgba(86, 56, 14, 0.08); color: #56380E; cursor: pointer; border: 1px solid rgba(86, 56, 14, 0.16); z-index: 100;">
-        <i data-lucide="x" class="w-5 h-5 text-[#56380E]" style="pointer-events: none;" aria-hidden="true"></i>
+              style="position: absolute; top: 18px; right: 18px; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; border-radius: 9999px; background: rgba(74, 55, 40, 0.1); color: #4A3728; cursor: pointer; border: 1px solid rgba(184, 155, 114, 0.3); z-index: 100;">
+        <i data-lucide="x" class="w-5 h-5 text-[#4A3728]" style="pointer-events: none;" aria-hidden="true"></i>
       </button>
 
       <!-- ================= STEP 1: DOCUMENT / ID SUBMISSION ================= -->
       <div id="verifyStep1View">
         <!-- Modal Header -->
         <div class="mb-5 pr-10" style="margin-bottom: 20px; padding-right: 40px;">
-          <h2 class="text-xl font-extrabold text-[#56380E] m-0 mb-1.5 flex items-center gap-2.5" style="font-size: 20px; font-weight: 800; color: #56380E; margin: 0 0 6px; display: flex; align-items: center; gap: 10px;">
-            <i data-lucide="shield-check" class="w-6 h-6 text-[#56380E]" style="color: #56380E; width: 24px; height: 24px;" aria-hidden="true"></i>
+          <h2 class="text-xl font-black text-[#3E2723] m-0 mb-1.5 flex items-center gap-2.5" style="font-size: 20px; font-weight: 800; color: #3E2723; margin: 0 0 6px; display: flex; align-items: center; gap: 10px;">
+            <i data-lucide="shield-check" class="w-6 h-6 text-[#4A3728]" style="color: #4A3728; width: 24px; height: 24px;" aria-hidden="true"></i>
             <span id="verifyModalTitleText">Identity Verification Required</span>
           </h2>
-          <p id="verifyModalSubText" class="text-xs sm:text-sm text-[#786c5e] m-0 font-medium leading-relaxed" style="font-size: 13px; color: #786c5e; margin: 0; line-height: 1.45; font-weight: 500;">
-            To unlock all tenant features, please upload a valid Government ID or Proof of Billing to verify your identity.
+          <p id="verifyModalSubText" class="text-xs sm:text-sm text-[#7A6245] m-0 font-semibold leading-relaxed" style="font-size: 13px; color: #7A6245; margin: 0; line-height: 1.45; font-weight: 600;">
+            To unlock all tenant features, please upload a valid Government ID to verify your identity.
           </p>
         </div>
 
@@ -2037,11 +2598,11 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
         <form id="verifyAccountForm" enctype="multipart/form-data" class="flex flex-col gap-4 sm:gap-5" style="display: flex; flex-direction: column; gap: 18px;">
           <!-- 1. Select Document / ID Type -->
           <div class="form-group flex flex-col gap-1.5" style="margin: 0;">
-            <label class="form-label text-xs sm:text-sm font-bold text-[#56380E] block" for="verifyDocType" style="font-weight: 800; color: #56380E; font-size: 13px; margin-bottom: 6px; display: block;">
+            <label class="form-label text-xs sm:text-sm font-bold text-[#3E2723] block" for="verifyDocType" style="font-weight: 800; color: #3E2723; font-size: 13px; margin-bottom: 6px; display: block;">
               Document Type <span class="text-red-600 font-bold" style="color: #b91c1c;">*</span>
             </label>
-            <select id="verifyDocType" name="id_type" class="w-full bg-white border border-[#a89f91] focus:border-[#56380E] rounded-xl px-3.5 py-2.5 text-sm font-semibold text-[#2b2116] shadow-sm outline-none transition-colors" style="background: #ffffff; border: 1.5px solid #a89f91; border-radius: 12px; padding: 11px 14px; font-size: 13.5px; font-weight: 700; color: #2b2116; width: 100%; box-shadow: inset 0 2px 4px rgba(0,0,0,0.04); outline: none;" required>
-              <option value="" disabled selected>Select Valid ID or Document</option>
+            <select id="verifyDocType" name="id_type" class="w-full bg-[#F5F0E6] border border-[#B89B72] focus:border-[#4A3728] focus:ring-1 focus:ring-[#4A3728] rounded-xl px-3.5 py-2.5 text-sm font-semibold text-[#3E2723] shadow-sm outline-none transition-colors" style="background: #F5F0E6; border: 1.5px solid #B89B72; border-radius: 12px; padding: 11px 14px; font-size: 13.5px; font-weight: 700; color: #3E2723; width: 100%; outline: none;" required>
+              <option value="" disabled selected>Select Valid Id</option>
               <optgroup label="Government Issued IDs">
                 <option value="National ID">Philippine National ID (PhilSys)</option>
                 <option value="Driver's License">Driver's License</option>
@@ -2055,50 +2616,50 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
                 <option value="Student ID">Student ID</option>
                 <option value="Other Valid Government ID">Other Valid Government ID</option>
               </optgroup>
-              <optgroup label="Proof of Billing">
-                <option value="Electric Bill (Meralco)">Electric Bill (e.g. Meralco)</option>
-                <option value="Water Bill">Water Utility Bill</option>
-                <option value="Internet / Telco Bill">Internet / Telco Statement</option>
-                <option value="Bank / Card Statement">Bank Statement</option>
-              </optgroup>
             </select>
           </div>
 
           <!-- 2. ID Upload Zone -->
           <div class="form-group flex flex-col gap-1.5" style="margin: 0;">
-            <label class="form-label text-xs sm:text-sm font-bold text-[#56380E] block" style="font-weight: 800; color: #56380E; font-size: 13px; margin-bottom: 6px; display: block;">
+            <label class="form-label text-xs sm:text-sm font-bold text-[#3E2723] block" style="font-weight: 800; color: #3E2723; font-size: 13px; margin-bottom: 6px; display: block;">
               Upload Document Photo <span class="text-red-600 font-bold" style="color: #b91c1c;">*</span>
             </label>
-            <div class="tararent-id-upload-zone w-full flex flex-col items-center justify-center border-2 border-dashed border-[#a89f91] hover:border-[#56380E] rounded-2xl p-6 bg-white/80 hover:bg-[#F5EFE6] transition-all duration-200 cursor-pointer text-center shadow-inner group" 
+            <div class="tararent-id-upload-zone w-full flex flex-col items-center justify-center border-2 border-dashed border-[#B89B72] hover:border-[#4A3728] rounded-2xl p-6 bg-[#F5F0E6]/60 hover:bg-[#F5F0E6] transition-all duration-200 cursor-pointer text-center group" 
                  id="idDropZone" 
                  onclick="document.getElementById('idFileInput').click()"
-                 style="border: 2px dashed #a89f91; border-radius: 16px; background: rgba(255, 255, 255, 0.85); padding: 24px 16px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; cursor: pointer; transition: all 0.2s ease; box-shadow: inset 0 2px 4px rgba(0,0,0,0.02); width: 100%; box-sizing: border-box;">
-              <div class="tararent-upload-icon-circle w-12 h-12 rounded-full bg-[#56380E]/10 flex items-center justify-center text-[#56380E] mb-2.5 transition-transform group-hover:scale-110" style="width: 48px; height: 48px; border-radius: 9999px; background: rgba(86, 56, 14, 0.1); display: flex; align-items: center; justify-content: center; color: #56380E; margin-bottom: 10px;">
+                 style="border: 2px dashed #B89B72; border-radius: 16px; background: rgba(245, 240, 230, 0.6); padding: 24px 16px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; cursor: pointer; transition: all 0.2s ease; width: 100%; box-sizing: border-box;">
+              <div class="tararent-upload-icon-circle w-12 h-12 rounded-full bg-[#4A3728]/10 flex items-center justify-center text-[#4A3728] mb-2.5 transition-transform group-hover:scale-110" style="width: 48px; height: 48px; border-radius: 9999px; background: rgba(74, 55, 40, 0.1); display: flex; align-items: center; justify-content: center; color: #4A3728; margin-bottom: 10px;">
                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" class="w-6 h-6" style="width: 26px; height: 26px;">
                   <path stroke-linecap="round" stroke-linejoin="round" d="M12 16.5V9.75m0 0 3 3m-3-3-3 3M6.75 19.5a4.5 4.5 0 0 1-1.41-8.775 5.25 5.25 0 0 1 10.233-2.33 3 3 0 0 1 3.758 3.848A3.752 3.752 0 0 1 18 19.5H6.75Z" />
                 </svg>
               </div>
-              <div class="tararent-upload-prompt text-sm font-bold text-[#2B2116] mb-1" style="font-size: 13.5px; font-weight: 700; color: #2B2116; margin-bottom: 3px;">Click to upload or drag and drop your ID here</div>
-              <div class="tararent-upload-hint text-xs text-[#8C857B] font-semibold" style="font-size: 11.5px; color: #8C857B; font-weight: 600;">Supports JPG, PNG, or WEBP (Max 10MB)</div>
+              <div class="tararent-upload-prompt text-sm font-bold text-[#3E2723] mb-1" style="font-size: 13.5px; font-weight: 700; color: #3E2723; margin-bottom: 3px;">Click to upload or drag and drop your ID here</div>
+              <div class="tararent-upload-hint text-xs text-[#7A6245] font-semibold" style="font-size: 11.5px; color: #7A6245; font-weight: 600;">Supports JPG, PNG, or WEBP (Max 10MB)</div>
             </div>
             <input type="file" id="idFileInput" name="id_photo" accept="image/jpeg,image/png,image/webp" style="display: none;" onchange="handleVerificationFileSelect(event)">
 
             <!-- Image Preview Card -->
-            <div id="idImagePreviewCard" class="hidden mt-2.5 rounded-xl overflow-hidden bg-white border border-[#2B2116] shadow-md" style="display: none; margin-top: 10px; border-radius: 14px; overflow: hidden; background: #ffffff; border: 1.5px solid #2B2116; box-shadow: 0 4px 12px rgba(43,26,6,0.12);">
+            <div id="idImagePreviewCard" class="hidden rounded-xl overflow-hidden bg-white border-2 border-[#B89B72] shadow-md" style="display: none; border-radius: 14px; overflow: hidden; background: #ffffff; border: 2px solid #B89B72; box-shadow: 0 4px 12px rgba(43,26,6,0.12);">
               <div class="relative w-full h-48 bg-[#1c1206] flex items-center justify-center overflow-hidden" style="position: relative; width: 100%; height: 190px; background: #1c1206; display: flex; align-items: center; justify-content: center; overflow: hidden;">
                 <img id="idVisualPreviewImg" src="" alt="Uploaded ID Preview" class="w-full h-full object-contain block" style="width: 100%; height: 100%; object-fit: contain; display: block;">
-                <button type="button" class="btn-remove-file absolute top-2.5 right-2.5 bg-[#1c1206]/85 hover:bg-[#1c1206] text-white w-8 h-8 rounded-full flex items-center justify-center cursor-pointer border border-white/35 transition-colors" id="btnRemoveIdFile" onclick="removeVerificationIdFile(event)" title="Remove or Replace File" aria-label="Remove or Replace File" style="position: absolute; top: 10px; right: 10px; background: rgba(28, 18, 6, 0.85); color: #ffffff; width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; border: 1.5px solid rgba(255, 255, 255, 0.35);">
-                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-4 h-4" style="width: 16px; height: 16px;">
+                <button type="button" 
+                        class="btn-remove-attached-photo absolute top-2.5 right-2.5 bg-[#1c1206]/85 hover:bg-[#1c1206] text-white w-8 h-8 rounded-full flex items-center justify-center cursor-pointer border border-white/35 transition-colors" 
+                        id="btnRemoveAttachedPhoto" 
+                        onclick="removeAttachedPhoto(event)" 
+                        title="Remove Attached Photo" 
+                        aria-label="Remove Attached Photo" 
+                        style="position: absolute; top: 10px; right: 10px; background: rgba(28, 18, 6, 0.85); color: #ffffff; width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; border: 1.5px solid rgba(255, 255, 255, 0.35); z-index: 20;">
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-4 h-4 pointer-events-none" style="width: 16px; height: 16px; pointer-events: none;">
                     <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" />
                   </svg>
                 </button>
               </div>
-              <div class="p-2.5 sm:p-3 bg-[#FBF8F1] flex items-center justify-between gap-2.5 border-t border-[#2B2116]/15" style="padding: 10px 14px; background: #FBF8F1; display: flex; align-items: center; justify-content: space-between; gap: 10px; border-top: 1px solid rgba(43, 26, 6, 0.15);">
+              <div class="p-2.5 sm:p-3 bg-[#F5F0E6] flex items-center justify-between gap-2.5 border-t border-[#B89B72]/30" style="padding: 10px 14px; background: #F5F0E6; display: flex; align-items: center; justify-content: space-between; gap: 10px; border-top: 1px solid rgba(184, 155, 114, 0.3);">
                 <div class="flex items-center gap-2 overflow-hidden" style="display: flex; align-items: center; gap: 8px; overflow: hidden;">
-                  <span class="inline-flex text-[#56380E]" style="display: inline-flex; color: #56380E;"><i data-lucide="id-card" class="w-4 h-4" aria-hidden="true"></i></span>
+                  <span class="inline-flex text-[#4A3728]" style="display: inline-flex; color: #4A3728;"><i data-lucide="id-card" class="w-4 h-4" aria-hidden="true"></i></span>
                   <div class="overflow-hidden truncate" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-                    <div id="idPreviewFileName" class="text-xs sm:text-sm font-bold text-[#2B2116] truncate" style="font-size: 13px; font-weight: 700; color: #2B2116; overflow: hidden; text-overflow: ellipsis;"></div>
-                    <div id="idPreviewFileSize" class="text-[11px] text-[#8C857B] font-semibold" style="font-size: 11px; color: #8C857B; font-weight: 600;"></div>
+                    <div id="idPreviewFileName" class="text-xs sm:text-sm font-bold text-[#3E2723] truncate" style="font-size: 13px; font-weight: 700; color: #3E2723; overflow: hidden; text-overflow: ellipsis;"></div>
+                    <div id="idPreviewFileSize" class="text-[11px] text-[#7A6245] font-semibold" style="font-size: 11px; color: #7A6245; font-weight: 600;"></div>
                   </div>
                 </div>
                 <span class="bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs px-2.5 py-1 rounded-full font-bold inline-flex items-center gap-1 shrink-0" style="background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0; font-size: 11.5px; padding: 4px 10px; font-weight: 800; display: inline-flex; align-items: center; gap: 4px;">
@@ -2109,17 +2670,17 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
           </div>
 
           <!-- 3. Consent & Privacy Acknowledgement -->
-          <div class="p-3 sm:p-3.5 bg-white/90 border border-[#56380E]/20 rounded-xl" style="padding: 12px 14px; background: rgba(255, 255, 255, 0.85); border: 1.5px solid rgba(86, 56, 14, 0.2); border-radius: 12px; margin: 0;">
+          <div class="p-3 sm:p-3.5 bg-[#F5F0E6]/70 border border-[#B89B72] rounded-xl" style="padding: 12px 14px; background: rgba(245, 240, 230, 0.7); border: 1.5px solid #B89B72; border-radius: 12px; margin: 0;">
             <label class="flex items-start gap-2.5 cursor-pointer select-none" style="display: flex; align-items: flex-start; gap: 10px; cursor: pointer; user-select: none;">
-              <input type="checkbox" id="checkTermsAgreement" name="terms_accepted" value="1" class="w-4.5 h-4.5 mt-0.5 accent-[#56380E] cursor-pointer" style="width: 18px; height: 18px; margin-top: 2px; accent-color: #56380E; cursor: pointer;" required checked>
-              <span class="text-xs sm:text-sm text-[#2B2116] leading-relaxed font-semibold" style="font-size: 12.5px; color: #2B2116; line-height: 1.45; font-weight: 600;">
+              <input type="checkbox" id="checkTermsAgreement" name="terms_accepted" value="1" class="w-4.5 h-4.5 mt-0.5 accent-[#4A3728] cursor-pointer" style="width: 18px; height: 18px; margin-top: 2px; accent-color: #4A3728; cursor: pointer;" required checked>
+              <span class="text-xs sm:text-sm text-[#3E2723] leading-relaxed font-semibold" style="font-size: 12.5px; color: #3E2723; line-height: 1.45; font-weight: 600;">
                 I certify that this document is valid, clear, and accurately represents my identity for apartment tenancy verification. <span class="text-red-600 font-bold" style="color: #b91c1c;">*</span>
               </span>
             </label>
           </div>
 
           <!-- 4. Prominent Action Button -->
-          <button type="submit" id="btnSubmitVerification" class="tararent-pill-submit-btn w-full bg-[#56380E] hover:bg-[#432b0b] text-white font-extrabold text-sm py-3.5 px-6 rounded-xl border-0 flex items-center justify-center gap-2.5 cursor-pointer shadow-md hover:shadow-lg transition-all duration-200 active:scale-[0.99] focus:outline-none" style="width: 100%; background: #56380E; color: #ffffff; font-weight: 800; font-size: 14px; padding: 14px 20px; border-radius: 12px; border: none; display: flex; align-items: center; justify-content: center; gap: 10px; cursor: pointer; box-shadow: 0 4px 14px rgba(86, 56, 14, 0.28); transition: all 0.2s ease; outline: none; box-sizing: border-box;">
+          <button type="submit" id="btnSubmitVerification" class="tararent-pill-submit-btn w-full bg-[#4A3728] hover:bg-[#382618] text-white font-black text-sm py-3.5 px-6 rounded-xl border border-[#382618] flex items-center justify-center gap-2.5 cursor-pointer shadow-md hover:shadow-lg transition-all duration-200 active:scale-[0.99] focus:outline-none" style="width: 100%; background: #4A3728; color: #ffffff; font-weight: 800; font-size: 14px; padding: 14px 20px; border-radius: 12px; border: 1px solid #382618; display: flex; align-items: center; justify-content: center; gap: 10px; cursor: pointer; box-shadow: 0 4px 14px rgba(74, 55, 40, 0.28); transition: all 0.2s ease; outline: none; box-sizing: border-box;">
             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-5 h-5 text-white" style="width: 20px; height: 20px;">
               <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75m-3-7.036A11.959 11.959 0 0 1 3.598 6 11.99 11.99 0 0 0 3 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285Z" />
             </svg>
@@ -2127,8 +2688,8 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
           </button>
 
           <div class="text-center -mt-1" style="text-align: center; margin-top: -4px;">
-            <button type="button" onclick="closeVerifyAccountModal()" class="text-xs sm:text-sm font-bold text-[#56380E] hover:text-[#2B2116] underline cursor-pointer bg-transparent border-0 transition-colors" style="background: none; border: none; color: #56380E; font-size: 13px; font-weight: 700; cursor: pointer; text-decoration: underline;">
-              Cancel & Continue in Read-Only Mode
+            <button type="button" onclick="closeVerifyAccountModal()" class="text-xs sm:text-sm font-bold text-[#4A3728] hover:text-[#382618] underline cursor-pointer bg-transparent border-0 transition-colors" style="background: none; border: none; color: #4A3728; font-size: 13px; font-weight: 700; cursor: pointer; text-decoration: underline;">
+              Cancel
             </button>
           </div>
         </form>
@@ -2204,35 +2765,35 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
        MODAL: APARTMENT TERMS & CONDITIONS
        ===================================================================== -->
   <div class="modal-backdrop" id="termsContentModal" style="display: none; pointer-events: none; z-index: 10050;">
-    <div class="clay-modal" style="max-width: 620px; width: 100%; max-height: 85vh; display: flex; flex-direction: column;">
-      <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1.5px solid #f1f5f9;">
+    <div class="clay-modal bg-[#FCFBF9] border-2 border-[#B89B72] rounded-2xl p-6 sm:p-7 shadow-2xl" style="max-width: 620px; width: 100%; max-height: 85vh; display: flex; flex-direction: column;">
+      <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px dashed rgba(140, 109, 67, 0.3);">
         <div>
           <div style="display: flex; align-items: center; gap: 8px;">
-            <h2 style="font-size: 18px; font-weight: 800; color: #0f172a; margin: 0;">Apartment Terms &amp; Conditions</h2>
-            <span class="clay-badge" style="font-size: 11px; padding: 2px 8px; background: #e0e7ff; color: #3730a3; font-weight: 700;">TaraRent</span>
+            <h2 style="font-size: 18px; font-weight: 800; color: #3E2723; margin: 0;">Apartment Terms &amp; Conditions</h2>
+            <span class="clay-badge" style="font-size: 11px; padding: 2px 8px; background: #F5F0E6; color: #4A3728; border: 1px solid #B89B72; font-weight: 700;">TaraRent</span>
           </div>
-          <p style="font-size: 12px; color: var(--text-muted); margin: 3px 0 0 0;">Apartment Rental Agreement Guidelines</p>
+          <p style="font-size: 12px; color: #7A6245; margin: 3px 0 0 0;">Apartment Rental Agreement Guidelines</p>
         </div>
-        <button type="button" class="modal-close-btn btn-remove-file" onclick="closeModal('termsContentModal')" title="Close" aria-label="Close"><i data-lucide="x" class="w-4 h-4" aria-hidden="true"></i></button>
+        <button type="button" class="modal-close-btn text-[#4A3728] hover:text-[#382618] p-1.5 rounded-lg hover:bg-[#4A3728]/10 transition-colors cursor-pointer" onclick="closeModal('termsContentModal')" title="Close" aria-label="Close"><i data-lucide="x" class="w-5 h-5" aria-hidden="true"></i></button>
       </div>
 
-      <div style="flex: 1; overflow-y: auto; padding-right: 10px; font-size: 13px; line-height: 1.6; color: #334155;">
-        <h4 style="font-weight: 800; color: #0f172a; margin-top: 0;">1. Monthly Rent &amp; Advance Deposit</h4>
+      <div style="flex: 1; overflow-y: auto; padding-right: 10px; font-size: 13px; line-height: 1.6; color: #3E2723;">
+        <h4 style="font-weight: 800; color: #3E2723; margin-top: 0;">1. Monthly Rent &amp; Advance Deposit</h4>
         <p>The standard apartment monthly rent is ₱3,000.00 per unit, due on the designated monthly due date. An initial advance deposit of ₱3,000.00 is required upon tenancy commencement.</p>
 
-        <h4 style="font-weight: 800; color: #0f172a;">2. Maintenance &amp; Repair Policy</h4>
+        <h4 style="font-weight: 800; color: #3E2723;">2. Maintenance &amp; Repair Policy</h4>
         <p>All structural, electrical, plumbing, and general wear-and-tear repairs are the sole responsibility of the property owner/admin. Tenants will <strong>not</strong> be billed or charged for submitting maintenance work orders.</p>
 
-        <h4 style="font-weight: 800; color: #0f172a;">3. Resident Verification</h4>
+        <h4 style="font-weight: 800; color: #3E2723;">3. Resident Verification</h4>
         <p>Tenants agree to provide valid identification and complete real-time face verification to prevent identity fraud and ensure community safety within TaraRent residences.</p>
 
-        <h4 style="font-weight: 800; color: #0f172a;">4. House Rules &amp; Noise Curfew</h4>
+        <h4 style="font-weight: 800; color: #3E2723;">4. House Rules &amp; Noise Curfew</h4>
         <p>Tenants must respect quiet hours between 10:00 PM and 7:00 AM. Cleanliness of common areas must be maintained at all times.</p>
       </div>
 
-      <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 16px; padding-top: 12px; border-top: 1.5px solid #f1f5f9;">
-        <span style="font-size: 12px; color: #64748b;">TaraRent Management</span>
-        <button type="button" class="clay-btn clay-btn-primary" onclick="agreeTermsFromModal()" style="padding: 8px 20px; font-size: 13px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 16px; padding-top: 12px; border-top: 1px dashed rgba(140, 109, 67, 0.3);">
+        <span style="font-size: 12px; color: #7A6245;">TaraRent Management</span>
+        <button type="button" class="py-2 px-5 rounded-xl font-black text-sm bg-[#4A3728] hover:bg-[#382618] text-white border border-[#382618] shadow-md transition-colors cursor-pointer" onclick="agreeTermsFromModal()">
           <span>I Agree to Terms</span>
         </button>
       </div>
@@ -2243,35 +2804,35 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
        MODAL: PRIVACY POLICY & BIOMETRIC DATA CONSENT (RA 10173)
        ===================================================================== -->
   <div class="modal-backdrop" id="privacyContentModal" style="display: none; pointer-events: none; z-index: 10050;">
-    <div class="clay-modal" style="max-width: 620px; width: 100%; max-height: 85vh; display: flex; flex-direction: column;">
-      <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1.5px solid #f1f5f9;">
+    <div class="clay-modal bg-[#FCFBF9] border-2 border-[#B89B72] rounded-2xl p-6 sm:p-7 shadow-2xl" style="max-width: 620px; width: 100%; max-height: 85vh; display: flex; flex-direction: column;">
+      <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px dashed rgba(140, 109, 67, 0.3);">
         <div>
           <div style="display: flex; align-items: center; gap: 8px;">
-            <h2 style="font-size: 18px; font-weight: 800; color: #0f172a; margin: 0;">Privacy Policy &amp; Biometric Consent</h2>
+            <h2 style="font-size: 18px; font-weight: 800; color: #3E2723; margin: 0;">Privacy Policy &amp; Biometric Consent</h2>
             <span class="clay-badge" style="font-size: 11px; padding: 2px 8px; background: #dcfce7; color: #166534; font-weight: 700;">RA 10173</span>
           </div>
-          <p style="font-size: 12px; color: var(--text-muted); margin: 3px 0 0 0;">In compliance with Republic Act No. 10173 (Data Privacy Act of 2012)</p>
+          <p style="font-size: 12px; color: #7A6245; margin: 3px 0 0 0;">In compliance with Republic Act No. 10173 (Data Privacy Act of 2012)</p>
         </div>
-        <button type="button" class="modal-close-btn btn-remove-file" onclick="closeModal('privacyContentModal')" title="Close" aria-label="Close"><i data-lucide="x" class="w-4 h-4" aria-hidden="true"></i></button>
+        <button type="button" class="modal-close-btn text-[#4A3728] hover:text-[#382618] p-1.5 rounded-lg hover:bg-[#4A3728]/10 transition-colors cursor-pointer" onclick="closeModal('privacyContentModal')" title="Close" aria-label="Close"><i data-lucide="x" class="w-4 h-4" aria-hidden="true"></i></button>
       </div>
 
-      <div style="flex: 1; overflow-y: auto; padding-right: 10px; font-size: 13px; line-height: 1.6; color: #334155;">
-        <h4 style="font-weight: 800; color: #0f172a; margin-top: 0;">1. Data Collection &amp; Purpose</h4>
+      <div style="flex: 1; overflow-y: auto; padding-right: 10px; font-size: 13px; line-height: 1.6; color: #3E2723;">
+        <h4 style="font-weight: 800; color: #3E2723; margin-top: 0;">1. Data Collection &amp; Purpose</h4>
         <p>TaraRent collects tenant names, contact details, uploaded government/student ID photos, and real-time live face scan imagery solely for identity verification, residency records, and tenancy contract management.</p>
 
-        <h4 style="font-weight: 800; color: #0f172a;">2. Biometric Data Processing</h4>
+        <h4 style="font-weight: 800; color: #3E2723;">2. Biometric Data Processing</h4>
         <p>Your live face scan is used exclusively to compare against your uploaded ID to confirm your identity. Biometric templates are not retained indefinitely, sold, or shared with third parties.</p>
 
-        <h4 style="font-weight: 800; color: #0f172a;">3. Data Security &amp; Confidentiality</h4>
+        <h4 style="font-weight: 800; color: #3E2723;">3. Data Security &amp; Confidentiality</h4>
         <p>All sensitive information, including uploaded IDs and payment proofs, is stored in restricted, secure server directories with role-based access controls and encrypted channels.</p>
 
-        <h4 style="font-weight: 800; color: #0f172a;">4. Tenant Rights</h4>
+        <h4 style="font-weight: 800; color: #3E2723;">4. Tenant Rights</h4>
         <p>Under RA 10173, you retain the right to access, rectify, or request information regarding your personal data retained within the system by contacting the property administrator.</p>
       </div>
 
-      <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 16px; padding-top: 12px; border-top: 1.5px solid #f1f5f9;">
-        <span style="font-size: 12px; color: #64748b;">TaraRent Data Privacy Protection</span>
-        <button type="button" class="clay-btn clay-btn-primary" onclick="agreePrivacyFromModal()" style="padding: 8px 20px; font-size: 13px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 16px; padding-top: 12px; border-top: 1px dashed rgba(140, 109, 67, 0.3);">
+        <span style="font-size: 12px; color: #7A6245;">TaraRent Data Privacy Protection</span>
+        <button type="button" class="py-2 px-5 rounded-xl font-black text-sm bg-[#4A3728] hover:bg-[#382618] text-white border border-[#382618] shadow-md transition-colors cursor-pointer" onclick="agreePrivacyFromModal()">
           <span>I Acknowledge &amp; Consent</span>
         </button>
       </div>
@@ -2340,6 +2901,7 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
     // Sidebar Toggle & Active-State Controller provided by assets/js/sidebar.js
     window.HAS_UNPAID_BALANCE = <?= $hasUnpaidBalance ? 'true' : 'false' ?>;
     window.IS_TENANT_VERIFIED = <?= $isTenantVerified ? 'true' : 'false' ?>;
+    window.TENANT_STATUS_MODE = <?= json_encode($tenantStatus['mode'] ?? 'active_verified') ?>;
     window.TENANT_VERIFICATION_STATUS = <?= json_encode(strtolower((string)($user['verification_status'] ?? 'unverified'))) ?>;
     window.IS_MOVED_OUT_UNPAID = <?= $isMovedOutTenant ? 'true' : 'false' ?>;
 
@@ -2392,7 +2954,7 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
     document.addEventListener('click', function(e) {
       const closeBtn = e.target.closest('.modal-close-btn, .btn-remove-file, .btn-icon-close, .resident-reg-close, .tararent-modal-close-btn, [data-modal-close], button[aria-label="Close"], button[title*="Close"]');
       if (closeBtn) {
-        if (closeBtn.id === 'btnRemoveFile') return; // File preview remove button, handled by dedicated upload handler
+        if (closeBtn.id === 'btnRemoveFile' || closeBtn.id === 'btnRemoveAttachedPhoto' || closeBtn.id === 'btnRemoveIdFile' || closeBtn.classList.contains('btn-remove-attached-photo')) return; // File preview remove buttons, handled by dedicated upload handlers
         const modal = closeBtn.closest('.modal-backdrop');
         if (modal && modal.id && typeof window.closeModal === 'function') {
           e.preventDefault();
@@ -2429,7 +2991,9 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
       if (!sectionId) return;
 
       if (window.IS_MOVED_OUT_UNPAID && !['tenantOverview', 'tenantPayments'].includes(sectionId)) {
-        showToast('Navigation restricted: Only Dashboard and Upload Payment are accessible while your balance remains unsettled.', 'warning');
+        if (typeof showToast === 'function') {
+          showToast('Navigation restricted: Only Dashboard and Upload Payment are accessible while your balance remains unsettled.', 'warning');
+        }
         sectionId = 'tenantOverview';
         btn = document.getElementById('navTenantDashboard') || document.querySelector('.sidebar-nav-item');
       }
@@ -2612,12 +3176,12 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
       }
     });
 
-    function handleProfilePictureSelected(e) {
+    function previewProfilePicture(e) {
       const file = e.target.files && e.target.files[0];
       if (!file) return;
 
-      const validTypes = ['image/jpeg', 'image/png', 'image/webp'];
-      if (!validTypes.includes(file.type)) {
+      const validTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/jpg'];
+      if (!validTypes.includes(file.type.toLowerCase()) && !file.type.startsWith('image/')) {
         showToast('Invalid format. Please choose a JPG, PNG, or WEBP image.', 'error');
         e.target.value = '';
         return;
@@ -2651,9 +3215,18 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
       reader.readAsDataURL(file);
     }
 
+    // Aliases for compatibility
+    function handleProfilePictureSelect(e) { previewProfilePicture(e); }
+    function handleProfilePictureSelected(e) { previewProfilePicture(e); }
+
+    function triggerProfilePictureInput() {
+      const input = document.getElementById('profile_picture') || document.getElementById('profilePictureInput') || document.getElementById('profileAvatarInput');
+      if (input) input.click();
+    }
+
     function cancelProfilePictureSelection() {
       pendingAvatarFile = null;
-      const input = document.getElementById('profilePictureInput');
+      const input = document.getElementById('profile_picture') || document.getElementById('profilePictureInput') || document.getElementById('profileAvatarInput');
       if (input) input.value = '';
 
       const previewImg = document.getElementById('avatarPreviewImg');
@@ -2685,7 +3258,9 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
     }
 
     function submitProfilePictureUpload() {
-      if (!pendingAvatarFile) {
+      const input = document.getElementById('profile_picture') || document.getElementById('profilePictureInput') || document.getElementById('profileAvatarInput');
+      const file = pendingAvatarFile || (input && input.files && input.files[0]);
+      if (!file) {
         showToast('Please select a photo first.', 'warning');
         return;
       }
@@ -2696,9 +3271,11 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
         saveBtn.innerHTML = 'Saving...';
       }
 
-      const formData = new FormData();
-      formData.append('action', 'upload_profile_picture');
-      formData.append('profile_picture', pendingAvatarFile);
+      const form = document.getElementById('profilePictureForm');
+      const formData = new FormData(form || undefined);
+      formData.set('action', 'upload_profile_picture');
+      formData.set('profile_picture', file);
+      formData.set('is_ajax', '1');
 
       fetch('api/profile_api.php', {
         method: 'POST',
@@ -2715,7 +3292,6 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
         if (data.status === 'success') {
           currentSavedAvatarUrl = data.profile_picture;
           pendingAvatarFile = null;
-          const input = document.getElementById('profilePictureInput');
           if (input) input.value = '';
 
           const pendingActions = document.getElementById('avatarPendingActions');
@@ -3270,7 +3846,7 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
       if (subEl) {
         subEl.textContent = window.isUpdatingVerifiedId 
           ? 'Upload a new valid Government ID and complete the Live Face Scan to update your verified credentials. Your previously verified ID remains active until this update passes.' 
-          : 'To unlock all tenant features, please upload a valid Government ID or Proof of Billing to verify your identity.';
+          : 'To unlock all tenant features, please upload a valid Government ID to verify your identity.';
       }
 
       goToVerificationStep(1);
@@ -3299,22 +3875,55 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
       }
     }
 
-    function removeVerificationIdFile(e) {
-      if (e) e.stopPropagation();
+    function removeAttachedPhoto(event) {
+      if (event) {
+        if (typeof event.stopPropagation === 'function') event.stopPropagation();
+        if (typeof event.preventDefault === 'function') event.preventDefault();
+        if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
+      }
+
       selectedIdFile = null;
+      preprocessedIdBlob = null;
+      preprocessedIdDataUrl = '';
+      heldOcrRawText = '';
+
+      // 1. Clear the <input type="file"> value
       const fileInput = document.getElementById('idFileInput');
       if (fileInput) fileInput.value = '';
+
       const previewImg = document.getElementById('idVisualPreviewImg');
       if (previewImg) previewImg.src = '';
-      const previewCard = document.getElementById('idImagePreviewCard');
-      if (previewCard) previewCard.style.display = 'none';
-      const dropZone = document.getElementById('idDropZone');
-      if (dropZone) dropZone.style.display = 'block';
-    }
 
-    function removeIdFile(e) {
-      removeVerificationIdFile(e);
+      const nameEl = document.getElementById('idPreviewFileName');
+      const sizeEl = document.getElementById('idPreviewFileSize');
+      if (nameEl) nameEl.textContent = '';
+      if (sizeEl) sizeEl.textContent = '';
+
+      // 2. Add the 'hidden' class to the image preview card
+      const previewCard = document.getElementById('idImagePreviewCard');
+      if (previewCard) {
+        previewCard.classList.add('hidden');
+        previewCard.style.setProperty('display', 'none', 'important');
+      }
+
+      // 3. Remove the 'hidden' class from the dotted drag-and-drop zone
+      const dropZone = document.getElementById('idDropZone');
+      if (dropZone) {
+        dropZone.classList.remove('hidden');
+        dropZone.style.setProperty('display', 'flex', 'important');
+      }
     }
+    window.removeAttachedPhoto = removeAttachedPhoto;
+
+    function removeVerificationIdFile(event) {
+      removeAttachedPhoto(event);
+    }
+    window.removeVerificationIdFile = removeVerificationIdFile;
+
+    function removeIdFile(event) {
+      removeAttachedPhoto(event);
+    }
+    window.removeIdFile = removeIdFile;
 
     function closeVerifyAccountModal() {
       cancelIdUpdateIfPending();
@@ -3379,11 +3988,26 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
         }
 
         // Seamless "Back" navigation: Preserve selectedIdFile, preview card, and idType
+        const previewCard = document.getElementById('idImagePreviewCard');
+        const dropZone = document.getElementById('idDropZone');
         if (selectedIdFile) {
-          const previewCard = document.getElementById('idImagePreviewCard');
-          const dropZone = document.getElementById('idDropZone');
-          if (previewCard) previewCard.style.display = 'block';
-          if (dropZone) dropZone.style.display = 'none';
+          if (previewCard) {
+            previewCard.classList.remove('hidden');
+            previewCard.style.setProperty('display', 'block', 'important');
+          }
+          if (dropZone) {
+            dropZone.classList.add('hidden');
+            dropZone.style.setProperty('display', 'none', 'important');
+          }
+        } else {
+          if (previewCard) {
+            previewCard.classList.add('hidden');
+            previewCard.style.setProperty('display', 'none', 'important');
+          }
+          if (dropZone) {
+            dropZone.classList.remove('hidden');
+            dropZone.style.setProperty('display', 'flex', 'important');
+          }
         }
       }
     }
@@ -3446,6 +4070,7 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
 
       const candidateUris = [
         'assets/models',
+        '/TaraRent/assets/models',
         '/RentConnect/assets/models',
         'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model'
       ];
@@ -4347,25 +4972,105 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
       if (nameEl) nameEl.textContent = file.name;
       if (sizeEl) sizeEl.textContent = (file.size / 1024 / 1024).toFixed(2) + ' MB';
 
-      // Visual Image Preview (Vanilla JS FileReader) so tenant can confirm what they uploaded before clicking "Next"
+      // Visual Image Preview: Single Document Upload UI (hide dropzone entirely, only show preview card)
       const previewImg = document.getElementById('idVisualPreviewImg');
       const previewCard = document.getElementById('idImagePreviewCard');
       const dropZone = document.getElementById('idDropZone');
 
+      const showSinglePreviewCard = (src) => {
+        if (previewImg && src) previewImg.src = src;
+        if (dropZone) {
+          dropZone.classList.add('hidden');
+          dropZone.style.setProperty('display', 'none', 'important');
+        }
+        if (previewCard) {
+          previewCard.classList.remove('hidden');
+          previewCard.style.setProperty('display', 'block', 'important');
+        }
+      };
+
       if (file.type && file.type.startsWith('image/')) {
         const reader = new FileReader();
         reader.onload = function(e) {
-          if (previewImg) previewImg.src = e.target.result;
-          if (previewCard) previewCard.style.display = 'block';
-          if (dropZone) dropZone.style.display = 'none';
+          showSinglePreviewCard(e.target.result);
         };
         reader.readAsDataURL(file);
       } else {
-        if (previewCard) previewCard.style.display = 'block';
-        if (dropZone) dropZone.style.display = 'none';
+        showSinglePreviewCard('');
       }
 
       showToast('ID attached: ' + file.name, 'info');
+    }
+
+    function switchPaymentTab(tab) {
+      const uploadContent = document.getElementById('tabContentUpload');
+      const trackerContent = document.getElementById('tabContentTracker');
+      const btnUpload = document.getElementById('tabBtnUpload');
+      const btnTracker = document.getElementById('tabBtnTracker');
+
+      if (!uploadContent || !trackerContent || !btnUpload || !btnTracker) return;
+
+      if (tab === 'upload') {
+        uploadContent.classList.remove('hidden');
+        trackerContent.classList.add('hidden');
+
+        btnUpload.className = 'flex-1 py-3.5 px-6 font-black text-sm md:text-base tracking-wide flex items-center justify-center gap-2 transition-all bg-[#B89B72] text-white rounded-tl-xl border-b-2 border-b-[#B89B72] z-10 cursor-pointer';
+        btnTracker.className = 'flex-1 py-3.5 px-6 font-bold text-sm md:text-base tracking-wide flex items-center justify-center gap-2 transition-all bg-[#F5F0E6] text-[#3E2723] rounded-tr-xl border-l border-b-2 border-[#8C6D43] hover:bg-[#E8D8B0] cursor-pointer';
+      } else {
+        uploadContent.classList.add('hidden');
+        trackerContent.classList.remove('hidden');
+
+        btnTracker.className = 'flex-1 py-3.5 px-6 font-black text-sm md:text-base tracking-wide flex items-center justify-center gap-2 transition-all bg-[#B89B72] text-white rounded-tr-xl border-b-2 border-b-[#B89B72] z-10 cursor-pointer';
+        btnUpload.className = 'flex-1 py-3.5 px-6 font-bold text-sm md:text-base tracking-wide flex items-center justify-center gap-2 transition-all bg-[#F5F0E6] text-[#3E2723] rounded-tl-xl border-r border-b-2 border-[#8C6D43] hover:bg-[#E8D8B0] cursor-pointer';
+      }
+    }
+
+    function handleBillingMonthChange() {
+      const monthSelect = document.getElementById('payBillingMonth');
+      if (!monthSelect) return;
+      const opt = monthSelect.options[monthSelect.selectedIndex];
+      if (!opt) return;
+
+      const targetIdInput = document.getElementById('payTargetPayment');
+      if (targetIdInput && opt.dataset.id) {
+        targetIdInput.value = opt.dataset.id;
+      }
+
+      const amountInput = document.getElementById('payAmount');
+      if (amountInput && opt.dataset.amount) {
+        amountInput.value = opt.dataset.amount;
+      }
+
+      const payForSelect = document.getElementById('payFor');
+      if (payForSelect && opt.dataset.type) {
+        const pType = opt.dataset.type.toLowerCase();
+        for (let i = 0; i < payForSelect.options.length; i++) {
+          if (payForSelect.options[i].value.toLowerCase().includes(pType)) {
+            payForSelect.selectedIndex = i;
+            break;
+          }
+        }
+      }
+    }
+
+    function handleReceiptFileSelect(event) {
+      const file = event.target.files && event.target.files[0];
+      if (file) handleFile(file);
+    }
+
+    function removeAttachedReceipt(event) {
+      if (event) {
+        event.stopPropagation();
+        event.preventDefault();
+      }
+      attachedFile = null;
+      const fileInput = document.getElementById('receiptFileInput');
+      if (fileInput) fileInput.value = '';
+      const previewCard = document.getElementById('filePreviewCard');
+      if (previewCard) {
+        previewCard.style.display = 'none';
+        previewCard.classList.add('hidden');
+      }
     }
 
     function handleFile(file) {
@@ -4379,7 +5084,10 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
       const previewCard = document.getElementById('filePreviewCard');
       if (previewName) previewName.textContent = file.name;
       if (previewSize) previewSize.textContent = (file.size / 1024 / 1024).toFixed(2) + ' MB';
-      if (previewCard) previewCard.style.display = 'flex';
+      if (previewCard) {
+        previewCard.style.display = 'inline-flex';
+        previewCard.classList.remove('hidden');
+      }
       showToast('Receipt attached: ' + file.name, 'info');
     }
 
@@ -4501,19 +5209,15 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
       if (tabName === 'submit') {
         submitSection.classList.remove('hidden');
         trackSection.classList.add('hidden');
-        submitBtn.classList.add('active', 'bg-[#5E3F12]', 'text-[#FFFDF8]');
-        submitBtn.classList.remove('bg-[#FAF1DF]', 'text-[#56380E]');
-        trackBtn.classList.remove('active', 'bg-[#5E3F12]', 'text-[#FFFDF8]');
-        trackBtn.classList.add('bg-[#FAF1DF]', 'text-[#56380E]');
+        submitBtn.className = 'flex-1 py-3.5 px-6 font-black text-sm md:text-base tracking-wide flex items-center justify-center gap-2 transition-all bg-[#B89B72] text-white rounded-tl-xl border-b-2 border-b-[#B89B72] z-10 cursor-pointer active';
+        trackBtn.className = 'flex-1 py-3.5 px-6 font-bold text-sm md:text-base tracking-wide flex items-center justify-center gap-2 transition-all bg-[#F5F0E6] text-[#3E2723] rounded-tr-xl border-l border-b-2 border-[#8C6D43] hover:bg-[#E8D8B0] cursor-pointer';
         submitBtn.setAttribute('aria-selected', 'true');
         trackBtn.setAttribute('aria-selected', 'false');
       } else {
         trackSection.classList.remove('hidden');
         submitSection.classList.add('hidden');
-        trackBtn.classList.add('active', 'bg-[#5E3F12]', 'text-[#FFFDF8]');
-        trackBtn.classList.remove('bg-[#FAF1DF]', 'text-[#56380E]');
-        submitBtn.classList.remove('active', 'bg-[#5E3F12]', 'text-[#FFFDF8]');
-        submitBtn.classList.add('bg-[#FAF1DF]', 'text-[#56380E]');
+        trackBtn.className = 'flex-1 py-3.5 px-6 font-black text-sm md:text-base tracking-wide flex items-center justify-center gap-2 transition-all bg-[#B89B72] text-white rounded-tr-xl border-b-2 border-b-[#B89B72] z-10 cursor-pointer active';
+        submitBtn.className = 'flex-1 py-3.5 px-6 font-bold text-sm md:text-base tracking-wide flex items-center justify-center gap-2 transition-all bg-[#F5F0E6] text-[#3E2723] rounded-tl-xl border-r border-b-2 border-[#8C6D43] hover:bg-[#E8D8B0] cursor-pointer';
         trackBtn.setAttribute('aria-selected', 'true');
         submitBtn.setAttribute('aria-selected', 'false');
         if (typeof loadTenantTickets === 'function') {
@@ -4539,10 +5243,10 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
           if (!cont) return;
           if (data.tickets.length === 0) {
             cont.innerHTML = `
-              <div class="text-center py-10 px-4 rounded bg-white/60 border border-[#D5C7B0] text-[#6B5129]">
+              <div class="text-center py-12 px-6 rounded-2xl bg-[#F5F0E6] border-2 border-[#8C6D43]/40 text-[#7A6245]">
                 <i data-lucide="inbox" class="w-8 h-8 mx-auto mb-2 opacity-60"></i>
-                <p class="font-bold text-base">No maintenance requests submitted yet.</p>
-                <p class="text-xs text-[#8A7252] mt-1">Submit your first repair request using the "Submit Request" tab.</p>
+                <p class="font-bold text-base m-0">No maintenance requests submitted yet.</p>
+                <p class="text-xs text-[#7A6245] mt-1 mb-0">Submit your first repair request using the "Submit Request" tab.</p>
               </div>`;
             if (window.lucide && typeof window.lucide.createIcons === 'function') {
               window.lucide.createIcons();
@@ -4556,44 +5260,47 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
             const tkCategory = tk.category || 'General';
             let progressPct = 25;
             const stLower = String(tkStatus).toLowerCase();
+            let statusBadgeClass = 'bg-amber-100 text-amber-900 border-amber-300';
             if (['on-going', 'ongoing', 'assigned', 'in_progress'].includes(stLower)) {
               progressPct = 65;
+              statusBadgeClass = 'bg-blue-100 text-blue-900 border-blue-300';
             } else if (['done', 'resolved', 'closed'].includes(stLower)) {
               progressPct = 100;
+              statusBadgeClass = 'bg-green-100 text-green-900 border-green-300';
             }
             const dateStr = tk.created_at ? new Date(tk.created_at.replace(' ', 'T')).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'Recent';
             
             const card = document.createElement('div');
-            card.className = 'maintenance-track-card p-5 sm:p-6 rounded-lg bg-[#E8D4B0] border border-[#C5AE87] shadow-sm cursor-pointer hover:shadow-md transition-shadow';
+            card.className = 'maintenance-track-card p-5 sm:p-6 rounded-2xl bg-[#F5F0E6] border-2 border-[#8C6D43]/40 shadow-md cursor-pointer hover:shadow-lg transition-shadow';
             card.onclick = () => openTenantTicketModal(tk);
             
             card.innerHTML = `
               <div class="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
                 <div>
-                  <h3 class="text-lg sm:text-xl font-extrabold text-[#2A1B0A] m-0">
+                  <h3 class="text-lg sm:text-xl font-extrabold text-[#3E2723] m-0">
                     ${ticketNum}. ${escapeHtml(tk.title || 'Untitled Request')}
                   </h3>
-                  <p class="text-xs sm:text-sm font-semibold text-[#56380E] mt-1 mb-0">
+                  <p class="text-xs sm:text-sm font-semibold text-[#7A6245] mt-1 mb-0">
                     Date Submitted: ${escapeHtml(dateStr)}
                   </p>
                 </div>
                 <div class="flex items-center gap-2.5 flex-wrap sm:flex-nowrap">
-                  <span class="bg-white text-[#2A1B0A] font-extrabold text-sm px-4 py-1.5 rounded shadow-sm border border-[#D5C7B0] min-w-[90px] text-center">
+                  <span class="${statusBadgeClass} border font-extrabold text-xs px-3.5 py-1.5 rounded-full shadow-sm min-w-[90px] text-center">
                     ${escapeHtml(tkStatus)}
                   </span>
-                  <span class="bg-white text-[#2A1B0A] font-extrabold text-sm px-4 py-1.5 rounded shadow-sm border border-[#D5C7B0] min-w-[90px] text-center">
+                  <span class="bg-white/90 text-[#3E2723] border border-[#8C6D43]/30 font-bold text-xs px-3.5 py-1.5 rounded-full shadow-sm min-w-[90px] text-center">
                     ${escapeHtml(tkCategory)}
                   </span>
                 </div>
               </div>
 
-              <div class="w-full bg-white h-3.5 rounded-full overflow-hidden my-3.5 border border-[#4A3010]/20 shadow-inner">
-                <div class="bg-[#4A3010] h-full rounded-full transition-all duration-300" style="width: ${progressPct}%;"></div>
+              <div class="w-full bg-white/80 h-3.5 rounded-full overflow-hidden my-3.5 border border-[#8C6D43]/30 shadow-inner">
+                <div class="bg-[#4A3728] h-full rounded-full transition-all duration-300" style="width: ${progressPct}%;"></div>
               </div>
 
               <div>
-                <span class="block text-sm font-extrabold text-[#362E25] mb-1.5">Issue Details:</span>
-                <div class="bg-white rounded p-4 text-sm text-[#3B3024] leading-relaxed shadow-sm min-h-[60px] whitespace-pre-line border border-[#E2D6C3]">
+                <span class="block text-sm font-extrabold text-[#3E2723] mb-1.5">Issue Details:</span>
+                <div class="bg-white/90 rounded-xl p-4 text-sm text-[#3E2723] leading-relaxed shadow-sm min-h-[60px] whitespace-pre-line border border-[#8C6D43]/20">
                   ${escapeHtml(tk.description || 'No additional details provided.')}
                 </div>
               </div>
@@ -4798,10 +5505,19 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
       try {
         const idDropZone = document.getElementById('idDropZone');
         const idFileInput = document.getElementById('idFileInput');
+        const btnRemoveAttachedPhoto = document.getElementById('btnRemoveAttachedPhoto') || document.getElementById('btnRemoveIdFile');
+
+        if (btnRemoveAttachedPhoto) {
+          btnRemoveAttachedPhoto.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            removeAttachedPhoto(e);
+          });
+        }
 
         if (idDropZone && idFileInput) {
           idDropZone.addEventListener('click', (e) => {
-            if (e.target !== document.getElementById('btnRemoveIdFile')) idFileInput.click();
+            idFileInput.click();
           });
 
           ['dragenter', 'dragover'].forEach(n => idDropZone.addEventListener(n, (e) => {
@@ -4815,11 +5531,17 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
           }));
 
           idDropZone.addEventListener('drop', (e) => {
-            if (e.dataTransfer && e.dataTransfer.files.length > 0) handleIdFile(e.dataTransfer.files[0]);
-          });
-
-          idFileInput.addEventListener('change', () => {
-            if (idFileInput.files && idFileInput.files.length > 0) handleIdFile(idFileInput.files[0]);
+            e.preventDefault();
+            idDropZone.classList.remove('drag-over');
+            if (e.dataTransfer && e.dataTransfer.files.length > 0) {
+              const file = e.dataTransfer.files[0];
+              try {
+                const dt = new DataTransfer();
+                dt.items.add(file);
+                idFileInput.files = dt.files;
+              } catch (err) {}
+              handleIdFile(file);
+            }
           });
         }
       } catch (e) {
@@ -5500,6 +6222,11 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
           });
         }
 
+        // Initialize dynamic amount and obligation from currently selected billing option
+        if (typeof handleBillingMonthChange === 'function') {
+          handleBillingMonthChange();
+        }
+
         if (btnRemoveFile) {
           btnRemoveFile.addEventListener('click', (e) => {
             e.preventDefault();
@@ -5522,6 +6249,12 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
               return;
             }
 
+            const checkAmountEl = document.getElementById('payAmount');
+            if (checkAmountEl && (!checkAmountEl.value || parseFloat(checkAmountEl.value) <= 0)) {
+              showToast('Please enter a valid payment amount.', 'error');
+              return;
+            }
+
             btnUploadReceipt.disabled = true;
             btnUploadReceipt.innerHTML = '<span>Uploading Proof...</span>';
 
@@ -5536,32 +6269,39 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
               if (p >= 100) clearInterval(interval);
             }, 100);
 
-            const payCycleEl = document.getElementById('payCycle');
+            const payMonthEl = document.getElementById('payBillingMonth') || document.getElementById('payCycle');
+            const payMethodEl = document.getElementById('payMethod');
+            const payForEl = document.getElementById('payFor');
+            const payRefEl = document.getElementById('payReferenceNumber');
             const payAmountEl = document.getElementById('payAmount');
             const payTargetEl = document.getElementById('payTargetPayment');
             const targetOpt = payTargetEl ? payTargetEl.options[payTargetEl.selectedIndex] : null;
             const targetPayId = payTargetEl ? payTargetEl.value : '0';
-            const targetPayType = targetOpt && targetOpt.dataset.type ? targetOpt.dataset.type : 'Rent';
+            const targetPayType = payForEl ? payForEl.value : (targetOpt && targetOpt.dataset.type ? targetOpt.dataset.type : 'Rent');
 
             const formData = new FormData();
             formData.append('receipt', attachedFile);
             formData.append('payment_id', targetPayId);
             formData.append('payment_type', targetPayType);
-            formData.append('billing_cycle', payCycleEl ? payCycleEl.value : '2026-10-01');
-            formData.append('amount_paid', payAmountEl ? payAmountEl.value : '0');
+            formData.append('billing_cycle', payMonthEl ? payMonthEl.value : '2026-11-01');
+            formData.append('payment_method', payMethodEl ? payMethodEl.value : 'GCash');
+            formData.append('reference_number', payRefEl ? payRefEl.value.trim() : '');
+            formData.append('amount_paid', payAmountEl ? payAmountEl.value : '3000.00');
 
             try {
               const res = await fetch('api/payment_api.php', { method: 'POST', body: formData });
               const result = await res.json();
               if (res.ok && result.status === 'success') {
                 showToast(result.message);
-                // Reset drop zone state and stay on payments section without redirecting to overview
                 attachedFile = null;
                 if (fileInput) fileInput.value = '';
-                if (previewCard) previewCard.style.display = 'none';
+                if (previewCard) {
+                  previewCard.style.display = 'none';
+                  previewCard.classList.add('hidden');
+                }
                 if (progressWrapper) progressWrapper.style.display = 'none';
                 btnUploadReceipt.disabled = false;
-                btnUploadReceipt.innerHTML = `<span style="display:inline-flex;align-items:center;gap:8px;">${window.rcIcon('upload', 'w-4 h-4')} Upload Payment</span>`;
+                btnUploadReceipt.innerHTML = 'Submit Proof';
                 
                 // Refresh within payments section so tenant sees their newly uploaded receipt
                 setTimeout(() => {
@@ -5570,17 +6310,17 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
               } else if (res.status === 403 && result.code === 'ACCOUNT_NOT_VERIFIED') {
                 if (progressWrapper) progressWrapper.style.display = 'none';
                 btnUploadReceipt.disabled = false;
-                btnUploadReceipt.innerHTML = `<span style="display:inline-flex;align-items:center;gap:8px;">${window.rcIcon('upload', 'w-4 h-4')} Upload Payment</span>`;
+                btnUploadReceipt.innerHTML = 'Submit Proof';
                 showFeatureLockedAlert('submit payment confirmations', result.message);
               } else {
                 showToast(result.message || 'Error uploading receipt', 'error');
                 btnUploadReceipt.disabled = false;
-                btnUploadReceipt.innerHTML = `<span style="display:inline-flex;align-items:center;gap:8px;">${window.rcIcon('upload', 'w-4 h-4')} Upload Payment</span>`;
+                btnUploadReceipt.innerHTML = 'Submit Proof';
               }
             } catch (err) {
               showToast('Network error uploading receipt', 'error');
               btnUploadReceipt.disabled = false;
-              btnUploadReceipt.innerHTML = `<span style="display:inline-flex;align-items:center;gap:8px;">${window.rcIcon('upload', 'w-4 h-4')} Upload Payment</span>`;
+              btnUploadReceipt.innerHTML = 'Submit Proof';
             }
           });
         }
