@@ -284,6 +284,166 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['action']) && $_POST[
     exit;
 }
 
+// ---------------------------------------------------------------------
+// TENANT GENERAL REPORT & APPROVAL REQUEST (POST Handler)
+// ---------------------------------------------------------------------
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && (
+    (isset($_POST['action']) && $_POST['action'] === 'submit_report') ||
+    isset($_POST['request_category']) ||
+    (isset($_POST['category']) && (isset($_POST['specification']) || isset($_POST['request_specification'])))
+)) {
+    // 1. Verify tenant authorization & verification status
+    if (!$isTenantVerified) {
+        if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) || (isset($_SERVER['HTTP_ACCEPT']) && str_contains($_SERVER['HTTP_ACCEPT'], 'application/json'))) {
+            http_response_code(403);
+            header('Content-Type: application/json; charset=UTF-8');
+            echo json_encode(['status' => 'error', 'message' => 'Identity verification required before submitting requests.']);
+            exit;
+        }
+        header('Location: tenant_portal.php?section=tenantReport&restricted=unverified');
+        exit;
+    }
+
+    $tenantId = (int)$user['id'];
+    $unitId = !empty($user['unit_id']) ? (int)$user['unit_id'] : (!empty($unit['id']) ? (int)$unit['id'] : 1);
+
+    // 2. Process $_POST data (request_category, request_specification, request_description)
+    $category = trim((string)($_POST['request_category'] ?? ($_POST['category'] ?? 'General Request')));
+    $specification = trim((string)($_POST['request_specification'] ?? ($_POST['specification'] ?? ($_POST['subject'] ?? 'Untitled Request'))));
+    $description = trim((string)($_POST['request_description'] ?? ($_POST['description'] ?? ($_POST['details'] ?? ''))));
+
+    if (empty($specification) || empty($description)) {
+        if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) || (isset($_SERVER['HTTP_ACCEPT']) && str_contains($_SERVER['HTTP_ACCEPT'], 'application/json'))) {
+            http_response_code(422);
+            header('Content-Type: application/json; charset=UTF-8');
+            echo json_encode(['status' => 'error', 'message' => 'Specification and description are required.']);
+            exit;
+        }
+        header('Location: tenant_portal.php?section=tenantReport&error=missing_fields');
+        exit;
+    }
+
+    if ($category === '') {
+        $category = 'General Request';
+    }
+
+    // 3. Securely handle $_FILES upload for supporting document
+    $uploadDir = __DIR__ . '/uploads/reports/';
+    if (!is_dir($uploadDir)) {
+        mkdir($uploadDir, 0755, true);
+    }
+
+    $savedFiles = [];
+    $allowedExts = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'pdf', 'doc', 'docx'];
+    $allowedMimes = [
+        'image/jpeg', 'image/png', 'image/webp', 'image/gif',
+        'application/pdf',
+        'application/msword',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    ];
+
+    $fileInputs = ['request_attachment', 'request_attachments', 'report_attachments', 'document', 'attachment', 'attachments', 'file'];
+    foreach ($fileInputs as $fKey) {
+        if (!isset($_FILES[$fKey])) continue;
+        $f = $_FILES[$fKey];
+
+        $filesToProcess = [];
+        if (is_array($f['name'])) {
+            $count = count($f['name']);
+            for ($i = 0; $i < $count; $i++) {
+                if ($f['error'][$i] === UPLOAD_ERR_OK && !empty($f['tmp_name'][$i])) {
+                    $filesToProcess[] = [
+                        'name'     => $f['name'][$i],
+                        'tmp_name' => $f['tmp_name'][$i],
+                        'size'     => $f['size'][$i],
+                    ];
+                }
+            }
+        } elseif ($f['error'] === UPLOAD_ERR_OK && !empty($f['tmp_name'])) {
+            $filesToProcess[] = $f;
+        }
+
+        foreach ($filesToProcess as $fileItem) {
+            if ($fileItem['size'] > 15 * 1024 * 1024) continue; // 15MB limit
+            $ext = strtolower(pathinfo((string)$fileItem['name'], PATHINFO_EXTENSION));
+            if (!in_array($ext, $allowedExts, true)) continue;
+
+            if (function_exists('finfo_open')) {
+                $finfo = finfo_open(FILEINFO_MIME_TYPE);
+                $mime = finfo_file($finfo, $fileItem['tmp_name']);
+                finfo_close($finfo);
+                if (!in_array($mime, $allowedMimes, true)) continue;
+            }
+
+            $safeFilename = 'report_' . $tenantId . '_' . time() . '_' . bin2hex(random_bytes(6)) . '.' . $ext;
+            $destPath = $uploadDir . $safeFilename;
+            if (move_uploaded_file($fileItem['tmp_name'], $destPath)) {
+                $savedFiles[] = 'uploads/reports/' . $safeFilename;
+            }
+        }
+    }
+
+    $attachmentPathStr = !empty($savedFiles) ? implode(',', $savedFiles) : null;
+
+    // 4. Execute PDO INSERT query into tenant_reports table
+    // Ensure default status matches database constraint: 'Pending'
+    $insStmt = $pdo->prepare("
+        INSERT INTO tenant_reports 
+            (tenant_id, unit_id, category, subject, details, attachment_path, status, created_at)
+        VALUES 
+            (:tenant_id, :unit_id, :category, :subject, :details, :attachment_path, 'Pending', NOW())
+    ");
+    $insStmt->execute([
+        ':tenant_id'       => $tenantId,
+        ':unit_id'         => $unitId,
+        ':category'        => $category,
+        ':subject'         => htmlspecialchars($specification, ENT_QUOTES, 'UTF-8'),
+        ':details'         => htmlspecialchars($description, ENT_QUOTES, 'UTF-8'),
+        ':attachment_path' => $attachmentPathStr,
+    ]);
+
+    $newReportId = (int)$pdo->lastInsertId();
+
+    // 5. Notify Landlords
+    try {
+        require_once __DIR__ . '/includes/notification_service.php';
+        $tUnitStmt = $pdo->prepare("SELECT unit_number FROM units WHERE id = :uid LIMIT 1");
+        $tUnitStmt->execute([':uid' => $unitId]);
+        $tUnitNum = $tUnitStmt->fetchColumn() ?: ('Unit ' . $unitId);
+        $tenantName = $user['name'] ?? 'Tenant';
+        $subDate = date('M j, Y');
+
+        NotificationService::notifyLandlords(
+            $pdo,
+            'report',
+            'New Tenant General Report',
+            "Tenant: {$tenantName} • Unit: {$tUnitNum} • Category: {$category} • Subject: {$specification} • Submitted: {$subDate}",
+            'sectionReports',
+            $newReportId,
+            'report_submitted',
+            false
+        );
+    } catch (Throwable $e) {
+        error_log('Report notification error: ' . $e->getMessage());
+    }
+
+    // 6. Return response (JSON if AJAX, or Redirect with success flag for tracker tab)
+    if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) || (isset($_SERVER['HTTP_ACCEPT']) && str_contains($_SERVER['HTTP_ACCEPT'], 'application/json')) || isset($_POST['ajax'])) {
+        header('Content-Type: application/json; charset=UTF-8');
+        echo json_encode([
+            'status'     => 'success',
+            'success'    => true,
+            'message'    => 'Report and Approval Request submitted successfully.',
+            'report_id'  => $newReportId,
+            'redirect'   => 'tenant_portal.php?section=tenantReport&tab=tracker&success=report_submitted'
+        ]);
+        exit;
+    }
+
+    header('Location: tenant_portal.php?section=tenantReport&tab=tracker&success=report_submitted');
+    exit;
+}
+
 // Fetch tickets submitted by this tenant
 $ticketsStmt = $pdo->prepare("SELECT * FROM maintenance_tickets WHERE tenant_id = :tid ORDER BY created_at DESC");
 $ticketsStmt->execute([':tid' => $user['id']]);
@@ -1886,47 +2046,48 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
              ═══════════════════════════════════════════════════════════════════ -->
         <div class="w-full max-w-4xl mx-auto" id="approvalTabsContainer">
 
+          <?php
+          $isReportTrackerActive = (isset($_GET['tab']) && $_GET['tab'] === 'tracker') || (isset($_GET['success']) && $_GET['success'] === 'report_submitted');
+          ?>
           <!-- ── Top Tab Bar ─────────────────────────────────────────────── -->
           <div class="flex items-end gap-1.5" role="tablist" aria-label="Approval Request Navigation">
-            <!-- Tab 1: Submit Request (Active by default, connects seamlessly to Medium Brown container) -->
+            <!-- Tab 1: Submit Request -->
             <button
               type="button"
               id="tabBtnSubmit"
               role="tab"
-              aria-selected="true"
+              aria-selected="<?= $isReportTrackerActive ? 'false' : 'true' ?>"
               aria-controls="tabPaneSubmit"
               onclick="switchApprovalTab('submit')"
-              class="relative z-10 px-6 py-3 rounded-t-2xl font-black text-sm sm:text-base tracking-wide
-                     bg-[#B89B72] text-[#261909] border-2 border-b-0 border-[#7C5A36]
-                     shadow-[0_-2px_6px_rgba(74,55,40,0.1)] transition-all cursor-pointer
-                     focus:outline-none focus:ring-2 focus:ring-[#4A3728]"
+              class="<?= $isReportTrackerActive 
+                ? 'relative z-0 px-6 py-2.5 rounded-t-2xl font-bold text-sm sm:text-base tracking-wide bg-[#B89B72]/70 text-[#261909]/80 border-2 border-[#7C5A36] hover:bg-[#B89B72] transition-all cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#4A3728]' 
+                : 'relative z-10 px-6 py-3 rounded-t-2xl font-black text-sm sm:text-base tracking-wide bg-[#B89B72] text-[#261909] border-2 border-b-0 border-[#7C5A36] shadow-[0_-2px_6px_rgba(74,55,40,0.1)] transition-all cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#4A3728]' ?>"
               style="margin-bottom: -2px;">
               Submit Request
             </button>
 
-            <!-- Tab 2: Status Tracker (Inactive by default, Light Beige background) -->
+            <!-- Tab 2: Status Tracker -->
             <button
               type="button"
               id="tabBtnTracker"
               role="tab"
-              aria-selected="false"
+              aria-selected="<?= $isReportTrackerActive ? 'true' : 'false' ?>"
               aria-controls="tabPaneTracker"
               onclick="switchApprovalTab('tracker')"
-              class="relative z-0 px-6 py-2.5 rounded-t-2xl font-bold text-sm sm:text-base tracking-wide
-                     bg-[#E8D8B0] text-[#5C3D1E] border-2 border-[#8C6D43]
-                     hover:bg-[#DFCE9F] transition-all cursor-pointer
-                     focus:outline-none focus:ring-2 focus:ring-[#4A3728]"
+              class="<?= $isReportTrackerActive 
+                ? 'relative z-10 px-6 py-3 rounded-t-2xl font-black text-sm sm:text-base tracking-wide bg-[#E8D8B0] text-[#261909] border-2 border-b-0 border-[#8C6D43] shadow-[0_-2px_6px_rgba(74,55,40,0.1)] transition-all cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#4A3728]' 
+                : 'relative z-0 px-6 py-2.5 rounded-t-2xl font-bold text-sm sm:text-base tracking-wide bg-[#E8D8B0] text-[#5C3D1E] border-2 border-[#8C6D43] hover:bg-[#DFCE9F] transition-all cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#4A3728]' ?>"
               style="margin-bottom: -2px;">
               Status Tracker
             </button>
           </div>
 
-          <!-- ── Tab 1: "Submit Request" Pane (Active State) ─────────────── -->
+          <!-- ── Tab 1: "Submit Request" Pane ─────────────── -->
           <div
             id="tabPaneSubmit"
             role="tabpanel"
             aria-labelledby="tabBtnSubmit"
-            class="relative z-0 rounded-b-3xl rounded-tr-3xl border-2 border-[#7C5A36]
+            class="<?= $isReportTrackerActive ? 'hidden ' : '' ?>relative z-0 rounded-b-3xl rounded-tr-3xl border-2 border-[#7C5A36]
                    bg-[#B89B72] p-6 sm:p-9 shadow-xl">
 
             <!-- Card Header: Large Dark Text -->
@@ -1946,7 +2107,8 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
             </div>
             <?php endif; ?>
 
-            <form id="approvalForm" class="flex flex-col gap-5" autocomplete="off">
+            <form id="approvalForm" method="POST" action="tenant_portal.php?section=tenantReport" enctype="multipart/form-data" class="flex flex-col gap-5" autocomplete="off">
+              <input type="hidden" name="action" value="submit_report">
               <!-- Form Layout: Two-Column Label & Input Grid -->
               <div class="grid grid-cols-1 md:grid-cols-[180px_1fr] items-center gap-2 sm:gap-4">
                 <label for="requestCategory" class="font-black text-sm sm:text-base text-[#2E1A0C]">
@@ -1955,7 +2117,7 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
                 <div class="relative">
                   <select
                     id="requestCategory"
-                    name="category"
+                    name="request_category"
                     required
                     <?= !$isTenantVerified ? 'disabled' : '' ?>
                     class="w-full appearance-none rounded-xl border-2 border-[#7C5A36]
@@ -1988,7 +2150,7 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
                 <input
                   type="text"
                   id="requestSpecification"
-                  name="specification"
+                  name="request_specification"
                   placeholder="e.g. Add Dog (Golden Retriever)"
                   maxlength="160"
                   required
@@ -2007,7 +2169,7 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
                 </label>
                 <textarea
                   id="requestDescription"
-                  name="description"
+                  name="request_description"
                   rows="4"
                   placeholder="Describe and put the details of your request."
                   required
@@ -2025,7 +2187,7 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
                   type="file"
                   id="requestAttachments"
                   name="request_attachments[]"
-                  accept="image/*,.pdf"
+                  accept="image/*,.pdf,.doc,.docx"
                   multiple
                   class="hidden"
                   <?= !$isTenantVerified ? 'disabled' : '' ?>
@@ -2070,12 +2232,12 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
             </form>
           </div>
 
-          <!-- ── Tab 2: "Status Tracker" Pane (Hidden State) ─────────────── -->
+          <!-- ── Tab 2: "Status Tracker" Pane ─────────────── -->
           <div
             id="tabPaneTracker"
             role="tabpanel"
             aria-labelledby="tabBtnTracker"
-            class="hidden relative z-0 rounded-b-3xl rounded-tr-3xl border-2 border-[#8C6D43]
+            class="<?= !$isReportTrackerActive ? 'hidden ' : '' ?>relative z-0 rounded-b-3xl rounded-tr-3xl border-2 border-[#8C6D43]
                    bg-[#E8D8B0] p-6 sm:p-9 shadow-xl">
 
             <!-- Card Header: Large Dark Text -->
@@ -2282,34 +2444,52 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
             }
 
             try {
-              const formData = new FormData();
-              formData.append('category', document.getElementById('requestCategory').value);
-              formData.append('subject', document.getElementById('requestSpecification').value);
-              formData.append('details', document.getElementById('requestDescription').value);
+              const formData = new FormData(form);
+              const catVal = document.getElementById('requestCategory') ? document.getElementById('requestCategory').value : '';
+              const specVal = document.getElementById('requestSpecification') ? document.getElementById('requestSpecification').value : '';
+              const descVal = document.getElementById('requestDescription') ? document.getElementById('requestDescription').value : '';
+
+              formData.set('action', 'submit_report');
+              formData.set('request_category', catVal);
+              formData.set('request_specification', specVal);
+              formData.set('request_description', descVal);
+              formData.set('category', catVal);
+              formData.set('subject', specVal);
+              formData.set('specification', specVal);
+              formData.set('details', descVal);
+              formData.set('description', descVal);
 
               const fileInput = document.getElementById('requestAttachments');
               if (fileInput && fileInput.files.length > 0) {
                 for (let i = 0; i < fileInput.files.length; i++) {
+                  formData.append('request_attachments[]', fileInput.files[i]);
                   formData.append('report_attachments[]', fileInput.files[i]);
                 }
               }
 
-              const res = await fetch('api/report_api.php', {
+              const res = await fetch('tenant_portal.php?section=tenantReport', {
                 method: 'POST',
+                headers: {
+                  'X-Requested-With': 'XMLHttpRequest',
+                  'Accept': 'application/json'
+                },
                 body: formData
               });
               const data = await res.json();
 
-              if (data.status === 'success') {
+              if (data.status === 'success' || data.success) {
                 if (typeof showToast === 'function') {
                   showToast('Request submitted successfully! Awaiting owner approval.', 'success');
                 } else {
                   alert('Request submitted successfully!');
                 }
                 form.reset();
-                document.getElementById('requestFilePreview').innerHTML = '';
+                const previewEl = document.getElementById('requestFilePreview');
+                if (previewEl) previewEl.innerHTML = '';
                 switchApprovalTab('tracker');
-                setTimeout(() => location.reload(), 1200);
+                setTimeout(() => {
+                  window.location.href = 'tenant_portal.php?section=tenantReport&tab=tracker&success=report_submitted';
+                }, 800);
               } else {
                 if (typeof showToast === 'function') {
                   showToast(data.message || 'Failed to submit request.', 'error');
@@ -2318,11 +2498,8 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
                 }
               }
             } catch (err) {
-              if (typeof showToast === 'function') {
-                showToast('Network error while submitting request.', 'error');
-              } else {
-                alert('Network error while submitting request.');
-              }
+              // Fallback to standard form submission if AJAX is interrupted
+              form.submit();
             } finally {
               if (btn) {
                 btn.disabled = false;
@@ -6510,6 +6687,18 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
         }
         if (urlParams.get('success') === '1' && typeof showToast === 'function') {
           showToast('Payment proof submitted successfully! Your receipt is now pending review.', 'success');
+        }
+      }
+
+      // Auto-switch to Report Status Tracker tab & surface toast if redirected with report success
+      if (targetSec === 'tenantReport' || urlParams.get('success') === 'report_submitted') {
+        if (urlParams.get('tab') === 'tracker' || urlParams.get('success') === 'report_submitted') {
+          if (typeof switchApprovalTab === 'function') {
+            switchApprovalTab('tracker');
+          }
+          if (urlParams.get('success') === 'report_submitted' && typeof showToast === 'function') {
+            showToast('Report and Approval Request submitted successfully! Awaiting owner review.', 'success');
+          }
         }
       }
 

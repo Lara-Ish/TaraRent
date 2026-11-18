@@ -12,6 +12,7 @@ require_once __DIR__ . '/../config/auth.php';
 require_once __DIR__ . '/../includes/notification_service.php';
 require_once __DIR__ . '/../includes/tenant_service.php';
 require_once __DIR__ . '/../includes/email_service.php';
+require_once __DIR__ . '/../includes/sms_service.php';
 
 $requestMethod = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
@@ -138,42 +139,53 @@ try {
 
                 // Automated Email Notification to Tenant's Gmail
                 try {
-                    $tenantId = (int)$payment['tenant_id'];
-                    $tStmt = $pdo->prepare("SELECT id, name, email FROM users WHERE id = :id LIMIT 1");
+                                        $tenantId = (int)$payment['tenant_id'];
+                    $tStmt = $pdo->prepare("SELECT id, name, email, phone FROM users WHERE id = :id LIMIT 1");
                     $tStmt->execute([':id' => $tenantId]);
                     $tUser = $tStmt->fetch(PDO::FETCH_ASSOC);
 
-                    if ($tUser && !empty($tUser['email']) && filter_var($tUser['email'], FILTER_VALIDATE_EMAIL)) {
+                    if ($tUser) {
                         $amtVal = (float)($payment['amount_paid'] > 0 ? $payment['amount_paid'] : ($payment['amount_due'] ?? 3000.00));
-                        $formattedAmount = '₱' . number_format($amtVal, 2);
+                        $formattedAmount = 'PHP ' . number_format($amtVal, 2);
                         $billingMonth = (!empty($payment['billing_cycle']) && strtotime($payment['billing_cycle']) !== false)
                             ? date('F Y', strtotime($payment['billing_cycle']))
                             : ($payment['billing_cycle'] ?: date('F Y'));
                         $statusDisplay = $isApproved ? 'Approved' : 'Rejected';
 
-                        // Exact wording: "Your payment of [Amount] for [Billing Month] has been [Status]."
-                        $emailMsg = "Your payment of <strong>{$formattedAmount}</strong> for <strong>{$billingMonth}</strong> has been <strong>{$statusDisplay}</strong>.";
-                        if (!$isApproved && !empty($finalNotes)) {
-                            $emailMsg .= "<br><br><strong>Reason:</strong> " . htmlspecialchars($finalNotes, ENT_QUOTES, 'UTF-8');
+                        // 1. Dispatch SMS Notification to Registered Phone Number
+                        if (!empty($tUser['phone'])) {
+                            $smsMsg = $isApproved
+                                ? "TaraRent Notice: Hello {$tUser['name']}, your payment of {$formattedAmount} for {$billingMonth} has been APPROVED and verified. Thank you!"
+                                : "TaraRent Notice: Hello {$tUser['name']}, your payment of {$formattedAmount} for {$billingMonth} was REJECTED." . (!empty($finalNotes) ? " Reason: {$finalNotes}" : "");
+                            
+                            SmsService::send((string)$tUser['phone'], $smsMsg);
                         }
 
-                        $emailSubj = "Payment {$statusDisplay} - {$billingMonth}";
-                        sendTenantNotification(
-                            (string)$tUser['email'],
-                            $emailSubj,
-                            $emailMsg,
-                            $tUser['name'] ?? 'Tenant',
-                            [
-                                'Amount' => $formattedAmount,
-                                'Billing Month' => $billingMonth,
-                                'Status' => $statusDisplay,
-                                'Landlord Notes' => $finalNotes
-                            ],
-                            'View Payment History',
-                            MailConfig::get()['app_url'] . '/tenant_portal.php?section=tenantPayments&tab=tracker',
-                            $tenantId,
-                            $pdo
-                        );
+                        // 2. Dispatch Automated Email Notification
+                        if (!empty($tUser['email']) && filter_var($tUser['email'], FILTER_VALIDATE_EMAIL)) {
+                            $emailMsg = "Your payment of <strong>{$formattedAmount}</strong> for <strong>{$billingMonth}</strong> has been <strong>{$statusDisplay}</strong>.";
+                            if (!$isApproved && !empty($finalNotes)) {
+                                $emailMsg .= "<br><br><strong>Reason:</strong> " . htmlspecialchars($finalNotes, ENT_QUOTES, 'UTF-8');
+                            }
+
+                            $emailSubj = "Payment {$statusDisplay} - {$billingMonth}";
+                            sendTenantNotification(
+                                (string)$tUser['email'],
+                                $emailSubj,
+                                $emailMsg,
+                                $tUser['name'] ?? 'Tenant',
+                                [
+                                    'Amount'        => $formattedAmount,
+                                    'Billing Month' => $billingMonth,
+                                    'Status'        => $statusDisplay,
+                                    'Landlord Notes'=> $finalNotes
+                                ],
+                                'View Payment History',
+                                MailConfig::get()['app_url'] . '/tenant_portal.php?section=tenantPayments&tab=tracker',
+                                $tenantId,
+                                $pdo
+                            );
+                        }
                     }
                 } catch (Throwable $mailEx) {
                     error_log('[payment_api] Failed to send payment review email: ' . $mailEx->getMessage());

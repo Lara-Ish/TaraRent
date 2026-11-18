@@ -14,6 +14,7 @@ require_once __DIR__ . '/../config/auth.php';
 require_once __DIR__ . '/../includes/notification_service.php';
 require_once __DIR__ . '/../includes/email_service.php';
 require_once __DIR__ . '/../includes/tenant_service.php';
+require_once __DIR__ . '/../includes/sms_service.php';
 
 $requestMethod = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
@@ -1161,6 +1162,9 @@ try {
 
             // 2. Auto-generate 6-digit numeric password (e.g. 111111, 482915)
             $generatedPassword = str_pad((string)random_int(100000, 999999), 6, '0', STR_PAD_LEFT);
+            $plainTextPassword = $generatedPassword; // Captured plaintext credentials before hashing
+            $assignedUsername  = $generatedUsername;
+            $assignedEmail     = $email;
             $passwordHash = password_hash($generatedPassword, PASSWORD_BCRYPT);
 
             // Legacy emergency contact string fallback
@@ -1428,7 +1432,7 @@ try {
             $emailSent = false;
             try {
                 $dbTenantStmt = $pdo->prepare("
-                    SELECT u.id, u.username, u.name, u.email, un.unit_number 
+                    SELECT u.id, u.username, u.name, u.email, u.phone, un.unit_number 
                     FROM users u 
                     LEFT JOIN units un ON u.unit_id = un.id 
                     WHERE u.id = :id AND u.role = 'tenant' 
@@ -1471,6 +1475,33 @@ try {
                 error_log('[Tenant Directory] Failed to dispatch account creation email: ' . $mailEx->getMessage());
             }
 
+            // -----------------------------------------------------------------
+            // DISPATCH WELCOME SMS WITH CREDENTIALS (AFTER SUCCESSFUL COMMIT)
+            // -----------------------------------------------------------------
+            $welcomeSmsSent = false;
+            $welcomeSmsResult = null;
+            $recipientPhone = !empty($dbTenant['phone']) ? (string)$dbTenant['phone'] : (string)$phone;
+
+            if (!empty($recipientPhone)) {
+                try {
+                    $retrievedUnit = (string)(($dbTenant['unit_number'] ?? '') ?: ($unit['unit_number'] ?? ''));
+                    $unitLabel = !empty($retrievedUnit) 
+                        ? (str_starts_with(strtolower($retrievedUnit), 'unit') ? $retrievedUnit : "Unit " . $retrievedUnit) 
+                        : 'your unit';
+                    $loginIdentifier = !empty($retrievedEmail) ? $retrievedEmail : (!empty($assignedEmail) ? $assignedEmail : $assignedUsername);
+                    $welcomeSmsMessage = "Welcome to TaraRent! Your account for {$unitLabel} is ready. Login: {$loginIdentifier} | Temp Password: {$plainTextPassword}. Please log in to your tenant portal.";
+
+                    $welcomeSmsResult = sendIprogSMS($recipientPhone, $welcomeSmsMessage);
+                    $welcomeSmsSent = (bool)($welcomeSmsResult['success'] ?? false);
+
+                    if (!$welcomeSmsSent) {
+                        error_log("[Tenant Directory] Welcome SMS dispatch failed for tenant '{$name}' ({$recipientPhone}): " . ($welcomeSmsResult['message'] ?? 'Unknown error'));
+                    }
+                } catch (Throwable $smsEx) {
+                    error_log('[Tenant Directory] Welcome SMS exception: ' . $smsEx->getMessage());
+                }
+            }
+
             $successMessage = $emailSent
                 ? "Tenant account created successfully! Account details have been sent to the tenant's email address."
                 : "Tenant account created, but account details email could not be sent. Please check email logs or SMTP settings.";
@@ -1490,6 +1521,8 @@ try {
                 'space_1' => in_array(1, $assignedSpaceNumbers, true),
                 'space_2' => in_array(2, $assignedSpaceNumbers, true),
                 'email_sent' => $emailSent,
+                'sms_sent' => $welcomeSmsSent,
+                'sms_result' => $welcomeSmsResult,
                 'credentials' => [
                     'username' => $generatedUsername,
                     'password' => $generatedPassword,

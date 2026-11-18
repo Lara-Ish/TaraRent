@@ -70,11 +70,9 @@ class MailConfig
         $password   = trim(str_replace(' ', '', (string)$password));
 
         $fromEmail  = getenv('SMTP_FROM_EMAIL') ?: ($_ENV['SMTP_FROM_EMAIL'] ?? ($_SERVER['SMTP_FROM_EMAIL'] ?? ''));
-        // If fromEmail is empty or default domain placeholder, use authenticated Gmail address so Google SMTP does not reject the sender
-        if (!empty($username) && (empty($fromEmail) || $fromEmail === 'TaraRent2026@gmail.com' || str_contains($fromEmail, '@rentconnect.ph'))) {
-            $fromEmail = $username;
-        } elseif (empty($fromEmail)) {
-            $fromEmail = 'TaraRent2026@gmail.com';
+        // If fromEmail is empty or default placeholder, fallback to authenticated Gmail user
+        if (empty($fromEmail)) {
+            $fromEmail = !empty($username) ? $username : 'TaraRent2026@gmail.com';
         }
 
         $fromName   = getenv('SMTP_FROM_NAME') ?: ($_ENV['SMTP_FROM_NAME'] ?? ($_SERVER['SMTP_FROM_NAME'] ?? 'TaraRent'));

@@ -74,6 +74,11 @@ try {
                 $deactivate->execute([':id' => $currentTenantId]);
             }
 
+            // Capture credentials before hashing
+            $plainTextPassword = (string)$password;
+            $assignedUsername  = (string)$username;
+            $assignedEmail     = (string)$email;
+
             // Create new tenant user
             $passwordHash = password_hash($password, PASSWORD_BCRYPT);
             $insertUser = $pdo->prepare("
@@ -122,6 +127,18 @@ try {
                 ':lstart' => $leaseStart,
                 ':lend' => $leaseEnd
             ]);
+
+            // Dispatch Welcome SMS Notification with Plaintext Credentials (After DB Commit)
+            if (!empty($phone)) {
+                try {
+                    require_once __DIR__ . '/../includes/sms_service.php';
+                    $loginIdentifier = !empty($assignedEmail) ? $assignedEmail : $assignedUsername;
+                    $welcomeSmsMsg = "Welcome to TaraRent! Your account for Unit 1 is ready. Login: {$loginIdentifier} | Temp Password: {$plainTextPassword}. Please log in to your tenant portal.";
+                    sendIprogSMS((string)$phone, $welcomeSmsMsg);
+                } catch (Throwable $smsEx) {
+                    error_log('[Tenant Manage] Error sending welcome SMS: ' . $smsEx->getMessage());
+                }
+            }
 
             echo json_encode([
                 'status' => 'success',

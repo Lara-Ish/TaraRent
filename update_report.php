@@ -10,6 +10,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/config/auth.php';
 require_once __DIR__ . '/includes/email_service.php';
 require_once __DIR__ . '/includes/notification_service.php';
+require_once __DIR__ . '/includes/sms_service.php';
 
 $pdo = Database::getConnection();
 
@@ -31,7 +32,7 @@ if ($reportId <= 0) {
 
 // Fetch existing report and tenant info
 $reportStmt = $pdo->prepare("
-    SELECT tr.*, u.name AS tenant_name, u.email AS tenant_email
+    SELECT tr.*, u.name AS tenant_name, u.email AS tenant_email, u.phone AS tenant_phone
     FROM tenant_reports tr
     JOIN users u ON tr.tenant_id = u.id
     WHERE tr.id = :id
@@ -85,6 +86,12 @@ $updStmt->execute([
     ':id'            => $reportId
 ]);
 
+if (!empty($reportRow['tenant_phone']) && in_array(strtolower($statusToSave), ['approved', 'rejected'], true)) {
+    $tenantName = (string)($reportRow['tenant_name'] ?? 'Tenant');
+    $smsReportMsg = "TaraRent Notice: Hello {$tenantName}, your report regarding '{$reportRow['subject']}' has been {$statusToSave} by the property owner." . (!empty($remarksToSave) ? " Remarks: {$remarksToSave}" : "");
+    
+    SmsService::send((string)$reportRow['tenant_phone'], $smsReportMsg);
+}
 // Dispatch email notification to Tenant
 $emailSent = false;
 $tenantId = (int)$reportRow['tenant_id'];

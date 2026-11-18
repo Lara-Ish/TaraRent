@@ -6,13 +6,53 @@
 
 declare(strict_types=1);
 
+if (!function_exists('loadEnvFile')) {
+    function loadEnvFile(string $filePath): void
+    {
+        if (!file_exists($filePath)) {
+            return;
+        }
+
+        $lines = @file($filePath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+        if ($lines === false) {
+            return;
+        }
+
+        foreach ($lines as $line) {
+            $line = trim($line);
+            if ($line === '' || str_starts_with($line, '#')) {
+                continue;
+            }
+
+            $parts = explode('=', $line, 2);
+            if (count($parts) === 2) {
+                $key = trim($parts[0]);
+                $val = trim($parts[1]);
+
+                if ((str_starts_with($val, '"') && str_ends_with($val, '"')) ||
+                    (str_starts_with($val, "'") && str_ends_with($val, "'"))) {
+                    $val = substr($val, 1, -1);
+                }
+
+                $currentVal = getenv($key);
+                if ($currentVal === false || $currentVal === '') {
+                    $_ENV[$key] = $val;
+                    $_SERVER[$key] = $val;
+                    putenv("{$key}={$val}");
+                }
+            }
+        }
+    }
+}
+
+loadEnvFile(dirname(__DIR__) . '/.env');
+
 class Database {
-    // Supabase PostgreSQL Database Credentials
-    private static string $host = 'aws-1-ap-southeast-1.pooler.supabase.com';
-    private static string $db   = 'postgres';
-    private static string $user = 'postgres.asqnfbhzgqdlqxnuuugu';
-    private static string $pass = 'TaraRent2026';
-    private static int    $port = 6543;
+    private static string $host = '';
+    private static string $db   = '';
+    private static string $user = '';
+    private static string $pass = '';
+    private static int    $port = 5432;
     private static string $sslmode = 'require';
 
     private static ?PDO $instance = null;
@@ -22,7 +62,9 @@ class Database {
      * Parse connection string or environment overrides if provided
      */
     private static function initFromEnv(): void {
-        $connStr = getenv('DATABASE_URL') ?: getenv('SUPABASE_DB_URL');
+        loadEnvFile(dirname(__DIR__) . '/.env');
+
+        $connStr = getenv('DATABASE_URL') ?: (getenv('SUPABASE_DB_URL') ?: ($_ENV['DATABASE_URL'] ?? ($_ENV['SUPABASE_DB_URL'] ?? '')));
         if ($connStr) {
             $parsed = parse_url($connStr);
             if ($parsed) {
@@ -32,9 +74,15 @@ class Database {
                 if (isset($parsed['pass'])) self::$pass = urldecode(trim($parsed['pass'], '[]'));
                 if (isset($parsed['path'])) self::$db = ltrim($parsed['path'], '/');
             }
+        } else {
+            self::$host    = (string)(getenv('DB_HOST') ?: ($_ENV['DB_HOST'] ?? 'aws-1-ap-southeast-1.pooler.supabase.com'));
+            self::$port    = (int)(getenv('DB_PORT') ?: ($_ENV['DB_PORT'] ?? 6543));
+            self::$db      = (string)(getenv('DB_NAME') ?: ($_ENV['DB_NAME'] ?? 'postgres'));
+            self::$user    = (string)(getenv('DB_USER') ?: ($_ENV['DB_USER'] ?? 'postgres.asqnfbhzgqdlqxnuuugu'));
+            self::$pass    = (string)(getenv('DB_PASSWORD') ?: ($_ENV['DB_PASSWORD'] ?? 'TaraRent2026'));
+            self::$sslmode = (string)(getenv('DB_SSLMODE') ?: ($_ENV['DB_SSLMODE'] ?? 'require'));
         }
     }
-
     /**
      * Self-healing schema validation: ensures verification columns exist in users table
      * and payments table has payment_type and unpaid status (PostgreSQL syntax)

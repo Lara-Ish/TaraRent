@@ -10,7 +10,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/config/auth.php';
 require_once __DIR__ . '/includes/email_service.php';
 require_once __DIR__ . '/includes/notification_service.php';
-
+require_once __DIR__ . '/includes/sms_service.php';
 $pdo = Database::getConnection();
 
 $rawInput = json_decode(file_get_contents('php://input'), true);
@@ -31,7 +31,7 @@ if ($ticketId <= 0) {
 
 // Fetch existing ticket details and tenant info
 $ticketStmt = $pdo->prepare("
-    SELECT mt.*, u.name AS tenant_name, u.email AS tenant_email
+    SELECT mt.*, u.name AS tenant_name, u.email AS tenant_email, u.phone AS tenant_phone
     FROM maintenance_tickets mt
     JOIN users u ON mt.tenant_id = u.id
     WHERE mt.id = :id
@@ -81,7 +81,14 @@ $updStmt->execute([
     ':resolved_at'      => $resolvedAt,
     ':id'               => $ticketId
 ]);
-
+// Dispatch SMS Notification if maintenance ticket is marked as Done
+if (in_array(strtolower($statusToSave), ['done', 'completed', 'resolved'], true) && !empty($ticketRow['tenant_phone'])) {
+    $tenantName = (string)($ticketRow['tenant_name'] ?? 'Tenant');
+    $ticketTitle = (string)$ticketRow['title'];
+    $smsTicketMsg = "TaraRent Notice: Hello {$tenantName}, your maintenance request regarding '{$ticketTitle}' has been completed and marked as DONE." . (!empty($replyToSave) ? " Landlord Notes: {$replyToSave}" : "");
+    
+    SmsService::send((string)$ticketRow['tenant_phone'], $smsTicketMsg);
+}
 // Dispatch email notification to Tenant
 $emailSent = false;
 $tenantId = (int)$ticketRow['tenant_id'];

@@ -6,22 +6,63 @@
 
 declare(strict_types=1);
 
+if (!function_exists('loadEnvFile')) {
+    function loadEnvFile(string $filePath): void
+    {
+        if (!file_exists($filePath)) {
+            return;
+        }
+
+        $lines = @file($filePath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+        if ($lines === false) {
+            return;
+        }
+
+        foreach ($lines as $line) {
+            $line = trim($line);
+            if ($line === '' || str_starts_with($line, '#')) {
+                continue;
+            }
+
+            $parts = explode('=', $line, 2);
+            if (count($parts) === 2) {
+                $key = trim($parts[0]);
+                $val = trim($parts[1]);
+
+                if ((str_starts_with($val, '"') && str_ends_with($val, '"')) ||
+                    (str_starts_with($val, "'") && str_ends_with($val, "'"))) {
+                    $val = substr($val, 1, -1);
+                }
+
+                $currentVal = getenv($key);
+                if ($currentVal === false || $currentVal === '') {
+                    $_ENV[$key] = $val;
+                    $_SERVER[$key] = $val;
+                    putenv("{$key}={$val}");
+                }
+            }
+        }
+    }
+}
+
+loadEnvFile(dirname(__DIR__) . '/.env');
+
 // ----------------------------------------------------------------------------
-// 1. Face++ API Credentials (Hardcoded as specified)
+// 1. Face++ API Credentials (Loaded from Environment Variables)
 // ----------------------------------------------------------------------------
-define('FACEPP_API_KEY', 'b0uSL9nuSnJO0TXD6758FDzcIvM5Eipb');
-define('FACEPP_API_SECRET', 'dNrr8WS5LeYeclYEEFZgeFQp67osUh29');
-define('FACEPP_COMPARE_URL', 'https://api-us.faceplusplus.com/facepp/v3/compare');
+define('FACEPP_API_KEY', (string)(getenv('FACEPP_API_KEY') ?: ($_ENV['FACEPP_API_KEY'] ?? '')));
+define('FACEPP_API_SECRET', (string)(getenv('FACEPP_API_SECRET') ?: ($_ENV['FACEPP_API_SECRET'] ?? '')));
+define('FACEPP_COMPARE_URL', (string)(getenv('FACEPP_COMPARE_URL') ?: ($_ENV['FACEPP_COMPARE_URL'] ?? 'https://api-us.faceplusplus.com/facepp/v3/compare')));
 
 // ----------------------------------------------------------------------------
 // 2. Optical Character Recognition (OCR) Configuration
 // ----------------------------------------------------------------------------
 if (!defined('OCR_ENGINE')) {
-    define('OCR_ENGINE', 'tesseract'); // Dedicated OCR (Tesseract.js frontend + Tesseract PHP/CLI backend)
+    define('OCR_ENGINE', (string)(getenv('OCR_ENGINE') ?: ($_ENV['OCR_ENGINE'] ?? 'tesseract')));
 }
 
 if (!defined('TESSERACT_PATH')) {
-    define('TESSERACT_PATH', getenv('TESSERACT_PATH') ?: '');
+    define('TESSERACT_PATH', (string)(getenv('TESSERACT_PATH') ?: ($_ENV['TESSERACT_PATH'] ?? '')));
 }
 
 // Legacy constants safely defined for backward compatibility

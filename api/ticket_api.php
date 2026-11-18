@@ -11,7 +11,7 @@ header('Content-Type: application/json; charset=UTF-8');
 require_once __DIR__ . '/../config/auth.php';
 require_once __DIR__ . '/../includes/notification_service.php';
 require_once __DIR__ . '/../includes/email_service.php';
-
+require_once __DIR__ . '/../includes/sms_service.php';
 $requestMethod = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
 if ($requestMethod === 'OPTIONS') {
@@ -42,7 +42,7 @@ try {
 
             // Fetch existing ticket details and tenant info
             $ticketStmt = $pdo->prepare("
-                SELECT mt.*, u.name AS tenant_name, u.email AS tenant_email, un.unit_number
+                SELECT mt.*, u.name AS tenant_name, u.email AS tenant_email, u.phone AS tenant_phone, un.unit_number
                 FROM maintenance_tickets mt
                 JOIN users u ON mt.tenant_id = u.id
                 LEFT JOIN units un ON mt.unit_id = un.id
@@ -100,7 +100,13 @@ try {
                 ':resolved_at' => $resolvedAt,
                 ':id' => $ticketId
             ]);
-
+            if (in_array(strtolower($statusToSave), ['done', 'resolved', 'closed'], true) && !empty($ticketRow['tenant_phone'])) {
+                $tenantName = (string)($ticketRow['tenant_name'] ?? 'Tenant');
+                $ticketTitle = (string)$ticketRow['title'];
+                $smsTicketMsg = "TaraRent Notice: Hello {$tenantName}, your maintenance ticket #{$ticketId} ('{$issueTitle}') has been completed and marked as DONE." . (!empty($replyToSave) ? " Notes: {$replyToSave}" : "");
+                
+                SmsService::send((string)$ticketRow['tenant_phone'], $smsTicketMsg);
+            }
             // Automatically send email to Tenant regarding status update
             // CRITICAL: Tenant email is dynamically retrieved from database via JOIN users u ON mt.tenant_id = u.id
             $emailSent = false;
@@ -226,7 +232,7 @@ try {
         $title = trim((string)($input['title'] ?? ''));
         $description = trim((string)($input['description'] ?? ''));
         $category = trim((string)($input['category'] ?? 'General'));
-        $priority = trim((string)($input['priority'] ?? 'medium'));
+        $priority = trim((string)($input['priority'] ?? ($input['urgency'] ?? 'medium')));
 
         $unitId = isset($tenantUser['unit_id']) ? (int)$tenantUser['unit_id'] : 0;
         if ($unitId <= 0) {
@@ -350,11 +356,14 @@ try {
             ? implode(',', $savedPhotos) 
             : (isset($input['photo_path']) && !empty(trim((string)$input['photo_path'])) ? trim((string)$input['photo_path']) : null);
 
+        // Ensure status and urgency/priority strictly match PostgreSQL check constraints ('open'/'pending', 'low'/'medium'/'high'/'urgent')
+        $ticketStatus = 'open';
+
         $stmt = $pdo->prepare("
             INSERT INTO maintenance_tickets 
                 (tenant_id, unit_id, title, description, photo_path, category, priority, status, actual_cost, created_at)
             VALUES 
-                (:tenant_id, :unit_id, :title, :description, :photo_path, :category, :priority, 'Pending', 0.00, NOW())
+                (:tenant_id, :unit_id, :title, :description, :photo_path, :category, :priority, :status, 0.00, NOW())
         ");
         $stmt->execute([
             ':tenant_id' => $tenantId,
@@ -363,7 +372,8 @@ try {
             ':description' => htmlspecialchars($description, ENT_QUOTES, 'UTF-8'),
             ':photo_path' => $photoPathStr,
             ':category' => $category,
-            ':priority' => $priority
+            ':priority' => $priority,
+            ':status' => $ticketStatus
         ]);
 
         $newId = (int)$pdo->lastInsertId();

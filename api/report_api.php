@@ -13,6 +13,7 @@ header('Content-Type: application/json; charset=UTF-8');
 require_once __DIR__ . '/../config/auth.php';
 require_once __DIR__ . '/../includes/notification_service.php';
 require_once __DIR__ . '/../includes/email_service.php';
+require_once __DIR__ . '/../includes/sms_service.php';
 
 $requestMethod = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
@@ -142,7 +143,6 @@ try {
             if (!empty($remarksToSave)) {
                 $notifMsg .= " Owner remarks: {$remarksToSave}";
             }
-
             NotificationService::notifyTenant(
                 $pdo,
                 (int)$reportRow['tenant_id'],
@@ -155,6 +155,13 @@ try {
                 false
             );
 
+            // Dispatch SMS Notification to Tenant if Approved or Rejected
+            if (!empty($reportRow['tenant_phone']) && in_array(strtolower($statusToSave), ['approved', 'rejected'], true)) {
+                $tenantName = (string)($reportRow['tenant_name'] ?? 'Tenant');
+                $smsReportMsg = "TaraRent Notice: Hello {$tenantName}, your report regarding '{$reportRow['subject']}' has been {$statusToSave} by the property owner." . (!empty($remarksToSave) ? " Remarks: {$remarksToSave}" : "");
+                
+                SmsService::send((string)$reportRow['tenant_phone'], $smsReportMsg);
+            }
             // Automated Email Notification to Tenant's Gmail
             $tenantEmail = trim((string)($reportRow['tenant_email'] ?? ''));
             $tenantId = (int)$reportRow['tenant_id'];
@@ -254,21 +261,12 @@ try {
             exit;
         }
 
-        $subject = trim((string)($input['subject'] ?? ''));
-        $details = trim((string)($input['details'] ?? ($input['description'] ?? '')));
-        $category = trim((string)($input['category'] ?? ''));
+        $category = trim((string)($input['request_category'] ?? ($input['category'] ?? 'General Request')));
+        $subject = trim((string)($input['request_specification'] ?? ($input['specification'] ?? ($input['subject'] ?? ''))));
+        $details = trim((string)($input['request_description'] ?? ($input['description'] ?? ($input['details'] ?? ''))));
 
-        $validCategories = [
-            'Additional Occupant Registration',
-            'Pet Adoption/Registration',
-            'Unit Customization/Modification',
-            'General Inquiry',
-            'Other...',
-        ];
-        if (!in_array($category, $validCategories, true)) {
-            http_response_code(422);
-            echo json_encode(['status' => 'error', 'message' => 'Please select a valid request category.']);
-            exit;
+        if ($category === '') {
+            $category = 'General Request';
         }
 
         if ($subject === '' || $details === '') {
@@ -288,7 +286,7 @@ try {
             $unitId = (int)$uStmt->fetchColumn() ?: 1;
         }
 
-        // Optional supporting attachment upload (images + PDF)
+        // Optional supporting attachment upload (images + PDF + Docs)
         $savedAttachments = [];
         $uploadDir = __DIR__ . '/../uploads/reports/';
         if (!is_dir($uploadDir)) {
@@ -296,7 +294,7 @@ try {
         }
 
         $fileList = [];
-        foreach (['report_attachments', 'attachments', 'attachment'] as $key) {
+        foreach (['request_attachments', 'request_attachment', 'report_attachments', 'attachments', 'attachment', 'document', 'file'] as $key) {
             if (isset($_FILES[$key])) {
                 $f = $_FILES[$key];
                 if (is_array($f['name'])) {
@@ -316,12 +314,17 @@ try {
             }
         }
 
-        $allowedExts = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'pdf'];
-        $allowedMimes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf'];
+        $allowedExts = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'pdf', 'doc', 'docx'];
+        $allowedMimes = [
+            'image/jpeg', 'image/png', 'image/webp', 'image/gif',
+            'application/pdf',
+            'application/msword',
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        ];
         $finfo = finfo_open(FILEINFO_MIME_TYPE);
 
         foreach ($fileList as $fileItem) {
-            if ($fileItem['size'] > 10 * 1024 * 1024) {
+            if ($fileItem['size'] > 15 * 1024 * 1024) {
                 continue;
             }
             $ext = strtolower(pathinfo($fileItem['name'], PATHINFO_EXTENSION));
@@ -392,6 +395,7 @@ try {
 
         echo json_encode([
             'status'  => 'success',
+            'success' => true,
             'message' => 'General report #GR-' . str_pad((string)$newId, 4, '0', STR_PAD_LEFT) . ' submitted successfully.',
             'report'  => $createdRow,
         ]);

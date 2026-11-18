@@ -10,6 +10,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/config/auth.php';
 require_once __DIR__ . '/includes/email_service.php';
 require_once __DIR__ . '/includes/notification_service.php';
+require_once __DIR__ . '/includes/sms_service.php';
 
 $pdo = Database::getConnection();
 
@@ -92,13 +93,28 @@ $tenantEmail = '';
 $tenantName = 'Tenant';
 
 if ($tenantId > 0) {
-    $tenantStmt = $pdo->prepare("SELECT id, name, email FROM users WHERE id = :id LIMIT 1");
+    $tenantStmt = $pdo->prepare("SELECT id, name, email, phone FROM users WHERE id = :id LIMIT 1");
     $tenantStmt->execute([':id' => $tenantId]);
     $tenantUser = $tenantStmt->fetch(PDO::FETCH_ASSOC);
 
-    if ($tenantUser && !empty($tenantUser['email'])) {
-        $tenantEmail = trim((string)$tenantUser['email']);
+    if ($tenantUser) {
+        $tenantEmail = trim((string)($tenantUser['email'] ?? ''));
         $tenantName = trim((string)($tenantUser['name'] ?? 'Tenant'));
+
+        $amtVal = (float)($payment['amount_paid'] > 0 ? $payment['amount_paid'] : ($payment['amount_due'] ?? 3000.00));
+        $formattedAmount = 'PHP ' . number_format($amtVal, 2);
+
+        $rawCycle = (string)($payment['billing_cycle'] ?? '');
+        $billingMonth = (!empty($rawCycle) && strtotime($rawCycle) !== false) ? date('F Y', strtotime($rawCycle)) : ($rawCycle ?: date('F Y'));
+
+        // Dispatch SMS to Registered Tenant Phone Number
+        if (!empty($tenantUser['phone']) && in_array($statusDisplay, ['Approved', 'Rejected'], true)) {
+            $smsMsg = ($statusDisplay === 'Approved')
+                ? "TaraRent Notice: Hello {$tenantName}, your payment of {$formattedAmount} for {$billingMonth} has been APPROVED and verified. Thank you!"
+                : "TaraRent Notice: Hello {$tenantName}, your payment of {$formattedAmount} for {$billingMonth} was REJECTED." . (!empty($finalNotes) ? " Reason: {$finalNotes}" : "");
+            
+            SmsService::send((string)$tenantUser['phone'], $smsMsg);
+        }
 
         $amtVal = (float)($payment['amount_paid'] > 0 ? $payment['amount_paid'] : ($payment['amount_due'] ?? 3000.00));
         $formattedAmount = '₱' . number_format($amtVal, 2);
