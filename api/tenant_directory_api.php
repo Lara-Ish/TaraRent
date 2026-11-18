@@ -1134,20 +1134,20 @@ try {
                 exit;
             }
 
-            // 1. Auto-generate sequential username: RC001, RC002, RC003, ...
-            $existingUsernamesStmt = $pdo->query("SELECT username FROM users WHERE username ~ '^RC[0-9]+$'");
+            // 1. Auto-generate sequential username: TRT001, TRT002, TRT003, ...
+            $existingUsernamesStmt = $pdo->query("SELECT username FROM users WHERE username ~ '^TRT[0-9]+$'");
             $existingUsernames = $existingUsernamesStmt->fetchAll(PDO::FETCH_COLUMN);
 
             $maxNum = 0;
             foreach ($existingUsernames as $uName) {
-                $numPart = (int)substr($uName, 2);
+                $numPart = (int)substr($uName, 3);
                 if ($numPart > $maxNum) {
                     $maxNum = $numPart;
                 }
             }
 
             $nextNum = $maxNum + 1;
-            $generatedUsername = sprintf('RC%03d', $nextNum);
+            $generatedUsername = sprintf('TRT%03d', $nextNum);
 
             // Guard against any collision
             while (true) {
@@ -1157,7 +1157,7 @@ try {
                     break;
                 }
                 $nextNum++;
-                $generatedUsername = sprintf('RC%03d', $nextNum);
+                $generatedUsername = sprintf('TRT%03d', $nextNum);
             }
 
             // 2. Auto-generate 6-digit numeric password (e.g. 111111, 482915)
@@ -1488,8 +1488,8 @@ try {
                     $unitLabel = !empty($retrievedUnit) 
                         ? (str_starts_with(strtolower($retrievedUnit), 'unit') ? $retrievedUnit : "Unit " . $retrievedUnit) 
                         : 'your unit';
-                    $loginIdentifier = !empty($retrievedEmail) ? $retrievedEmail : (!empty($assignedEmail) ? $assignedEmail : $assignedUsername);
-                    $welcomeSmsMessage = "Welcome to TaraRent! Your account for {$unitLabel} is ready. Login: {$loginIdentifier} | Temp Password: {$plainTextPassword}. Please log in to your tenant portal.";
+                    $welcomeUsername = (string)(($dbTenant['username'] ?? '') ?: $assignedUsername);
+                    $welcomeSmsMessage = "Welcome to TaraRent! Your account for {$unitLabel} is ready. Username: {$welcomeUsername} | Temp Password: {$plainTextPassword}. Please log in to your tenant portal.";
 
                     $welcomeSmsResult = sendIprogSMS($recipientPhone, $welcomeSmsMessage);
                     $welcomeSmsSent = (bool)($welcomeSmsResult['success'] ?? false);

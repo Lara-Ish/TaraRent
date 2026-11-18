@@ -301,13 +301,14 @@ try {
                     $ext
                 );
 
-                if (!move_uploaded_file($file['tmp_name'], $uploadDir . $safeName)) {
+                $publicReceiptUrl = uploadToSupabaseStorage($file['tmp_name'], $safeName, 'receipts');
+                if ($publicReceiptUrl === false) {
                     http_response_code(500);
-                    echo json_encode(['status' => 'error', 'message' => 'Failed to save receipt file to storage.']);
+                    echo json_encode(['status' => 'error', 'message' => 'Failed to upload receipt file to cloud storage.']);
                     exit;
                 }
 
-                $savedFilename = $safeName;
+                $savedFilename = $publicReceiptUrl;
             }
 
             // Identify specific payment obligation: by ID, payment type, or billing cycle

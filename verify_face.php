@@ -210,6 +210,10 @@ if (!empty($_POST['upload_id_only']) || $action === 'validate_and_stage_id') {
                 }
             }
 
+            // Upload to Supabase Cloud Storage bucket 'id_verifications'
+            $publicIdUrl = uploadToSupabaseStorage($dest, $idFilename, 'id_verifications');
+            $savedIdStoragePath = $publicIdUrl !== false ? $publicIdUrl : $idFilename;
+
             if ($isVerifiedUser) {
                 // Rule 1: Temporary Data Holding (Database/PHP)
                 // When a verified tenant uploads a new ID, do not immediately overwrite their existing ID record
@@ -220,12 +224,12 @@ if (!empty($_POST['upload_id_only']) || $action === 'validate_and_stage_id') {
                         pending_id_type = :id_type
                     WHERE id = :id
                 ");
-                $saveIdStmt->execute([':fn' => $idFilename, ':id_type' => $idType, ':id' => $userId]);
+                $saveIdStmt->execute([':fn' => $savedIdStoragePath, ':id_type' => $idType, ':id' => $userId]);
 
-                $_SESSION['pending_id_path'] = $idFilename;
+                $_SESSION['pending_id_path'] = $savedIdStoragePath;
                 $_SESSION['pending_id_type'] = $idType;
                 $_SESSION['is_updating_verified_id'] = true;
-                $_SESSION['staged_id_photo'] = $idFilename;
+                $_SESSION['staged_id_photo'] = $savedIdStoragePath;
                 $_SESSION['staged_id_type'] = $idType;
             } else {
                 $saveIdStmt = $pdo->prepare("
@@ -237,13 +241,13 @@ if (!empty($_POST['upload_id_only']) || $action === 'validate_and_stage_id') {
                         id_submitted_at = NOW()
                     WHERE id = :id
                 ");
-                $saveIdStmt->execute([':fn' => $idFilename, ':id_type' => $idType, ':id' => $userId]);
+                $saveIdStmt->execute([':fn' => $savedIdStoragePath, ':id_type' => $idType, ':id' => $userId]);
 
                 if (isset($_SESSION['user'])) {
-                    $_SESSION['user']['id_photo_filename'] = $idFilename;
+                    $_SESSION['user']['id_photo_filename'] = $savedIdStoragePath;
                     $_SESSION['user']['id_type'] = $idType;
                 }
-                $_SESSION['staged_id_photo'] = $idFilename;
+                $_SESSION['staged_id_photo'] = $savedIdStoragePath;
                 $_SESSION['staged_id_type'] = $idType;
             }
 
@@ -336,16 +340,19 @@ if (isset($_FILES['id_photo']) && $_FILES['id_photo']['error'] === UPLOAD_ERR_OK
     $dest = $uploadDir . '/' . $idFilename;
     if (move_uploaded_file($idFile['tmp_name'], $dest)) {
         $idFilePath = $dest;
+        $publicIdUrl = uploadToSupabaseStorage($dest, $idFilename, 'id_verifications');
+        $savedIdStoragePath = $publicIdUrl !== false ? $publicIdUrl : $idFilename;
+
         if ($isVerifiedUser) {
             // Save to temporary pending columns for verified user
             $saveIdStmt = $pdo->prepare("UPDATE users SET pending_id_path = :fn, pending_id_type = :id_type WHERE id = :id");
-            $saveIdStmt->execute([':fn' => $idFilename, ':id_type' => $idType, ':id' => $userId]);
-            $_SESSION['pending_id_path'] = $idFilename;
+            $saveIdStmt->execute([':fn' => $savedIdStoragePath, ':id_type' => $idType, ':id' => $userId]);
+            $_SESSION['pending_id_path'] = $savedIdStoragePath;
             $_SESSION['pending_id_type'] = $idType;
             $_SESSION['is_updating_verified_id'] = true;
         } else {
             $saveIdStmt = $pdo->prepare("UPDATE users SET id_photo_filename = :fn, id_type = :id_type, pending_id_path = :fn, pending_id_type = :id_type WHERE id = :id");
-            $saveIdStmt->execute([':fn' => $idFilename, ':id_type' => $idType, ':id' => $userId]);
+            $saveIdStmt->execute([':fn' => $savedIdStoragePath, ':id_type' => $idType, ':id' => $userId]);
         }
     }
 }

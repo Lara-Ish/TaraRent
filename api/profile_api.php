@@ -139,12 +139,7 @@ try {
                 exit;
             }
 
-            $uploadDir = __DIR__ . '/../uploads/avatars';
-            if (!is_dir($uploadDir)) {
-                mkdir($uploadDir, 0755, true);
-            }
-
-            // Retrieve old avatar to safely unlink after replacement
+            // Retrieve old avatar to safely clean up if local
             $oldStmt = $pdo->prepare("SELECT profile_picture FROM users WHERE id = :id LIMIT 1");
             $oldStmt->execute([':id' => $userId]);
             $oldAvatar = $oldStmt->fetchColumn();
@@ -152,25 +147,27 @@ try {
             $timestampStr = date('Ymd_His');
             $randStr = bin2hex(random_bytes(6));
             $newFilename = sprintf('avatar_u%d_%s_%s.%s', $userId, $timestampStr, $randStr, $rawExt);
-            $destination = $uploadDir . '/' . $newFilename;
-            $savedDbPath = 'uploads/avatars/' . $newFilename;
 
-            if (!move_uploaded_file($picFile['tmp_name'], $destination)) {
+            // Upload directly to Supabase Cloud Storage bucket 'avatars' via REST API
+            $publicAvatarUrl = uploadToSupabaseStorage($picFile['tmp_name'], $newFilename, 'avatars');
+            if ($publicAvatarUrl === false) {
                 http_response_code(500);
                 echo json_encode([
                     'status' => 'error',
-                    'message' => 'Failed to save profile picture on the server.'
+                    'message' => 'Failed to upload profile picture to cloud storage.'
                 ]);
                 exit;
             }
 
-            // Update database record using PostgreSQL UPDATE query
+            $savedDbPath = $publicAvatarUrl;
+
+            // Update database record using PostgreSQL UPDATE query with absolute public URL
             $updStmt = $pdo->prepare("UPDATE users SET profile_picture = :pic WHERE id = :id");
             $updStmt->execute([':pic' => $savedDbPath, ':id' => $userId]);
 
-            // Clean up old avatar file safely
-            if (!empty($oldAvatar) && basename($oldAvatar) !== $newFilename) {
-                $oldPath = $uploadDir . '/' . basename($oldAvatar);
+            // Clean up old local avatar file safely if it was local
+            if (!empty($oldAvatar) && !str_starts_with((string)$oldAvatar, 'http')) {
+                $oldPath = __DIR__ . '/../uploads/avatars/' . basename((string)$oldAvatar);
                 if (file_exists($oldPath) && is_file($oldPath)) {
                     @unlink($oldPath);
                 }
@@ -386,7 +383,10 @@ try {
                 }
             }
 
-            // 4. Staged successfully! Save to temporary holding or database & session
+            // 4. Staged successfully! Upload to Supabase Cloud Storage and save to database & session
+            $publicIdUrl = uploadToSupabaseStorage($idDestination, $idFilename, 'id_verifications');
+            $savedIdStoragePath = $publicIdUrl !== false ? $publicIdUrl : $idFilename;
+
             if ($isVerifiedUser) {
                 // Rule 1: Temporary Data Holding (Database/PHP)
                 // When a verified tenant uploads a new ID, do not immediately overwrite their existing ID record
@@ -397,12 +397,12 @@ try {
                         pending_id_type = :id_type
                     WHERE id = :id
                 ");
-                $saveIdStmt->execute([':fn' => $idFilename, ':id_type' => $idType, ':id' => $userId]);
+                $saveIdStmt->execute([':fn' => $savedIdStoragePath, ':id_type' => $idType, ':id' => $userId]);
 
-                $_SESSION['pending_id_path'] = $idFilename;
+                $_SESSION['pending_id_path'] = $savedIdStoragePath;
                 $_SESSION['pending_id_type'] = $idType;
                 $_SESSION['is_updating_verified_id'] = true;
-                $_SESSION['staged_id_photo'] = $idFilename;
+                $_SESSION['staged_id_photo'] = $savedIdStoragePath;
                 $_SESSION['staged_id_type'] = $idType;
             } else {
                 $saveIdStmt = $pdo->prepare("
@@ -414,13 +414,13 @@ try {
                         id_submitted_at = NOW()
                     WHERE id = :id
                 ");
-                $saveIdStmt->execute([':fn' => $idFilename, ':id_type' => $idType, ':id' => $userId]);
+                $saveIdStmt->execute([':fn' => $savedIdStoragePath, ':id_type' => $idType, ':id' => $userId]);
 
                 if (isset($_SESSION['user'])) {
-                    $_SESSION['user']['id_photo_filename'] = $idFilename;
+                    $_SESSION['user']['id_photo_filename'] = $savedIdStoragePath;
                     $_SESSION['user']['id_type'] = $idType;
                 }
-                $_SESSION['staged_id_photo'] = $idFilename;
+                $_SESSION['staged_id_photo'] = $savedIdStoragePath;
                 $_SESSION['staged_id_type'] = $idType;
             }
 
@@ -578,6 +578,10 @@ try {
             };
 
             if (!$hasLiveFace) {
+                // Upload ID photo to Supabase Cloud Storage
+                $publicIdUrl = uploadToSupabaseStorage($idDestination, $idFilename, 'id_verifications');
+                $savedIdStoragePath = $publicIdUrl !== false ? $publicIdUrl : $idFilename;
+
                 // When webcam live face is not provided, put under Landlord Review
                 $updPending = $pdo->prepare("
                     UPDATE users 
@@ -590,14 +594,14 @@ try {
                 ");
                 $updPending->execute([
                     ':id_type' => $idType,
-                    ':id_photo' => $idFilename,
+                    ':id_photo' => $savedIdStoragePath,
                     ':id' => $userId
                 ]);
 
                 if (isset($_SESSION['user'])) {
                     $_SESSION['user']['verification_status'] = 'pending';
                     $_SESSION['user']['id_type'] = $idType;
-                    $_SESSION['user']['id_photo_filename'] = $idFilename;
+                    $_SESSION['user']['id_photo_filename'] = $savedIdStoragePath;
                 }
 
                 if (class_exists('NotificationService')) {

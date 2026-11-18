@@ -289,12 +289,8 @@ try {
         $validPrios = ['low', 'medium', 'high', 'urgent'];
         if (!in_array($priority, $validPrios, true)) $priority = 'medium';
 
-        // Secure handling of uploaded maintenance photos
+        // Secure handling of uploaded maintenance photos (Supabase Cloud Storage)
         $savedPhotos = [];
-        $uploadDir = __DIR__ . '/../uploads/maintenance/';
-        if (!is_dir($uploadDir)) {
-            mkdir($uploadDir, 0777, true);
-        }
 
         // Support array uploads (maintenance_photos[], photos[]) and single file upload (photo)
         $fileList = [];
@@ -342,10 +338,11 @@ try {
 
             // Cryptographically secure randomized filename to prevent overwrites or directory traversal
             $safeFilename = 'maint_' . $tenantId . '_' . time() . '_' . bin2hex(random_bytes(6)) . '.' . $ext;
-            $destPath = $uploadDir . $safeFilename;
 
-            if (move_uploaded_file($fileItem['tmp_name'], $destPath)) {
-                $savedPhotos[] = 'uploads/maintenance/' . $safeFilename;
+            // Upload directly to Supabase Storage bucket 'maintenance' via REST API
+            $publicPhotoUrl = uploadToSupabaseStorage($fileItem['tmp_name'], $safeFilename, 'maintenance');
+            if ($publicPhotoUrl !== false) {
+                $savedPhotos[] = $publicPhotoUrl;
             }
         }
         if ($finfo) {

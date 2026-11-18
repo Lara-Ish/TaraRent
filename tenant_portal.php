@@ -75,7 +75,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !$isTenantVerified) {
 $userAvatarUrl = '';
 if (!empty($user['profile_picture'])) {
     $pic = (string)$user['profile_picture'];
-    if (file_exists(__DIR__ . '/' . $pic)) {
+    if (str_starts_with($pic, 'http://') || str_starts_with($pic, 'https://')) {
+        $userAvatarUrl = htmlspecialchars($pic);
+    } elseif (file_exists(__DIR__ . '/' . $pic)) {
         $userAvatarUrl = htmlspecialchars($pic);
     } elseif (file_exists(__DIR__ . '/uploads/avatars/' . basename($pic))) {
         $userAvatarUrl = 'uploads/avatars/' . htmlspecialchars(basename($pic));
@@ -148,11 +150,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['action']) && $_POST[
     $baseRent = (float)($unit['monthly_rent'] ?? 3000.00);
     $amountDue = $amount > 0 ? $amount : $baseRent;
 
-    // 3. File Upload Handling (PHP)
-    $uploadDir = __DIR__ . '/uploads/receipts/';
-    if (!is_dir($uploadDir)) {
-        mkdir($uploadDir, 0755, true);
-    }
+    // 3. File Upload Handling (Supabase Cloud Storage)
 
     $receiptFilename = null;
     if (isset($_FILES['receipt']) && $_FILES['receipt']['error'] === UPLOAD_ERR_OK) {
@@ -184,13 +182,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['action']) && $_POST[
 
         // Generate unique filename: receipt_tenantID_timestamp.ext
         $timestamp = time();
-        $safeName = "receipt_{$tenantId}_{$timestamp}.{$origExt}";
-        if (file_exists($uploadDir . $safeName)) {
-            $safeName = "receipt_{$tenantId}_{$timestamp}_" . bin2hex(random_bytes(3)) . ".{$origExt}";
-        }
+        $safeName = "receipt_{$tenantId}_{$timestamp}_" . bin2hex(random_bytes(4)) . ".{$origExt}";
 
-        if (move_uploaded_file($file['tmp_name'], $uploadDir . $safeName)) {
-            $receiptFilename = $safeName;
+        // Upload directly to Supabase Cloud Storage bucket 'receipts'
+        $publicReceiptUrl = uploadToSupabaseStorage($file['tmp_name'], $safeName, 'receipts');
+        if ($publicReceiptUrl !== false) {
+            $receiptFilename = $publicReceiptUrl;
         } else {
             header('Location: tenant_portal.php?section=tenantPayments&error=upload_failed');
             exit;
@@ -327,11 +324,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (
         $category = 'General Request';
     }
 
-    // 3. Securely handle $_FILES upload for supporting document
-    $uploadDir = __DIR__ . '/uploads/reports/';
-    if (!is_dir($uploadDir)) {
-        mkdir($uploadDir, 0755, true);
-    }
+    // 3. Securely handle $_FILES upload for supporting document (Supabase Cloud Storage)
 
     $savedFiles = [];
     $allowedExts = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'pdf', 'doc', 'docx'];
@@ -376,9 +369,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (
             }
 
             $safeFilename = 'report_' . $tenantId . '_' . time() . '_' . bin2hex(random_bytes(6)) . '.' . $ext;
-            $destPath = $uploadDir . $safeFilename;
-            if (move_uploaded_file($fileItem['tmp_name'], $destPath)) {
-                $savedFiles[] = 'uploads/reports/' . $safeFilename;
+
+            // Upload directly to Supabase Storage bucket 'reports' via REST API
+            $publicDocUrl = uploadToSupabaseStorage($fileItem['tmp_name'], $safeFilename, 'reports');
+            if ($publicDocUrl !== false) {
+                $savedFiles[] = $publicDocUrl;
             }
         }
     }
@@ -2224,13 +2219,6 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
                   Submit Request
                 </button>
               </div>
-
-              <!-- Exact Disclaimer Below Submit Button -->
-              <p class="text-xs sm:text-sm text-[#3E2723] font-semibold text-center mt-2 mb-0 italic">
-                *Disclaimer: sagot mo to lahat ng cost dito tenant pero iaapprove muna ni owner
-              </p>
-            </form>
-          </div>
 
           <!-- ── Tab 2: "Status Tracker" Pane ─────────────── -->
           <div
@@ -4157,6 +4145,138 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
         img.src = e.target.result;
       };
       reader.readAsDataURL(file);
+    }
+
+    // Portal ID Camera Streaming and Capture State
+    let portalCameraStream = null;
+
+    function togglePortalIdMethod(method) {
+      const tabUpload = document.getElementById('portalTabUploadId');
+      const tabCamera = document.getElementById('portalTabUseCamera');
+      const secUpload = document.getElementById('portalSectionUploadId');
+      const secCamera = document.getElementById('portalSectionUseCamera');
+
+      if (method === 'upload') {
+        if (tabUpload) {
+          tabUpload.className = 'py-2 px-3 rounded-lg text-xs sm:text-sm font-black bg-[#B89B72] text-white shadow-xs flex items-center justify-center gap-1.5 transition cursor-pointer';
+        }
+        if (tabCamera) {
+          tabCamera.className = 'py-2 px-3 rounded-lg text-xs sm:text-sm font-bold bg-[#F5F0E6] text-[#4A3728] hover:bg-[#E8D8B0] flex items-center justify-center gap-1.5 transition cursor-pointer';
+        }
+        if (secUpload) secUpload.classList.remove('hidden');
+        if (secCamera) secCamera.classList.add('hidden');
+        stopPortalCamera();
+      } else {
+        if (tabCamera) {
+          tabCamera.className = 'py-2 px-3 rounded-lg text-xs sm:text-sm font-black bg-[#B89B72] text-white shadow-xs flex items-center justify-center gap-1.5 transition cursor-pointer';
+        }
+        if (tabUpload) {
+          tabUpload.className = 'py-2 px-3 rounded-lg text-xs sm:text-sm font-bold bg-[#F5F0E6] text-[#4A3728] hover:bg-[#E8D8B0] flex items-center justify-center gap-1.5 transition cursor-pointer';
+        }
+        if (secCamera) secCamera.classList.remove('hidden');
+        if (secUpload) secUpload.classList.add('hidden');
+
+        const capturedBase64 = document.getElementById('captured_id_base64') ? document.getElementById('captured_id_base64').value : '';
+        if (!capturedBase64) {
+          startPortalCamera();
+        }
+      }
+      if (window.lucide) lucide.createIcons();
+    }
+
+    async function startPortalCamera() {
+      const videoEl = document.getElementById('camera_feed');
+      const viewport = document.getElementById('portalCameraViewport');
+      const card = document.getElementById('portalCapturedCard');
+      const btnCap = document.getElementById('btnCaptureId');
+      const btnRet = document.getElementById('btnRetakeId');
+
+      if (viewport) viewport.classList.remove('hidden');
+      if (card) card.classList.add('hidden');
+      if (btnCap) btnCap.classList.remove('hidden');
+      if (btnRet) btnRet.classList.add('hidden');
+
+      stopPortalCamera();
+
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } },
+          audio: false
+        });
+        portalCameraStream = stream;
+        if (videoEl) {
+          videoEl.srcObject = stream;
+          videoEl.play();
+        }
+      } catch (err) {
+        console.warn('Rear camera unavailable, trying any camera:', err);
+        try {
+          const fallback = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+          portalCameraStream = fallback;
+          if (videoEl) {
+            videoEl.srcObject = fallback;
+            videoEl.play();
+          }
+        } catch (fErr) {
+          console.error('Camera access failed:', fErr);
+          alert('Unable to access device camera. Please grant camera permission or use the "Upload ID" tab.');
+          togglePortalIdMethod('upload');
+        }
+      }
+    }
+
+    function stopPortalCamera() {
+      if (portalCameraStream) {
+        portalCameraStream.getTracks().forEach(t => {
+          try { t.stop(); } catch(e) {}
+        });
+        portalCameraStream = null;
+      }
+      const videoEl = document.getElementById('camera_feed');
+      if (videoEl) videoEl.srcObject = null;
+    }
+
+    function capturePortalCamera() {
+      const videoEl = document.getElementById('camera_feed');
+      const canvasEl = document.getElementById('snapshot');
+      const hiddenInput = document.getElementById('captured_id_base64');
+      const viewport = document.getElementById('portalCameraViewport');
+      const card = document.getElementById('portalCapturedCard');
+      const img = document.getElementById('portalCapturedImg');
+      const btnCap = document.getElementById('btnCaptureId');
+      const btnRet = document.getElementById('btnRetakeId');
+
+      if (!videoEl || !canvasEl) return;
+      const w = videoEl.videoWidth || 1280;
+      const h = videoEl.videoHeight || 720;
+      canvasEl.width = w;
+      canvasEl.height = h;
+      const ctx = canvasEl.getContext('2d');
+      ctx.drawImage(videoEl, 0, 0, w, h);
+
+      const dataUrl = canvasEl.toDataURL('image/jpeg', 0.92);
+      if (hiddenInput) hiddenInput.value = dataUrl;
+      if (img) img.src = dataUrl;
+
+      if (viewport) viewport.classList.add('hidden');
+      if (card) card.classList.remove('hidden');
+      if (btnCap) btnCap.classList.add('hidden');
+      if (btnRet) btnRet.classList.remove('hidden');
+
+      stopPortalCamera();
+      selectedIdFile = null;
+      const fInput = document.getElementById('idFileInput');
+      if (fInput) fInput.value = '';
+      const pCard = document.getElementById('idImagePreviewCard');
+      if (pCard) pCard.style.display = 'none';
+
+      if (window.lucide) lucide.createIcons();
+    }
+
+    function retakePortalCamera() {
+      const hiddenInput = document.getElementById('captured_id_base64');
+      if (hiddenInput) hiddenInput.value = '';
+      startPortalCamera();
     }
 
     function openTermsModal(e) {

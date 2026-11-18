@@ -302,17 +302,17 @@ class Auth {
                    un.unit_number
             FROM users u
             LEFT JOIN units un ON u.unit_id = un.id
-            WHERE (u.username = :u1 OR u.email = :u2)
+            WHERE (u.username = :username OR LOWER(u.username) = LOWER(:username))
             LIMIT 1
         ");
-        $stmt->execute([':u1' => $username, ':u2' => $username]);
+        $stmt->execute([':username' => $username]);
         $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
         if (!$user || !password_verify($password, (string)($user['password_hash'] ?? ''))) {
             return [
                 'success' => false,
                 'status'  => 'invalid',
-                'message' => 'Invalid email address or password.'
+                'message' => 'Invalid username or password.'
             ];
         }
 
@@ -328,7 +328,7 @@ class Auth {
                 return [
                     'success' => false,
                     'status'  => 'invalid',
-                    'message' => 'Invalid email address or password.'
+                    'message' => 'Invalid username or password.'
                 ];
             }
 

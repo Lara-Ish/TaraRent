@@ -116,6 +116,10 @@ DB_NAME=postgres
 DB_USER=postgres.asqnfbhzgqdlqxnuuugu
 DB_PASSWORD=YOUR_SUPABASE_PASSWORD
 
+# Supabase Cloud Storage Configuration (Render Ephemeral Storage Fix)
+SUPABASE_URL=https://asqnfbhzgqdlqxnuuugu.supabase.co
+SUPABASE_SERVICE_KEY=YOUR_SUPABASE_SERVICE_ROLE_KEY
+
 # SMTP Mail Settings (PHPMailer)
 MAIL_HOST=smtp.gmail.com
 MAIL_PORT=587

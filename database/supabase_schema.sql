@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS users (
     pending_id_path VARCHAR(255) NULL,
     pending_id_type VARCHAR(50) NULL,
     live_photo_filename VARCHAR(255) NULL,
-    profile_picture VARCHAR(255) NULL,
+    profile_picture TEXT NULL,
     id_submitted_at TIMESTAMP NULL,
     id_verified_at TIMESTAMP NULL,
     verification_notes TEXT NULL,
@@ -158,7 +158,7 @@ CREATE TABLE IF NOT EXISTS payments (
     payment_date DATE NULL,
     status VARCHAR(30) NOT NULL DEFAULT 'pending_setup' CHECK (status IN ('pending_setup', 'unpaid', 'pending', 'approved', 'rejected', 'overdue')),
     payment_method VARCHAR(50) DEFAULT 'GCash / Bank Transfer',
-    receipt_filename VARCHAR(255) NULL,
+    receipt_filename TEXT NULL,
     verified_by_landlord BOOLEAN NOT NULL DEFAULT FALSE,
     verification_notes TEXT NULL,
     verified_at TIMESTAMP NULL,
@@ -404,3 +404,17 @@ SELECT setval('units_id_seq', (SELECT COALESCE(MAX(id), 1) FROM units));
 SELECT setval('users_id_seq', (SELECT COALESCE(MAX(id), 1) FROM users));
 SELECT setval('apartment_settings_id_seq', (SELECT COALESCE(MAX(id), 1) FROM apartment_settings));
 SELECT setval('additional_spaces_id_seq', (SELECT COALESCE(MAX(id), 1) FROM additional_spaces));
+
+-- ==============================================================================
+-- 6. Supabase Cloud Storage Buckets Configuration (Render Ephemeral Storage Fix)
+-- ==============================================================================
+INSERT INTO storage.buckets (id, name, public, created_at, updated_at)
+VALUES 
+    ('receipts', 'receipts', true, NOW(), NOW()),
+    ('maintenance', 'maintenance', true, NOW(), NOW()),
+    ('reports', 'reports', true, NOW(), NOW()),
+    ('avatars', 'avatars', true, NOW(), NOW()),
+    ('id_verifications', 'id_verifications', true, NOW(), NOW()),
+    ('tararent', 'tararent', true, NOW(), NOW())
+ON CONFLICT (id) DO UPDATE SET public = true;
+

@@ -47,7 +47,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $rememberChecked = $rememberMe;
 
     if (empty($username) || empty($password)) {
-        $errorMessage = 'Please provide both email address and password.';
+        $errorMessage = 'Please provide both username and password.';
     } else {
         $loginRes = Auth::validateLogin($username, $password, $rememberMe);
         if ($loginRes['success']) {
@@ -58,7 +58,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             exit;
         } else {
-            $errorMessage = $loginRes['message'] ?? 'Invalid email address or password.';
+            $errorMessage = $loginRes['message'] ?? 'Invalid username or password.';
         }
     }
 }
@@ -148,20 +148,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
           </div>
         <?php endif; ?>
 
-        <!-- ================= 1. STANDARD EMAIL/USERNAME & PASSWORD SECTION ================= -->
+        <!-- ================= 1. STANDARD USERNAME & PASSWORD SECTION ================= -->
         <div id="passwordLoginSection" class="login-section-fade">
           <form action="login.php" method="POST" id="passwordLoginForm">
             <div class="form-field-group">
-              <label for="username" class="field-label">Email Address:</label>
+              <label for="username" class="field-label">Username:</label>
               <input
                 type="text"
                 id="username"
                 name="username"
                 class="warm-input"
-                placeholder="Enter email address or username"
+                placeholder="e.g. TRT001"
                 value="<?= htmlspecialchars($submittedUsername, ENT_QUOTES, 'UTF-8') ?>"
                 autocomplete="username"
-                inputmode="email"
                 required
                 <?= $submittedUsername === '' ? 'autofocus' : '' ?>
               >

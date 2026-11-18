@@ -75,3 +75,15 @@ if (!defined('GEMINI_API_MODEL')) {
 if (!defined('GEMINI_API_URL')) {
     define('GEMINI_API_URL', 'https://generativelanguage.googleapis.com/v1beta/models/' . GEMINI_API_MODEL . ':generateContent');
 }
+
+// ----------------------------------------------------------------------------
+// 3. Supabase Cloud Storage API Configuration
+// ----------------------------------------------------------------------------
+if (!defined('SUPABASE_URL')) {
+    define('SUPABASE_URL', (string)(getenv('SUPABASE_URL') ?: ($_ENV['SUPABASE_URL'] ?? 'https://asqnfbhzgqdlqxnuuugu.supabase.co')));
+}
+if (!defined('SUPABASE_SERVICE_KEY')) {
+    define('SUPABASE_SERVICE_KEY', (string)(getenv('SUPABASE_SERVICE_KEY') ?: ($_ENV['SUPABASE_SERVICE_KEY'] ?? '')));
+}
+
+require_once dirname(__DIR__) . '/includes/storage_service.php';

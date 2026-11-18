@@ -286,12 +286,8 @@ try {
             $unitId = (int)$uStmt->fetchColumn() ?: 1;
         }
 
-        // Optional supporting attachment upload (images + PDF + Docs)
+        // Optional supporting attachment upload (Supabase Cloud Storage: images + PDF + Docs)
         $savedAttachments = [];
-        $uploadDir = __DIR__ . '/../uploads/reports/';
-        if (!is_dir($uploadDir)) {
-            mkdir($uploadDir, 0777, true);
-        }
 
         $fileList = [];
         foreach (['request_attachments', 'request_attachment', 'report_attachments', 'attachments', 'attachment', 'document', 'file'] as $key) {
@@ -337,9 +333,11 @@ try {
             }
 
             $safeFilename = 'report_' . $tenantId . '_' . time() . '_' . bin2hex(random_bytes(6)) . '.' . $ext;
-            $destPath = $uploadDir . $safeFilename;
-            if (move_uploaded_file($fileItem['tmp_name'], $destPath)) {
-                $savedAttachments[] = 'uploads/reports/' . $safeFilename;
+
+            // Upload directly to Supabase Storage bucket 'reports' via REST API
+            $publicDocUrl = uploadToSupabaseStorage($fileItem['tmp_name'], $safeFilename, 'reports');
+            if ($publicDocUrl !== false) {
+                $savedAttachments[] = $publicDocUrl;
             }
         }
         if ($finfo) {

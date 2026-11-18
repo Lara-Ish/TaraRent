@@ -46,6 +46,7 @@ if (!function_exists('loadEnvFile')) {
 }
 
 loadEnvFile(dirname(__DIR__) . '/.env');
+require_once dirname(__DIR__) . '/includes/storage_service.php';
 
 class Database {
     private static string $host = '';
@@ -63,6 +64,7 @@ class Database {
      */
     private static function initFromEnv(): void {
         loadEnvFile(dirname(__DIR__) . '/.env');
+require_once dirname(__DIR__) . '/includes/storage_service.php';
 
         $connStr = getenv('DATABASE_URL') ?: (getenv('SUPABASE_DB_URL') ?: ($_ENV['DATABASE_URL'] ?? ($_ENV['SUPABASE_DB_URL'] ?? '')));
         if ($connStr) {

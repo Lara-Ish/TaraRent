@@ -34,7 +34,9 @@ if ($user && isset($user['id'])) {
 $userAvatarUrl = '';
 if (!empty($user['profile_picture'])) {
     $pic = (string)$user['profile_picture'];
-    if (file_exists(__DIR__ . '/' . $pic)) {
+    if (str_starts_with($pic, 'http://') || str_starts_with($pic, 'https://')) {
+        $userAvatarUrl = htmlspecialchars($pic);
+    } elseif (file_exists(__DIR__ . '/' . $pic)) {
         $userAvatarUrl = htmlspecialchars($pic);
     } elseif (file_exists(__DIR__ . '/uploads/avatars/' . basename($pic))) {
         $userAvatarUrl = 'uploads/avatars/' . htmlspecialchars(basename($pic));
@@ -1795,9 +1797,13 @@ try {
                     <span>Method: <?= htmlspecialchars($pending['payment_method'] ?? 'Bank Transfer') ?></span>
                   </div>
 
-                  <?php if ($pending['receipt_filename']): ?>
+                  <?php if ($pending['receipt_filename']): 
+                    $receiptUrl = (str_starts_with($pending['receipt_filename'], 'http://') || str_starts_with($pending['receipt_filename'], 'https://'))
+                      ? $pending['receipt_filename']
+                      : ('uploads/receipts/' . $pending['receipt_filename']);
+                  ?>
                     <div style="margin-top: 10px;">
-                      <a href="uploads/receipts/<?= htmlspecialchars($pending['receipt_filename']) ?>" target="_blank" class="btn-inspect-proof" style="display: inline-flex; width: 100%; justify-content: center; align-items: center; gap: 6px; padding: 8px 12px; box-sizing: border-box;">
+                      <a href="<?= htmlspecialchars($receiptUrl, ENT_QUOTES, 'UTF-8') ?>" target="_blank" class="btn-inspect-proof" style="display: inline-flex; width: 100%; justify-content: center; align-items: center; gap: 6px; padding: 8px 12px; box-sizing: border-box;">
                         <i data-lucide="file-text" class="w-4 h-4" aria-hidden="true"></i> Inspect Uploaded Proof
                       </a>
                     </div>
@@ -2395,7 +2401,7 @@ try {
        MODAL: ADD NEW TENANT TO A UNIT
        Collects: Full Name, Birthday, Email, Phone, and Emergency Contact
        (Name, Relationship, Contact Number).
-       Auto-generates sequential username (RC001, RC002, ...) and 6-digit passcode.
+       Auto-generates sequential username (TRT001, TRT002, ...) and 6-digit passcode.
        ===================================================================== -->
   <div class="modal-backdrop" id="addTenantModal">
     <div class="clay-modal resident-reg-modal">
@@ -2574,7 +2580,7 @@ try {
 
   <!-- =====================================================================
        MODAL: AUTO-GENERATED CREDENTIALS DISPLAY (WITH COPY BUTTONS)
-       Prominently displays generated username (RC00X) & 6-digit numeric password
+       Prominently displays generated username (TRT00X) & 6-digit numeric password
        ===================================================================== -->
   <div class="modal-backdrop" id="tenantCredentialsModal">
     <div class="clay-modal" style="max-width: 480px; position: relative;">
@@ -2595,7 +2601,7 @@ try {
         <div class="credential-row">
           <div>
             <div class="credential-label">Username</div>
-            <div class="credential-value" id="credUsername">RC001</div>
+            <div class="credential-value" id="credUsername">TRT001</div>
           </div>
           <button type="button" class="btn-copy-credential" onclick="copyCredField('credUsername', this)" style="display:inline-flex;align-items:center;gap:4px;"><i data-lucide="copy" class="w-3.5 h-3.5" aria-hidden="true"></i> Copy</button>
         </div>
@@ -6722,8 +6728,11 @@ try {
               payList.innerHTML = '<tr><td colspan="8" style="text-align: center; padding: 24px 14px; color: var(--text-muted);">No payment records found for this archived account.</td></tr>';
             } else {
               payList.innerHTML = payments.map(p => {
+                const receiptHref = p.receipt_filename && (p.receipt_filename.startsWith('http://') || p.receipt_filename.startsWith('https://'))
+                  ? p.receipt_filename
+                  : ('uploads/receipts/' + encodeURIComponent(p.receipt_filename || ''));
                 const receiptLink = p.receipt_filename 
-                  ? `<a href="uploads/receipts/${escapeHtml(p.receipt_filename)}" target="_blank" class="btn-inspect-proof" style="font-size: 11px; padding: 3px 8px; text-decoration: none; white-space: nowrap; display: inline-flex; align-items: center; gap: 4px;">${window.rcIcon('file-text', 'w-3.5 h-3.5')} Receipt</a>`
+                  ? `<a href="${escapeHtml(receiptHref)}" target="_blank" class="btn-inspect-proof" style="font-size: 11px; padding: 3px 8px; text-decoration: none; white-space: nowrap; display: inline-flex; align-items: center; gap: 4px;">${window.rcIcon('file-text', 'w-3.5 h-3.5')} Receipt</a>`
                   : '<span style="color: #94a3b8; font-size: 11px;">None</span>';
                 const methodStr = p.payment_method || 'GCash / Bank Transfer';
                 const typeLabel = p.payment_type || 'Rent';
@@ -8076,13 +8085,15 @@ try {
       const previewImage = document.getElementById('pdReceiptImage');
 
       if (p.receipt_filename && p.receipt_filename.trim() !== '') {
-        const fileUrl = 'uploads/receipts/' + encodeURIComponent(p.receipt_filename);
+        const fileUrl = (p.receipt_filename.startsWith('http://') || p.receipt_filename.startsWith('https://'))
+          ? p.receipt_filename
+          : ('uploads/receipts/' + encodeURIComponent(p.receipt_filename));
         receiptInspectBtn.href = fileUrl;
-        receiptInspectBtn.innerHTML = `${window.rcIcon('file-text', 'w-4 h-4')} Inspect Uploaded Proof (${escapeHtml(p.receipt_filename)})`;
+        receiptInspectBtn.innerHTML = `${window.rcIcon('file-text', 'w-4 h-4')} Inspect Uploaded Proof`;
         receiptContent.style.display = 'block';
         noReceiptMsg.style.display = 'none';
 
-        const ext = p.receipt_filename.split('.').pop().toLowerCase();
+        const ext = p.receipt_filename.split('?')[0].split('.').pop().toLowerCase();
         if (['png', 'jpg', 'jpeg', 'webp'].includes(ext)) {
           previewImage.src = fileUrl;
           previewBox.style.display = 'block';
