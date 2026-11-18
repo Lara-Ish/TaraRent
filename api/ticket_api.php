@@ -101,31 +101,45 @@ try {
                 ':id' => $ticketId
             ]);
 
-            // Automatically send email to Tenant regarding Owner reply and status update
+            // Automatically send email to Tenant regarding status update
             // CRITICAL: Tenant email is dynamically retrieved from database via JOIN users u ON mt.tenant_id = u.id
-            $ownerMessage = !empty($reply) ? $reply : "Your ticket status has been updated to " . $statusToSave . ".";
             $emailSent = false;
             $tenantId = (int)$ticketRow['tenant_id'];
             $tenantEmail = trim((string)($ticketRow['tenant_email'] ?? ''));
+            $issueTitle = (string)$ticketRow['title'];
 
             try {
                 if (!empty($tenantEmail) && filter_var($tenantEmail, FILTER_VALIDATE_EMAIL)) {
-                    $emailSent = EmailService::notifyTenantTicketReply(
-                        $pdo,
+                    // Exact prompt requirement:
+                    // "The status of your [Maintenance/Report] request regarding '[Issue/Title]' has been updated to: [New Status]."
+                    $emailSubject = "Maintenance Request Update: {$issueTitle}";
+                    $emailMessage = "The status of your Maintenance request regarding '<strong>" . htmlspecialchars($issueTitle, ENT_QUOTES, 'UTF-8') . "</strong>' has been updated to: <strong>{$statusToSave}</strong>.";
+                    if (!empty($replyToSave)) {
+                        $emailMessage .= "<br><br><strong>Landlord Notes:</strong> " . htmlspecialchars($replyToSave, ENT_QUOTES, 'UTF-8');
+                    }
+
+                    $emailSent = sendTenantNotification(
                         $tenantEmail,
+                        $emailSubject,
+                        $emailMessage,
                         (string)$ticketRow['tenant_name'],
-                        (string)$ticketRow['title'],
-                        $ownerMessage,
-                        $statusToSave,
-                        $ticketId,
-                        $tenantId
+                        [
+                            'Request Type'   => 'Maintenance Log',
+                            'Issue Title'    => $issueTitle,
+                            'Updated Status' => $statusToSave,
+                            'Landlord Notes' => $replyToSave ?: 'Status updated by property administration.'
+                        ],
+                        'View Maintenance Logs',
+                        MailConfig::get()['app_url'] . '/tenant_portal.php?section=tenantMaintenance',
+                        $tenantId,
+                        $pdo
                     );
                 } else {
                     EmailService::logEmail(
                         $pdo,
                         $tenantEmail,
                         (string)$ticketRow['tenant_name'],
-                        "Maintenance Request Update - {$ticketRow['title']}",
+                        "Maintenance Request Update: {$issueTitle}",
                         'ticket_reply',
                         $ticketId,
                         'ticket',

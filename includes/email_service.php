@@ -110,6 +110,48 @@ if (!function_exists('sendEmail')) {
     }
 }
 
+if (!function_exists('sendTenantNotification')) {
+    /**
+     * Reusable tenant notification email function.
+     * Uses PHPMailer configured for Gmail SMTP (smtp.gmail.com:587/465, TLS/SSL)
+     * and styles the HTML body using the TaraRent 60-30-10 palette.
+     *
+     * @param string $tenantEmail Tenant's Gmail address (from DB)
+     * @param string $subject Email subject line
+     * @param string $messageBody Content/message body
+     * @param string|null $recipientName Optional tenant name
+     * @param array $details Optional key-value details table
+     * @param string|null $buttonText Optional CTA button text
+     * @param string|null $buttonUrl Optional CTA button URL
+     * @param int|null $tenantId Optional tenant user ID
+     * @param PDO|null $pdo Optional PDO instance for logging
+     * @return bool True if successfully dispatched
+     */
+    function sendTenantNotification(
+        string $tenantEmail,
+        string $subject,
+        string $messageBody,
+        ?string $recipientName = null,
+        array $details = [],
+        ?string $buttonText = null,
+        ?string $buttonUrl = null,
+        ?int $tenantId = null,
+        ?PDO $pdo = null
+    ): bool {
+        return EmailService::sendTenantNotification(
+            $tenantEmail,
+            $subject,
+            $messageBody,
+            $recipientName,
+            $details,
+            $buttonText,
+            $buttonUrl,
+            $tenantId,
+            $pdo
+        );
+    }
+}
+
 class EmailService
 {
     /**
@@ -263,6 +305,252 @@ class EmailService
         return sendEmail($recipientEmail, $subject, $message, $recipientUserId, $pdo);
     }
 
+    /**
+     * Reusable mailer function that initializes PHPMailer, connects to Gmail's SMTP server
+     * (smtp.gmail.com, port 465/587), and sends an HTML email styled using the
+     * TaraRent 60-30-10 color palette (Light Beige, Medium Brown, Dark Brown).
+     */
+    public static function sendTenantNotification(
+        string $tenantEmail,
+        string $subject,
+        string $messageBody,
+        ?string $recipientName = null,
+        array $details = [],
+        ?string $buttonText = null,
+        ?string $buttonUrl = null,
+        ?int $tenantId = null,
+        ?PDO $pdo = null
+    ): bool {
+        $tenantEmail = trim($tenantEmail);
+        if (!filter_var($tenantEmail, FILTER_VALIDATE_EMAIL)) {
+            error_log("[TaraRent sendTenantNotification] Invalid email: {$tenantEmail}");
+            return false;
+        }
+
+        if ($pdo === null && class_exists('Database')) {
+            try {
+                $pdo = Database::getConnection();
+            } catch (Throwable $e) {}
+        }
+
+        $name = trim((string)($recipientName ?? ''));
+        if ($name === '' && $pdo !== null && $tenantId !== null && $tenantId > 0) {
+            try {
+                $uStmt = $pdo->prepare("SELECT name FROM users WHERE id = :id LIMIT 1");
+                $uStmt->execute([':id' => $tenantId]);
+                $uRow = $uStmt->fetch();
+                if ($uRow && !empty($uRow['name'])) {
+                    $name = (string)$uRow['name'];
+                }
+            } catch (Throwable $e) {}
+        }
+        if ($name === '') {
+            $name = 'Tenant';
+        }
+
+        // Style the HTML email body using the TaraRent 60-30-10 color palette
+        if (str_contains($messageBody, '<html') || str_contains($messageBody, '<!DOCTYPE')) {
+            $htmlBody = $messageBody;
+        } else {
+            $badge = 'NOTIFICATION';
+            if (stripos($subject, 'payment') !== false) {
+                $badge = 'RENTAL PAYMENT';
+            } elseif (stripos($subject, 'maintenance') !== false) {
+                $badge = 'MAINTENANCE';
+            } elseif (stripos($subject, 'report') !== false) {
+                $badge = 'TENANT REPORT';
+            }
+
+            $htmlBody = EmailTemplate::render(
+                $subject,
+                $badge,
+                $name,
+                $messageBody,
+                $details,
+                $buttonText,
+                $buttonUrl,
+                'Thank you for being a valued resident of TaraRent!'
+            );
+        }
+
+        return self::send(
+            $pdo,
+            $tenantEmail,
+            $name,
+            $subject,
+            $htmlBody,
+            'tenant_notification',
+            $tenantId,
+            'tenant',
+            false,
+            null,
+            $tenantId
+        );
+    }
+
+    /**
+     * Notify Tenant of Landlord payment approval or rejection.
+     * Email states: "Your payment of [Amount] for [Billing Month] has been [Status]."
+     * If rejected, includes the landlord's reason if provided.
+     */
+    public static function notifyTenantPaymentDecision(
+        PDO $pdo,
+        int $tenantId,
+        float $amount,
+        string $billingMonth,
+        string $status,
+        ?string $reason = null,
+        ?int $paymentId = null
+    ): bool {
+        $tenant = self::getTenantFromDatabase($pdo, $tenantId);
+        if (!$tenant || empty($tenant['email'])) {
+            return false;
+        }
+
+        $formattedAmount = '₱' . number_format($amount, 2);
+        $monthStr = (!empty($billingMonth) && strtotime($billingMonth) !== false)
+            ? date('F Y', strtotime($billingMonth))
+            : $billingMonth;
+        if (empty($monthStr)) {
+            $monthStr = date('F Y');
+        }
+
+        $statusNormalized = strtolower($status);
+        $isApproved = in_array($statusNormalized, ['approved', 'verified'], true);
+        $statusDisplay = $isApproved ? 'Approved' : 'Rejected';
+
+        // Exact requirement: "Your payment of [Amount] for [Billing Month] has been [Status]."
+        $messageBody = "Your payment of <strong>{$formattedAmount}</strong> for <strong>{$monthStr}</strong> has been <strong>{$statusDisplay}</strong>.";
+        if (!$isApproved && !empty($reason)) {
+            $messageBody .= "<br><br><strong>Reason:</strong> " . htmlspecialchars($reason, ENT_QUOTES, 'UTF-8');
+        }
+
+        $subject = "Payment {$statusDisplay} - {$monthStr}";
+        $details = [
+            'Amount' => $formattedAmount,
+            'Billing Month' => $monthStr,
+            'Status' => $statusDisplay,
+        ];
+        if (!empty($reason)) {
+            $details['Notes / Reason'] = $reason;
+        }
+
+        $config = MailConfig::get();
+        $actionUrl = $config['app_url'] . '/tenant_portal.php?section=tenantPayments&tab=tracker';
+
+        return self::sendTenantNotification(
+            $tenant['email'],
+            $subject,
+            $messageBody,
+            $tenant['name'],
+            $details,
+            'View Payment History',
+            $actionUrl,
+            $tenantId,
+            $pdo
+        );
+    }
+
+    /**
+     * Notify Tenant of Maintenance status update.
+     * Email states: "The status of your Maintenance request regarding '[Issue/Title]' has been updated to: [New Status]."
+     */
+    public static function notifyTenantMaintenanceStatusUpdate(
+        PDO $pdo,
+        int $tenantId,
+        string $issueTitle,
+        string $newStatus,
+        ?string $notes = null,
+        ?int $ticketId = null
+    ): bool {
+        $tenant = self::getTenantFromDatabase($pdo, $tenantId);
+        if (!$tenant || empty($tenant['email'])) {
+            return false;
+        }
+
+        $safeTitle = htmlspecialchars($issueTitle, ENT_QUOTES, 'UTF-8');
+        // Exact requirement: "The status of your Maintenance request regarding '[Issue/Title]' has been updated to: [New Status]."
+        $messageBody = "The status of your Maintenance request regarding '<strong>{$safeTitle}</strong>' has been updated to: <strong>{$newStatus}</strong>.";
+        if (!empty($notes)) {
+            $messageBody .= "<br><br><strong>Landlord Notes:</strong> " . htmlspecialchars($notes, ENT_QUOTES, 'UTF-8');
+        }
+
+        $subject = "Maintenance Request Update: {$issueTitle}";
+        $details = [
+            'Request Type' => 'Maintenance Request',
+            'Issue / Title' => $issueTitle,
+            'Updated Status' => $newStatus,
+        ];
+        if (!empty($notes)) {
+            $details['Landlord Notes'] = $notes;
+        }
+
+        $config = MailConfig::get();
+        $actionUrl = $config['app_url'] . '/tenant_portal.php?section=tenantMaintenance';
+
+        return self::sendTenantNotification(
+            $tenant['email'],
+            $subject,
+            $messageBody,
+            $tenant['name'],
+            $details,
+            'View Maintenance Details',
+            $actionUrl,
+            $tenantId,
+            $pdo
+        );
+    }
+
+    /**
+     * Notify Tenant of Report status update.
+     * Email states: "The status of your Report request regarding '[Issue/Title]' has been updated to: [New Status]."
+     */
+    public static function notifyTenantReportStatusUpdate(
+        PDO $pdo,
+        int $tenantId,
+        string $reportTitle,
+        string $newStatus,
+        ?string $remarks = null,
+        ?int $reportId = null
+    ): bool {
+        $tenant = self::getTenantFromDatabase($pdo, $tenantId);
+        if (!$tenant || empty($tenant['email'])) {
+            return false;
+        }
+
+        $safeTitle = htmlspecialchars($reportTitle, ENT_QUOTES, 'UTF-8');
+        // Exact requirement: "The status of your Report request regarding '[Issue/Title]' has been updated to: [New Status]."
+        $messageBody = "The status of your Report request regarding '<strong>{$safeTitle}</strong>' has been updated to: <strong>{$newStatus}</strong>.";
+        if (!empty($remarks)) {
+            $messageBody .= "<br><br><strong>Landlord Remarks:</strong> " . htmlspecialchars($remarks, ENT_QUOTES, 'UTF-8');
+        }
+
+        $subject = "Report Request Update: {$reportTitle}";
+        $details = [
+            'Request Type' => 'General Report',
+            'Report Title' => $reportTitle,
+            'Updated Status' => $newStatus,
+        ];
+        if (!empty($remarks)) {
+            $details['Landlord Remarks'] = $remarks;
+        }
+
+        $config = MailConfig::get();
+        $actionUrl = $config['app_url'] . '/tenant_portal.php?section=tenantReport';
+
+        return self::sendTenantNotification(
+            $tenant['email'],
+            $subject,
+            $messageBody,
+            $tenant['name'],
+            $details,
+            'View Report Details',
+            $actionUrl,
+            $tenantId,
+            $pdo
+        );
+    }
+
     public const DEFAULT_OWNER_EMAIL = 'rentconnect2026@gmail.com';
 
     /**
@@ -292,7 +580,7 @@ class EmailService
 
                 return [
                     'id'    => (int)$row['id'],
-                    'name'  => (string)($row['name'] ?? 'Lead Dimaculangan'),
+                    'name'  => (string)($row['name'] ?? 'Leah Dimaculangan'),
                     'email' => $email
                 ];
             }
@@ -301,7 +589,7 @@ class EmailService
         }
         return [
             'id'    => 1,
-            'name'  => 'Lead Dimaculangan',
+            'name'  => 'Leah Dimaculangan',
             'email' => self::DEFAULT_OWNER_EMAIL
         ];
     }
@@ -317,7 +605,7 @@ class EmailService
                 SELECT u.id, u.name, u.email, u.unit_id, un.unit_number
                 FROM users u
                 LEFT JOIN units un ON u.unit_id = un.id
-                WHERE u.id = :id AND u.role = 'tenant' AND u.is_active = TRUE
+                WHERE u.id = :id AND u.role = 'tenant' AND (u.is_active = TRUE OR u.is_active IS NULL)
                 LIMIT 1
             ");
             $stmt->execute([':id' => $tenantId]);

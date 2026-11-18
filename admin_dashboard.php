@@ -1,7 +1,7 @@
 <?php
 /**
  * RentConnect - Landlord Business Intelligence & Management Dashboard
- * Landlord: Lead Dimaculangan (Role: Landlord)
+ * Landlord: Leah Dimaculangan (Role: Landlord)
  * Property Architecture: 1 Apartment with Exactly 3 Units (Unlimited Tenants per Unit)
  * Currency: ₱
  */
@@ -259,6 +259,26 @@ $archivedTenantsCount = (int)$pdo->query("
     SELECT COUNT(*) FROM users
     WHERE role = 'tenant' AND (is_archived = TRUE OR deleted_at IS NOT NULL)
 ")->fetchColumn();
+
+// Fetch archived tenant records for initial table rendering
+$archivedTenantsList = [];
+try {
+    $archivedTenantsStmt = $pdo->query("
+        SELECT u.id, u.id AS tenant_id, u.name, u.username, u.email, u.phone, u.birthday, 
+               u.archived_unit_number, u.archived_monthly_rent, u.archived_spaces_text,
+               u.rental_status, u.move_in_date, u.move_out_date, u.deleted_at, u.created_at, u.profile_picture,
+               un.unit_number AS current_unit_number
+        FROM users u
+        LEFT JOIN units un ON u.unit_id = un.id
+        WHERE u.role = 'tenant' AND (u.is_archived = TRUE OR u.deleted_at IS NOT NULL)
+        ORDER BY COALESCE(u.deleted_at, u.move_out_date) DESC, u.id DESC
+    ");
+    if ($archivedTenantsStmt) {
+        $archivedTenantsList = $archivedTenantsStmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+} catch (Exception $e) {
+    error_log("Failed to load initial archived tenants list: " . $e->getMessage());
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -477,6 +497,14 @@ $archivedTenantsCount = (int)$pdo->query("
     #ticketDetailsModal.active .ticket-details-modal-box {
       transform: scale(1) translateY(0);
       opacity: 1;
+    }
+
+    /* High Z-Index for Archived Tenant Modal to overlay sidebar and navbar */
+    #archivedTenantModal,
+    .modal-backdrop#archivedTenantModal {
+      z-index: 99999 !important;
+      position: fixed !important;
+      inset: 0 !important;
     }
 
     /* Animated Archived Tenant Details Modal (Fade-In & Scale-Up Transition) */
@@ -990,6 +1018,13 @@ $archivedTenantsCount = (int)$pdo->query("
       overflow: hidden;
       box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
     }
+    .archived-tenant-row {
+      cursor: pointer;
+      transition: background-color 0.15s ease;
+    }
+    .archived-tenant-row:hover {
+      background-color: rgba(232, 216, 176, 0.5) !important;
+    }
     @media (max-width: 560px) {
       #addTenantModal .resident-reg-modal {
         padding: 24px 16px 22px;
@@ -1098,7 +1133,7 @@ $archivedTenantsCount = (int)$pdo->query("
                 <?php endif; ?>
               </div>
               <div class="header-owner-meta">
-                <span class="header-owner-name" id="headerUserName"><?= htmlspecialchars($user['name'] ?? 'Lead Dimaculangan') ?></span>
+                <span class="header-owner-name" id="headerUserName"><?= htmlspecialchars($user['name'] ?? 'Leah Dimaculangan') ?></span>
                 <span class="header-owner-role" style="display: inline-flex; align-items: center; gap: 4px;"><i data-lucide="circle-user" class="w-3.5 h-3.5" aria-hidden="true"></i>Owner</span>
               </div>
             </div>
@@ -1115,7 +1150,7 @@ $archivedTenantsCount = (int)$pdo->query("
                     <?php endif; ?>
                   </div>
                   <div class="fb-profile-main-info">
-                    <span class="fb-profile-name" id="profileDropdownName"><?= htmlspecialchars($user['name'] ?? 'Lead Dimaculangan') ?></span>
+                    <span class="fb-profile-name" id="profileDropdownName"><?= htmlspecialchars($user['name'] ?? 'Leah Dimaculangan') ?></span>
                   </div>
                 </div>
               </div>
@@ -1399,10 +1434,6 @@ $archivedTenantsCount = (int)$pdo->query("
                       <input type="text" id="archivedTenantSearchInput" class="clay-input" placeholder="Search by name, email, or unit..." style="padding-left: 36px; font-size: 13px; background: #ffffff; border: 1.2px solid #2b2116; border-radius: 8px;" oninput="filterArchivedTenants(this.value)">
                       <i data-lucide="search" aria-hidden="true" style="width: 17px; height: 17px; position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: #6e5539; pointer-events: none;"></i>
                     </div>
-                    <button type="button" id="btnExportArchivedTenants" class="archived-main-action-btn" onclick="exportArchivedTenantsToCSV()" title="Export Archived Records (CSV)">
-                      <i data-lucide="download" class="w-4 h-4" aria-hidden="true"></i>
-                      <span>Export</span>
-                    </button>
                     <button type="button" class="archived-main-action-btn" onclick="loadArchivedTenants()" title="Refresh Archived Records">
                       <i data-lucide="refresh-cw" class="w-4 h-4" aria-hidden="true"></i>
                       <span>Refresh</span>
@@ -1420,29 +1451,77 @@ $archivedTenantsCount = (int)$pdo->query("
                   </div>
                 </div>
 
-                <!-- Archived Tenants Table Card -->
-                <div class="archived-table-wrapper">
-                  <div class="table-responsive" style="overflow-x: auto;">
-                    <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 13.5px;">
+                <!-- Archived Tenants Table Card (No Horizontal Scroll, Fixed Width) -->
+                <div class="archived-table-wrapper overflow-hidden">
+                  <div class="w-full overflow-hidden">
+                    <table class="w-full table-fixed" style="border-collapse: collapse; text-align: left; font-size: 13.5px;">
                       <thead>
                         <tr style="border-bottom: 1.5px solid #2b2116; color: #1c140d; font-weight: 700; background: #fdf6ea;">
-                          <th style="padding: 14px 16px;">Tenant Name</th>
-                          <th style="padding: 14px 16px;">Unit Number</th>
-                          <th style="padding: 14px 16px;">Email Address</th>
-                          <th style="padding: 14px 16px;">Contact Number</th>
-                          <th style="padding: 14px 16px;">Date of Moving In</th>
-                          <th style="padding: 14px 16px;">Move-Out Date</th>
-                          <th style="padding: 14px 16px;">Date Archived</th>
-                          <th style="padding: 14px 16px; text-align: center;">Main Actions</th>
+                          <th class="w-[20%]" style="padding: 14px 16px;">Tenant Name</th>
+                          <th class="w-[11%]" style="padding: 14px 14px;">Unit Number</th>
+                          <th class="w-[22%]" style="padding: 14px 14px;">Email Address</th>
+                          <th class="w-[14%]" style="padding: 14px 14px;">Contact Number</th>
+                          <th class="w-[16%]" style="padding: 14px 14px;">Date of Moving In</th>
+                          <th class="w-[17%]" style="padding: 14px 14px;">Move-Out Date</th>
                         </tr>
                       </thead>
                       <tbody id="archivedTenantsTableBody">
-                        <tr>
-                          <td colspan="8" style="text-align: center; padding: 36px 14px; color: #6e5539; font-size: 13.5px;">
-                            <span class="clay-spinner" style="width: 18px; height: 18px; border-width: 2px; vertical-align: middle; margin-right: 8px;"></span>
-                            Loading archived tenant accounts...
-                          </td>
-                        </tr>
+                        <?php if (empty($archivedTenantsList)): ?>
+                          <tr>
+                            <td colspan="6" style="text-align: center; padding: 42px 14px; color: var(--text-muted); font-size: 13.5px;">
+                              <div style="margin-bottom: 8px; display: flex; justify-content: center; color: #94a3b8;"><i data-lucide="folder-open" class="w-7 h-7"></i></div>
+                              <strong>No archived tenant accounts found.</strong>
+                              <div style="font-size: 12px; color: #94a3b8; margin-top: 4px;">Moved-out and settled tenant records will appear here with full historical logs.</div>
+                            </td>
+                          </tr>
+                        <?php else: ?>
+                          <?php foreach ($archivedTenantsList as $row): 
+                            $rowName = htmlspecialchars($row['name'] ?? '', ENT_QUOTES, 'UTF-8');
+                            $rowUnit = htmlspecialchars($row['archived_unit_number'] ?: ($row['current_unit_number'] ? 'Unit ' . $row['current_unit_number'] : 'Unit N/A'), ENT_QUOTES, 'UTF-8');
+                            $rowEmail = htmlspecialchars($row['email'] ?? '—', ENT_QUOTES, 'UTF-8');
+                            $rowContact = htmlspecialchars($row['phone'] ?? '—', ENT_QUOTES, 'UTF-8');
+                            $rowMoveIn = htmlspecialchars(!empty($row['move_in_date']) ? date('M j, Y', strtotime($row['move_in_date'])) : '—', ENT_QUOTES, 'UTF-8');
+                            $rowMoveOut = htmlspecialchars(!empty($row['move_out_date']) ? date('M j, Y', strtotime($row['move_out_date'])) : (!empty($row['deleted_at']) ? date('M j, Y', strtotime($row['deleted_at'])) : 'Not set'), ENT_QUOTES, 'UTF-8');
+                            $rowAvatar = htmlspecialchars($row['profile_picture'] ?? '', ENT_QUOTES, 'UTF-8');
+                            $initial = strtoupper(mb_substr($row['name'] ?: 'T', 0, 1, 'UTF-8'));
+                          ?>
+                            <tr id="archived-row-<?= (int)$row['tenant_id'] ?>"
+                                class="cursor-pointer hover:bg-[#E8D8B0]/50 transition-colors archived-tenant-row"
+                                onclick="openArchivedModal(<?= $row['tenant_id'] ?>)"
+                                data-id="<?= (int)$row['tenant_id'] ?>"
+                                data-name="<?= $rowName ?>"
+                                data-unit="<?= $rowUnit ?>"
+                                data-email="<?= $rowEmail ?>"
+                                data-contact="<?= $rowContact ?>"
+                                data-move-in="<?= $rowMoveIn ?>"
+                                data-move-out="<?= $rowMoveOut ?>"
+                                data-avatar="<?= $rowAvatar ?>"
+                                title="Click to view archived tenant details"
+                                style="border-bottom: 1px solid rgba(166, 180, 204, 0.25);">
+                              <td style="padding: 14px 16px; font-weight: 700; color: #0f172a;">
+                                <div style="display: flex; align-items: center; gap: 10px; min-width: 0;">
+                                  <?php if (!empty($row['profile_picture'])): ?>
+                                    <img src="<?= $rowAvatar ?>" alt="<?= $rowName ?>" style="width: 34px; height: 34px; border-radius: 50%; object-fit: cover; border: 1.5px solid #cbd5e1; flex-shrink: 0;">
+                                  <?php else: ?>
+                                    <div style="width: 34px; height: 34px; border-radius: 50%; background: linear-gradient(135deg, #64748b, #475569); color: #fff; font-weight: 700; font-size: 13px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;"><?= $initial ?></div>
+                                  <?php endif; ?>
+                                  <span class="truncate" title="<?= $rowName ?>"><?= $rowName ?></span>
+                                </div>
+                              </td>
+                              <td style="padding: 14px 14px;">
+                                <span class="clay-badge" style="background: #F3E4C6; color: #56380E; border: 1px solid rgba(181, 143, 83, 0.35); font-weight: 800; font-size: 11.5px; padding: 3px 9px;">
+                                  <?= $rowUnit ?>
+                                </span>
+                              </td>
+                              <td class="truncate" style="padding: 14px 14px; color: #334155; font-size: 13px;" title="<?= $rowEmail ?>">
+                                <?= $rowEmail ?>
+                              </td>
+                              <td style="padding: 14px 14px; color: #334155; font-size: 13px;"><?= $rowContact ?></td>
+                              <td style="padding: 14px 14px; color: var(--text-muted); font-size: 12.5px;"><?= $rowMoveIn ?></td>
+                              <td style="padding: 14px 14px; color: #92400e; font-weight: 700; font-size: 12.5px;"><?= $rowMoveOut ?></td>
+                            </tr>
+                          <?php endforeach; ?>
+                        <?php endif; ?>
                       </tbody>
                     </table>
                   </div>
@@ -1991,7 +2070,7 @@ $archivedTenantsCount = (int)$pdo->query("
                 <div class="detail-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 18px; margin-bottom: 24px;">
                   <div class="detail-item">
                     <span class="detail-label">Full Name: </span>
-                    <span class="detail-value" id="profileFullName" style="font-size: 15px; font-weight: 700;"><?= htmlspecialchars($user['name'] ?? 'Lead Dimaculangan') ?></span>
+                    <span class="detail-value" id="profileFullName" style="font-size: 15px; font-weight: 700;"><?= htmlspecialchars($user['name'] ?? 'Leah Dimaculangan') ?></span>
                   </div>
                   <div class="detail-item">
                     <span class="detail-label">Username: </span>
@@ -3011,6 +3090,229 @@ $archivedTenantsCount = (int)$pdo->query("
   </div>
 
   <!-- =====================================================================
+       ARCHIVED TENANT POPUP MODAL (EXPANDED 60-30-10 WITH FULL HISTORY)
+       ===================================================================== -->
+  <div id="archivedTenantModal"
+       class="modal-backdrop fixed inset-0 z-[99999] hidden flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 sm:p-6"
+       style="z-index: 99999 !important; position: fixed !important; inset: 0 !important;"
+       onclick="if (event.target === this) closeModal('archivedTenantModal')"
+       role="dialog"
+       aria-modal="true"
+       aria-labelledby="archivedModalTitle">
+    
+    <div class="relative w-full max-w-4xl rounded-2xl shadow-2xl overflow-hidden border-2 border-[#B89B72] bg-[#F5F0E6] transition-all transform my-auto"
+         onclick="event.stopPropagation()">
+      
+      <!-- 30% Secondary Color: Medium Brown Header Area -->
+      <div class="bg-[#B89B72] px-6 py-4 flex items-center justify-between border-b-2 border-[#9A7B4F]">
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 rounded-xl bg-[#4A3728]/15 border border-[#4A3728]/30 flex items-center justify-center text-[#4A3728]">
+            <i data-lucide="archive" class="w-5 h-5 pointer-events-none"></i>
+          </div>
+          <div>
+            <h3 id="archivedModalTitle" class="text-lg font-extrabold text-[#4A3728] leading-tight">Archived Tenant Details</h3>
+            <p class="text-xs font-semibold text-[#4A3728]/80">Full resident profile, payment ledger &amp; maintenance history</p>
+          </div>
+        </div>
+        
+        <!-- 10% Dark Brown Close 'X' Button -->
+        <button type="button"
+                onclick="closeModal('archivedTenantModal')"
+                class="modal-close-btn w-9 h-9 rounded-full bg-[#4A3728] hover:bg-[#382618] text-[#F5F0E6] flex items-center justify-center transition shadow-md focus:outline-none focus:ring-2 focus:ring-[#4A3728]/50 cursor-pointer"
+                title="Close modal (Esc)"
+                aria-label="Close modal">
+          <i data-lucide="x" class="w-5 h-5 pointer-events-none"></i>
+        </button>
+      </div>
+
+      <!-- Scrollable Body Container (max-h-[80vh] overflow-y-auto) -->
+      <div class="p-6 bg-[#F5F0E6] overflow-y-auto max-h-[80vh] space-y-6">
+
+        <!-- Loading Spinner State -->
+        <div id="archivedModalLoading" class="py-16 text-center">
+          <div class="w-12 h-12 border-4 border-[#B89B72]/30 border-t-[#4A3728] rounded-full animate-spin mx-auto mb-4"></div>
+          <p class="text-sm font-extrabold text-[#4A3728]">Loading tenant archive &amp; historical records...</p>
+          <p class="text-xs text-[#4A3728]/70 mt-1">Retrieving profile, payment ledger, and maintenance tickets</p>
+        </div>
+
+        <!-- Error State -->
+        <div id="archivedModalError" class="hidden py-12 px-6 text-center bg-[#FAF5EC] rounded-xl border border-red-300">
+          <div class="w-12 h-12 rounded-full bg-red-100 text-red-700 flex items-center justify-center mx-auto mb-3">
+            <i data-lucide="alert-circle" class="w-6 h-6"></i>
+          </div>
+          <p id="archivedModalErrorMessage" class="text-sm font-bold text-red-700">Failed to load tenant record.</p>
+          <button type="button" onclick="retryFetchArchivedTenant()" class="mt-4 px-4 py-2 text-xs font-bold rounded-lg bg-[#B89B72] text-[#4A3728] hover:bg-[#a88b62] transition shadow-xs">
+            Retry
+          </button>
+        </div>
+
+        <!-- Dynamic Content Body (Hidden while loading) -->
+        <div id="archivedModalBodyContent" class="space-y-6" style="display: none;">
+
+          <!-- SECTION 1: FULL PROFILE INFORMATION -->
+          <div class="rounded-xl border border-[#B89B72]/40 bg-[#FAF5EC] p-5 shadow-sm">
+            <div class="flex items-center gap-2.5 pb-3 mb-4 border-b border-[#B89B72]/30">
+              <div class="w-8 h-8 rounded-lg bg-[#B89B72]/20 text-[#4A3728] flex items-center justify-center">
+                <i data-lucide="user" class="w-4 h-4"></i>
+              </div>
+              <div>
+                <h4 class="text-sm font-extrabold text-[#4A3728] uppercase tracking-wider">Full Profile Information</h4>
+                <p class="text-[11px] text-[#4A3728]/70">Personal identity and lease arrangement details</p>
+              </div>
+            </div>
+
+            <!-- Primary Profile Header Card -->
+            <div class="flex items-center gap-4 mb-4 pb-4 border-b border-[#B89B72]/20">
+              <div id="archivedModalAvatarContainer" class="flex-shrink-0">
+                <div class="w-14 h-14 rounded-full bg-[#B89B72] text-[#4A3728] font-black text-xl flex items-center justify-center border-2 border-[#4A3728]/20 shadow-sm">
+                  T
+                </div>
+              </div>
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center gap-2 flex-wrap mb-1">
+                  <h4 id="archivedModalTenantName" class="text-lg font-black text-[#4A3728] truncate">Tenant Name</h4>
+                  <span id="archivedModalUsernameBadge" class="px-2 py-0.5 text-xs font-bold rounded-md bg-[#E8D8B0] text-[#4A3728] border border-[#B89B72]">@RC001</span>
+                  <span class="px-2 py-0.5 text-[11px] font-bold rounded-full bg-[#DE7C5A]/20 text-[#8A3816] border border-[#DE7C5A]/40 uppercase tracking-wide">Archived</span>
+                </div>
+                <div class="flex items-center gap-2 text-xs text-[#4A3728]/80 flex-wrap">
+                  <span>Assigned Unit:</span>
+                  <span id="archivedModalUnitBadge" class="font-extrabold text-[#4A3728]">Unit N/A</span>
+                  <span class="text-[#B89B72]">•</span>
+                  <span id="archivedModalDeletedDate">Archived record</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Profile Fields Grid -->
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              <div class="p-3 rounded-lg bg-[#FFFDF9] border border-[#B89B72]/30 shadow-xs">
+                <span class="block text-[10.5px] font-bold uppercase tracking-wider text-[#4A3728]/70 mb-0.5">Tenant Name</span>
+                <p id="archivedModalName" class="text-xs font-bold text-[#4A3728] truncate">—</p>
+              </div>
+              <div class="p-3 rounded-lg bg-[#FFFDF9] border border-[#B89B72]/30 shadow-xs">
+                <span class="block text-[10.5px] font-bold uppercase tracking-wider text-[#4A3728]/70 mb-0.5">Unit Number</span>
+                <p id="archivedModalUnit" class="text-xs font-bold text-[#4A3728]">—</p>
+              </div>
+              <div class="p-3 rounded-lg bg-[#FFFDF9] border border-[#B89B72]/30 shadow-xs">
+                <span class="block text-[10.5px] font-bold uppercase tracking-wider text-[#4A3728]/70 mb-0.5">Email Address</span>
+                <p id="archivedModalEmail" class="text-xs font-bold text-[#4A3728] truncate">—</p>
+              </div>
+              <div class="p-3 rounded-lg bg-[#FFFDF9] border border-[#B89B72]/30 shadow-xs">
+                <span class="block text-[10.5px] font-bold uppercase tracking-wider text-[#4A3728]/70 mb-0.5">Contact Number</span>
+                <p id="archivedModalContact" class="text-xs font-bold text-[#4A3728]">—</p>
+              </div>
+              <div class="p-3 rounded-lg bg-[#FFFDF9] border border-[#B89B72]/30 shadow-xs">
+                <span class="block text-[10.5px] font-bold uppercase tracking-wider text-[#4A3728]/70 mb-0.5">Date of Moving In</span>
+                <p id="archivedModalMoveIn" class="text-xs font-bold text-[#4A3728]">—</p>
+              </div>
+              <div class="p-3 rounded-lg bg-[#FFFDF9] border border-[#B89B72]/30 shadow-xs">
+                <span class="block text-[10.5px] font-bold uppercase tracking-wider text-[#4A3728]/70 mb-0.5">Move-Out Date</span>
+                <p id="archivedModalMoveOut" class="text-xs font-bold text-[#92400E]">—</p>
+              </div>
+              <div class="p-3 rounded-lg bg-[#FFFDF9] border border-[#B89B72]/30 shadow-xs">
+                <span class="block text-[10.5px] font-bold uppercase tracking-wider text-[#4A3728]/70 mb-0.5">Monthly Rent</span>
+                <p id="archivedModalRent" class="text-xs font-bold text-[#4A3728]">—</p>
+              </div>
+              <div class="p-3 rounded-lg bg-[#FFFDF9] border border-[#B89B72]/30 shadow-xs">
+                <span class="block text-[10.5px] font-bold uppercase tracking-wider text-[#4A3728]/70 mb-0.5">Date of Birth</span>
+                <p id="archivedModalBirthday" class="text-xs font-bold text-[#4A3728]">—</p>
+              </div>
+              <div class="p-3 rounded-lg bg-[#FFFDF9] border border-[#B89B72]/30 shadow-xs">
+                <span class="block text-[10.5px] font-bold uppercase tracking-wider text-[#4A3728]/70 mb-0.5">Emergency Contact</span>
+                <p id="archivedModalEmergency" class="text-xs font-bold text-[#4A3728] truncate">—</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- SECTION 2: PAYMENT HISTORY -->
+          <div class="rounded-xl border border-[#B89B72]/40 bg-[#FAF5EC] p-5 shadow-sm">
+            <div class="flex items-center justify-between pb-3 mb-4 border-b border-[#B89B72]/30">
+              <div class="flex items-center gap-2.5">
+                <div class="w-8 h-8 rounded-lg bg-[#B89B72]/20 text-[#4A3728] flex items-center justify-center">
+                  <i data-lucide="receipt" class="w-4 h-4"></i>
+                </div>
+                <div>
+                  <h4 class="text-sm font-extrabold text-[#4A3728] uppercase tracking-wider">Payment History</h4>
+                  <p class="text-[11px] text-[#4A3728]/70">Complete financial ledger &amp; payment receipts</p>
+                </div>
+              </div>
+              <span id="archivedModalPaymentCount" class="px-2.5 py-1 text-xs font-bold rounded-full bg-[#E8D8B0] text-[#4A3728] border border-[#B89B72]">
+                0 Records
+              </span>
+            </div>
+
+            <div class="overflow-x-auto rounded-lg border border-[#B89B72]/30 bg-[#FFFDF9]">
+              <table class="w-full text-left text-xs" style="border-collapse: collapse;">
+                <thead>
+                  <tr class="bg-[#F5EEDD] text-[#4A3728] font-bold border-b border-[#B89B72]/30">
+                    <th class="py-2.5 px-3">Billing Cycle / Pay For</th>
+                    <th class="py-2.5 px-3">Amount Due</th>
+                    <th class="py-2.5 px-3">Amount Paid</th>
+                    <th class="py-2.5 px-3">Due Date</th>
+                    <th class="py-2.5 px-3">Payment Date</th>
+                    <th class="py-2.5 px-3">Method</th>
+                    <th class="py-2.5 px-3">Status</th>
+                  </tr>
+                </thead>
+                <tbody id="archivedModalPaymentsList" class="divide-y divide-[#B89B72]/20 text-[#4A3728]">
+                  <!-- Dynamically generated via JavaScript -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- SECTION 3: MAINTENANCE HISTORY -->
+          <div class="rounded-xl border border-[#B89B72]/40 bg-[#FAF5EC] p-5 shadow-sm">
+            <div class="flex items-center justify-between pb-3 mb-4 border-b border-[#B89B72]/30">
+              <div class="flex items-center gap-2.5">
+                <div class="w-8 h-8 rounded-lg bg-[#B89B72]/20 text-[#4A3728] flex items-center justify-center">
+                  <i data-lucide="wrench" class="w-4 h-4"></i>
+                </div>
+                <div>
+                  <h4 class="text-sm font-extrabold text-[#4A3728] uppercase tracking-wider">Maintenance History</h4>
+                  <p class="text-[11px] text-[#4A3728]/70">Service tickets, repair issues, and resolution notes</p>
+                </div>
+              </div>
+              <span id="archivedModalTicketCount" class="px-2.5 py-1 text-xs font-bold rounded-full bg-[#E8D8B0] text-[#4A3728] border border-[#B89B72]">
+                0 Requests
+              </span>
+            </div>
+
+            <div class="overflow-x-auto rounded-lg border border-[#B89B72]/30 bg-[#FFFDF9]">
+              <table class="w-full text-left text-xs" style="border-collapse: collapse;">
+                <thead>
+                  <tr class="bg-[#F5EEDD] text-[#4A3728] font-bold border-b border-[#B89B72]/30">
+                    <th class="py-2.5 px-3">Ticket / Issue</th>
+                    <th class="py-2.5 px-3">Category</th>
+                    <th class="py-2.5 px-3">Priority</th>
+                    <th class="py-2.5 px-3">Date Reported</th>
+                    <th class="py-2.5 px-3">Status</th>
+                    <th class="py-2.5 px-3">Cost</th>
+                  </tr>
+                </thead>
+                <tbody id="archivedModalMaintenanceList" class="divide-y divide-[#B89B72]/20 text-[#4A3728]">
+                  <!-- Dynamically generated via JavaScript -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+        </div> <!-- /#archivedModalBodyContent -->
+
+        <!-- Modal Footer -->
+        <div class="pt-4 flex items-center justify-end gap-3 border-t border-[#B89B72]/30">
+          <button type="button"
+                  onclick="closeModal('archivedTenantModal')"
+                  class="px-6 py-2 text-xs font-extrabold rounded-xl bg-[#4A3728] hover:bg-[#382618] text-[#F5F0E6] shadow-sm transition cursor-pointer">
+            Close
+          </button>
+        </div>
+
+      </div> <!-- /.overflow-y-auto -->
+    </div>
+  </div>
+
+  <!-- =====================================================================
        MODAL: ANIMATED ARCHIVED TENANT DETAILS & RESTORATION
        ===================================================================== -->
   <div class="modal-backdrop" id="archivedTenantDetailsModal" onclick="handleArchivedModalBackdropClick(event)">
@@ -3025,7 +3327,7 @@ $archivedTenantsCount = (int)$pdo->query("
           </div>
           <div>
             <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-              <h2 id="archivedModalName" style="font-size: 20px; font-weight: 800; color: #0f172a; margin: 0; line-height: 1.2;">Archived Tenant Name</h2>
+              <h2 id="archivedDetailsModalName" style="font-size: 20px; font-weight: 800; color: #0f172a; margin: 0; line-height: 1.2;">Archived Tenant Name</h2>
               <span id="archivedModalUsernameBadge" style="font-size: 12px; font-weight: 700; color: #56380E; background: #F3E4C6; border: 1px solid rgba(181, 143, 83, 0.35); padding: 2px 8px; border-radius: 6px;">@RC001</span>
               <span class="clay-badge" style="background: #fee2e2; color: #991b1b; font-size: 11px; font-weight: 800; padding: 3px 10px;">ARCHIVED</span>
             </div>
@@ -3485,6 +3787,7 @@ $archivedTenantsCount = (int)$pdo->query("
       else if (id === 'ticketDetailsModal' && typeof closeTicketDetailsModal === 'function') closeTicketDetailsModal(true);
       else if (id === 'reportDetailsModal' && typeof closeReportDetailsModal === 'function') closeReportDetailsModal(true);
       else if (id === 'tenantDetailsModal' && typeof closeTenantDetailsModal === 'function') closeTenantDetailsModal(true);
+      else if (id === 'archivedTenantModal' && typeof closeArchivedModal === 'function') closeArchivedModal();
       else if (id === 'archivedTenantDetailsModal' && typeof closeArchivedTenantModal === 'function') closeArchivedTenantModal(true);
       else if (id === 'ownerDeleteConfirmModal' && typeof closeOwnerDeleteConfirmModal === 'function') closeOwnerDeleteConfirmModal(true);
       else if (id === 'moveOutConfirmModal' && typeof closeMoveOutConfirmModal === 'function') closeMoveOutConfirmModal(true);
@@ -3496,8 +3799,8 @@ $archivedTenantsCount = (int)$pdo->query("
     document.addEventListener('click', function(e) {
       const closeBtn = e.target.closest('.modal-close-btn, .btn-remove-file, .btn-icon-close, .resident-reg-close, .tararent-modal-close-btn, [data-modal-close], button[aria-label="Close"], button[title*="Close"]');
       if (closeBtn) {
-        if (closeBtn.id === 'btnRemoveFile') return;
-        const modal = closeBtn.closest('.modal-backdrop');
+        if (closeBtn.id === 'btnRemoveFile' || closeBtn.id === 'btnRemoveAttachedPhoto' || closeBtn.id === 'btnRemoveIdFile') return;
+        const modal = closeBtn.closest('.modal-backdrop, [role="dialog"], [id$="Modal"]');
         if (modal && modal.id && typeof window.closeModal === 'function') {
           e.preventDefault();
           e.stopPropagation();
@@ -3569,15 +3872,15 @@ $archivedTenantsCount = (int)$pdo->query("
     function updateProfileSettingsVisibility(isProfileOpen) {
       const nameEl = document.getElementById('headerUserName');
       if (nameEl) {
-        nameEl.textContent = <?= json_encode($user['name'] ?? 'Lead Dimaculangan') ?>;
+        nameEl.textContent = <?= json_encode($user['name'] ?? 'Leah Dimaculangan') ?>;
       }
       const profNameEl = document.getElementById('profileFullName');
       if (profNameEl) {
-        profNameEl.textContent = <?= json_encode($user['name'] ?? 'Lead Dimaculangan') ?>;
+        profNameEl.textContent = <?= json_encode($user['name'] ?? 'Leah Dimaculangan') ?>;
       }
       const dropNameEl = document.getElementById('profileDropdownName');
       if (dropNameEl) {
-        dropNameEl.textContent = <?= json_encode($user['name'] ?? 'Lead Dimaculangan') ?>;
+        dropNameEl.textContent = <?= json_encode($user['name'] ?? 'Leah Dimaculangan') ?>;
       }
     }
 
@@ -5735,7 +6038,7 @@ $archivedTenantsCount = (int)$pdo->query("
 
       // Universal Modal Backdrop Click-to-Close for Landlord Modals
       try {
-        ['paymentDetailsModal', 'configureRentModal', 'addTenantModal', 'tenantCredentialsModal', 'ticketDetailsModal', 'reportDetailsModal', 'tenantDetailsModal', 'archivedTenantDetailsModal', 'ownerDeleteConfirmModal', 'moveOutConfirmModal', 'announcementModal', 'viewIdImageModal', 'viewReceiptImageModal'].forEach(mId => {
+        ['paymentDetailsModal', 'configureRentModal', 'addTenantModal', 'tenantCredentialsModal', 'ticketDetailsModal', 'reportDetailsModal', 'tenantDetailsModal', 'archivedTenantModal', 'archivedTenantDetailsModal', 'ownerDeleteConfirmModal', 'moveOutConfirmModal', 'announcementModal', 'viewIdImageModal', 'viewReceiptImageModal'].forEach(mId => {
           const m = document.getElementById(mId);
           if (m) {
             m.addEventListener('click', (e) => {
@@ -5885,7 +6188,7 @@ $archivedTenantsCount = (int)$pdo->query("
       if (tbody && !searchQuery) {
         tbody.innerHTML = `
           <tr>
-            <td colspan="7" style="text-align: center; padding: 36px 14px; color: var(--text-muted); font-size: 13.5px;">
+            <td colspan="6" style="text-align: center; padding: 36px 14px; color: var(--text-muted); font-size: 13.5px;">
               <span class="clay-spinner" style="width: 18px; height: 18px; border-width: 2px; vertical-align: middle; margin-right: 8px;"></span>
               Loading archived tenant accounts...
             </td>
@@ -5914,7 +6217,7 @@ $archivedTenantsCount = (int)$pdo->query("
           if (tbody) {
             tbody.innerHTML = `
               <tr>
-                <td colspan="7" style="text-align: center; padding: 32px 14px; color: #ef4444; font-size: 13.5px;">
+                <td colspan="6" style="text-align: center; padding: 32px 14px; color: #ef4444; font-size: 13.5px;">
                   Failed to load archived records: ${escapeHtml(data.message || 'Server error')}
                 </td>
               </tr>
@@ -5926,7 +6229,7 @@ $archivedTenantsCount = (int)$pdo->query("
         if (tbody) {
           tbody.innerHTML = `
             <tr>
-              <td colspan="7" style="text-align: center; padding: 32px 14px; color: #ef4444; font-size: 13.5px;">
+              <td colspan="6" style="text-align: center; padding: 32px 14px; color: #ef4444; font-size: 13.5px;">
                 Network error while loading archived records. Please refresh.
               </td>
             </tr>
@@ -5951,15 +6254,14 @@ $archivedTenantsCount = (int)$pdo->query("
         showToast('No archived tenant records available to export.', 'warning');
         return;
       }
-      const headers = ['Tenant Name', 'Unit Number', 'Email Address', 'Contact Number', 'Date of Moving In', 'Move-Out Date', 'Date Archived'];
+      const headers = ['Tenant Name', 'Unit Number', 'Email Address', 'Contact Number', 'Date of Moving In', 'Move-Out Date'];
       const rows = records.map(t => [
         t.name || '',
         t.archived_unit_number || '',
         t.email || '',
         t.phone || '',
         t.formatted_move_in || '',
-        t.formatted_move_out || '',
-        t.formatted_deleted_at || ''
+        t.formatted_move_out || (t.formatted_deleted_at || '')
       ]);
 
       const csvContent = 'data:text/csv;charset=utf-8,\uFEFF'
@@ -5983,7 +6285,7 @@ $archivedTenantsCount = (int)$pdo->query("
       if (!tenants || tenants.length === 0) {
         tbody.innerHTML = `
           <tr>
-            <td colspan="8" style="text-align: center; padding: 42px 14px; color: var(--text-muted); font-size: 13.5px;">
+            <td colspan="6" style="text-align: center; padding: 42px 14px; color: var(--text-muted); font-size: 13.5px;">
               <div style="margin-bottom: 8px; display: flex; justify-content: center; color: #94a3b8;">${window.rcIcon('folder-open', 'w-7 h-7')}</div>
               <strong>No archived tenant accounts found.</strong>
               <div style="font-size: 12px; color: #94a3b8; margin-top: 4px;">Moved-out and settled tenant records will appear here with full historical logs.</div>
@@ -6000,36 +6302,41 @@ $archivedTenantsCount = (int)$pdo->query("
           ? `<img src="${escapeHtml(t.profile_picture)}" alt="${escapeHtml(t.name)}" style="width: 34px; height: 34px; border-radius: 50%; object-fit: cover; border: 1.5px solid #cbd5e1; flex-shrink: 0;">`
           : `<div style="width: 34px; height: 34px; border-radius: 50%; background: linear-gradient(135deg, #64748b, #475569); color: #fff; font-weight: 700; font-size: 13px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">${initial}</div>`;
 
+        const tenantUnit = t.archived_unit_number || 'Unit N/A';
+        const moveInFormatted = t.formatted_move_in || '—';
+        const moveOutFormatted = t.formatted_move_out || (t.formatted_deleted_at || 'Not set');
+
         html += `
           <tr id="archived-row-${t.id}"
-              class="clickable-ticket-row archived-tenant-row"
-              onclick="openArchivedTenantDetails(${t.id})"
+              class="cursor-pointer hover:bg-[#E8D8B0]/50 transition-colors archived-tenant-row"
+              onclick="openArchivedModal(${t.id})"
+              data-id="${t.id}"
+              data-name="${escapeHtml(t.name || '')}"
+              data-unit="${escapeHtml(tenantUnit)}"
+              data-email="${escapeHtml(t.email || '—')}"
+              data-contact="${escapeHtml(t.phone || '—')}"
+              data-move-in="${escapeHtml(moveInFormatted)}"
+              data-move-out="${escapeHtml(moveOutFormatted)}"
+              data-avatar="${escapeHtml(t.profile_picture || '')}"
               title="Click to view full archived tenant details"
-              style="border-bottom: 1px solid rgba(166, 180, 204, 0.15);">
-            <td style="padding: 14px 16px; font-weight: 700; color: #0f172a; white-space: nowrap;">
-              <div style="display: flex; align-items: center; gap: 10px;">
+              style="border-bottom: 1px solid rgba(166, 180, 204, 0.25);">
+            <td style="padding: 14px 16px; font-weight: 700; color: #0f172a;">
+              <div style="display: flex; align-items: center; gap: 10px; min-width: 0;">
                 ${avatarHtml}
-                <span>${escapeHtml(t.name)}</span>
+                <span class="truncate" title="${escapeHtml(t.name)}">${escapeHtml(t.name)}</span>
               </div>
             </td>
-            <td style="padding: 14px 16px; white-space: nowrap;">
+            <td style="padding: 14px 14px;">
               <span class="clay-badge" style="background: #F3E4C6; color: #56380E; border: 1px solid rgba(181, 143, 83, 0.35); font-weight: 800; font-size: 11.5px; padding: 3px 9px;">
-                ${escapeHtml(t.archived_unit_number || 'Unit N/A')}
+                ${escapeHtml(tenantUnit)}
               </span>
             </td>
-            <td style="padding: 14px 16px; color: #334155; font-size: 13px;">${escapeHtml(t.email || '—')}</td>
-            <td style="padding: 14px 16px; color: #334155; font-size: 13px; white-space: nowrap;">${escapeHtml(t.phone || '—')}</td>
-            <td style="padding: 14px 16px; color: var(--text-muted); font-size: 12.5px; white-space: nowrap;">${escapeHtml(t.formatted_move_in || '—')}</td>
-            <td style="padding: 14px 16px; color: #92400e; font-weight: 700; font-size: 12.5px; white-space: nowrap;">${escapeHtml(t.formatted_move_out || 'Not set')}</td>
-            <td style="padding: 14px 16px; color: #be123c; font-weight: 700; font-size: 12.5px; white-space: nowrap;">
-              ${escapeHtml(t.formatted_deleted_at || 'Archived')}
+            <td class="truncate" style="padding: 14px 14px; color: #334155; font-size: 13px;" title="${escapeHtml(t.email || '')}">
+              ${escapeHtml(t.email || '—')}
             </td>
-            <td style="padding: 14px 16px; text-align: center; white-space: nowrap;">
-              <button type="button" class="archived-main-action-btn archived-btn-sm" onclick="event.stopPropagation(); openArchivedTenantDetails(${t.id})" title="View Details">
-                <i data-lucide="eye" class="w-4 h-4" aria-hidden="true"></i>
-                <span>View Details</span>
-              </button>
-            </td>
+            <td style="padding: 14px 14px; color: #334155; font-size: 13px;">${escapeHtml(t.phone || '—')}</td>
+            <td style="padding: 14px 14px; color: var(--text-muted); font-size: 12.5px;">${escapeHtml(moveInFormatted)}</td>
+            <td style="padding: 14px 14px; color: #92400e; font-weight: 700; font-size: 12.5px;">${escapeHtml(moveOutFormatted)}</td>
           </tr>
         `;
       });
@@ -6039,6 +6346,265 @@ $archivedTenantsCount = (int)$pdo->query("
         window.lucide.createIcons();
       }
     }
+
+    let currentArchivedTenantId = null;
+
+    /**
+     * Open Archived Tenant Modal via AJAX (fetch_archived_tenant.php)
+     * Fetches tenant full profile, payment history, and maintenance history
+     */
+    async function openArchivedModal(tenantId) {
+      // Support both direct ID and element passing
+      let id = tenantId;
+      if (typeof tenantId === 'object' && tenantId !== null) {
+        id = tenantId.getAttribute('data-id') || tenantId.dataset.id || '';
+      }
+      if (!id) return;
+      currentArchivedTenantId = id;
+
+      const modal = document.getElementById('archivedTenantModal');
+      if (!modal) return;
+
+      const loadingEl = document.getElementById('archivedModalLoading');
+      const errorEl = document.getElementById('archivedModalError');
+      const contentEl = document.getElementById('archivedModalBodyContent');
+
+      // Unhide modal immediately and show spinner
+      modal.classList.remove('hidden');
+      modal.classList.add('open');
+      modal.style.display = 'flex';
+      modal.style.pointerEvents = 'auto';
+      document.body.style.overflow = 'hidden';
+
+      if (loadingEl) loadingEl.style.display = 'block';
+      if (errorEl) errorEl.style.display = 'none';
+      if (contentEl) contentEl.style.display = 'none';
+
+      try {
+        const res = await fetch(`fetch_archived_tenant.php?id=${encodeURIComponent(id)}`);
+        const data = await res.json();
+
+        if (!res.ok || data.status !== 'success' || !data.tenant) {
+          throw new Error(data.message || 'Unable to load archived tenant records.');
+        }
+
+        const t = data.tenant;
+        const payments = data.payments || [];
+        const maintenance = data.maintenance || data.tickets || [];
+
+        // 1. Inject Profile Data
+        const nameEl = document.getElementById('archivedModalName');
+        if (nameEl) nameEl.textContent = t.name || '—';
+        const headerNameEl = document.getElementById('archivedModalTenantName');
+        if (headerNameEl) headerNameEl.textContent = t.name || 'Tenant Name';
+
+        const unitEl = document.getElementById('archivedModalUnit');
+        if (unitEl) unitEl.textContent = t.unit_display || t.archived_unit_number || 'Unit N/A';
+        const unitBadgeEl = document.getElementById('archivedModalUnitBadge');
+        if (unitBadgeEl) unitBadgeEl.textContent = t.unit_display || t.archived_unit_number || 'Unit N/A';
+
+        const userBadgeEl = document.getElementById('archivedModalUsernameBadge');
+        if (userBadgeEl) userBadgeEl.textContent = t.username ? `@${t.username}` : '@RC000';
+
+        const emailEl = document.getElementById('archivedModalEmail');
+        if (emailEl) {
+          emailEl.textContent = t.email || '—';
+          emailEl.setAttribute('title', t.email || '');
+        }
+
+        const contactEl = document.getElementById('archivedModalContact');
+        if (contactEl) contactEl.textContent = t.phone || '—';
+
+        const moveInEl = document.getElementById('archivedModalMoveIn');
+        if (moveInEl) moveInEl.textContent = t.formatted_move_in || '—';
+
+        const moveOutEl = document.getElementById('archivedModalMoveOut');
+        if (moveOutEl) moveOutEl.textContent = t.formatted_move_out || '—';
+
+        const rentEl = document.getElementById('archivedModalRent');
+        if (rentEl) rentEl.textContent = t.monthly_rent_formatted || '—';
+
+        const bdayEl = document.getElementById('archivedModalBirthday');
+        if (bdayEl) bdayEl.textContent = t.formatted_birthday || '—';
+
+        const emEl = document.getElementById('archivedModalEmergency');
+        if (emEl) emEl.textContent = t.emergency_contact_display || '—';
+
+        const delDateEl = document.getElementById('archivedModalDeletedDate');
+        if (delDateEl) delDateEl.textContent = `Archived on ${t.formatted_deleted_at || 'Archived'}`;
+
+        // Avatar
+        const avatarContainer = document.getElementById('archivedModalAvatarContainer');
+        if (avatarContainer) {
+          if (t.profile_picture && t.profile_picture.trim() !== '') {
+            avatarContainer.innerHTML = `<img src="${escapeHtml(t.profile_picture)}" alt="${escapeHtml(t.name)}" class="w-14 h-14 rounded-full object-cover border-2 border-[#B89B72] shadow-sm">`;
+          } else {
+            const initial = (t.name ? t.name.charAt(0) : 'T').toUpperCase();
+            avatarContainer.innerHTML = `<div class="w-14 h-14 rounded-full bg-[#B89B72] text-[#4A3728] font-black text-xl flex items-center justify-center border-2 border-[#4A3728]/20 shadow-sm">${escapeHtml(initial)}</div>`;
+          }
+        }
+
+        // 2. Inject Payment History
+        const payList = document.getElementById('archivedModalPaymentsList');
+        const payCount = document.getElementById('archivedModalPaymentCount');
+        if (payCount) payCount.textContent = `${payments.length} Record${payments.length === 1 ? '' : 's'}`;
+
+        if (payList) {
+          if (payments.length === 0) {
+            payList.innerHTML = `
+              <tr>
+                <td colspan="7" class="py-6 text-center text-[#4A3728]/70 italic">
+                  No historical payment records found for this tenant.
+                </td>
+              </tr>
+            `;
+          } else {
+            let pRows = '';
+            payments.forEach(p => {
+              let statusBadgeClass = 'bg-[#E8D8B0] text-[#4A3728] border-[#B89B72]';
+              const st = (p.status || '').toLowerCase();
+              if (st === 'approved' || st === 'paid') {
+                statusBadgeClass = 'bg-[#dcfce7] text-[#166534] border-[#86efac]';
+              } else if (st === 'overdue' || st === 'rejected') {
+                statusBadgeClass = 'bg-[#fee2e2] text-[#991b1b] border-[#fca5a5]';
+              } else if (st === 'pending') {
+                statusBadgeClass = 'bg-[#fef3c7] text-[#92400e] border-[#fcd34d]';
+              }
+
+              pRows += `
+                <tr class="hover:bg-[#FAF5EC] transition-colors">
+                  <td class="py-2.5 px-3 font-semibold text-[#4A3728]">${escapeHtml(p.billing_cycle_formatted || p.payment_type || 'Rent')}</td>
+                  <td class="py-2.5 px-3 text-[#4A3728]/80">${escapeHtml(p.amount_due_formatted || '₱0.00')}</td>
+                  <td class="py-2.5 px-3 font-bold text-[#4A3728]">${escapeHtml(p.amount_paid_formatted || '₱0.00')}</td>
+                  <td class="py-2.5 px-3 text-[#4A3728]/80">${escapeHtml(p.due_date_formatted || '—')}</td>
+                  <td class="py-2.5 px-3 text-[#4A3728]/80">${escapeHtml(p.payment_date_formatted || 'Pending')}</td>
+                  <td class="py-2.5 px-3 text-[#4A3728]/80">${escapeHtml(p.payment_method_label || '—')}</td>
+                  <td class="py-2.5 px-3">
+                    <span class="inline-block px-2 py-0.5 text-[10.5px] font-extrabold rounded-md border ${statusBadgeClass}">
+                      ${escapeHtml(p.status_label || 'Unpaid')}
+                    </span>
+                  </td>
+                </tr>
+              `;
+            });
+            payList.innerHTML = pRows;
+          }
+        }
+
+        // 3. Inject Maintenance History
+        const maintList = document.getElementById('archivedModalMaintenanceList');
+        const maintCount = document.getElementById('archivedModalTicketCount');
+        if (maintCount) maintCount.textContent = `${maintenance.length} Request${maintenance.length === 1 ? '' : 's'}`;
+
+        if (maintList) {
+          if (maintenance.length === 0) {
+            maintList.innerHTML = `
+              <tr>
+                <td colspan="6" class="py-6 text-center text-[#4A3728]/70 italic">
+                  No maintenance requests on record for this tenant.
+                </td>
+              </tr>
+            `;
+          } else {
+            let mRows = '';
+            maintenance.forEach(m => {
+              let statusBadgeClass = 'bg-[#E8D8B0] text-[#4A3728] border-[#B89B72]';
+              const st = (m.status || '').toLowerCase();
+              if (st === 'resolved' || st === 'completed') {
+                statusBadgeClass = 'bg-[#dcfce7] text-[#166534] border-[#86efac]';
+              } else if (st === 'in_progress') {
+                statusBadgeClass = 'bg-[#e0e7ff] text-[#3730a3] border-[#a5b4fc]';
+              } else if (st === 'open' || st === 'pending') {
+                statusBadgeClass = 'bg-[#fef3c7] text-[#92400e] border-[#fcd34d]';
+              }
+
+              let priorityBadgeClass = 'bg-[#FAF5EC] text-[#4A3728] border-[#B89B72]/40';
+              const pr = (m.priority || '').toLowerCase();
+              if (pr === 'high' || pr === 'emergency') {
+                priorityBadgeClass = 'bg-[#fee2e2] text-[#991b1b] border-[#fca5a5]';
+              } else if (pr === 'medium') {
+                priorityBadgeClass = 'bg-[#fef3c7] text-[#92400e] border-[#fcd34d]';
+              }
+
+              mRows += `
+                <tr class="hover:bg-[#FAF5EC] transition-colors">
+                  <td class="py-2.5 px-3">
+                    <div class="font-bold text-[#4A3728]">${escapeHtml(m.title || 'Untitled')}</div>
+                    <div class="text-[11px] text-[#4A3728]/70 line-clamp-1 truncate max-w-xs">${escapeHtml(m.description || '')}</div>
+                  </td>
+                  <td class="py-2.5 px-3 text-[#4A3728]/80">${escapeHtml(m.category_label || 'General')}</td>
+                  <td class="py-2.5 px-3">
+                    <span class="inline-block px-1.5 py-0.5 text-[10px] font-bold rounded border ${priorityBadgeClass}">
+                      ${escapeHtml(m.priority_label || 'Medium')}
+                    </span>
+                  </td>
+                  <td class="py-2.5 px-3 text-[#4A3728]/80">${escapeHtml(m.created_at_formatted || '—')}</td>
+                  <td class="py-2.5 px-3">
+                    <span class="inline-block px-2 py-0.5 text-[10.5px] font-extrabold rounded-md border ${statusBadgeClass}">
+                      ${escapeHtml(m.status_label || 'Open')}
+                    </span>
+                  </td>
+                  <td class="py-2.5 px-3 font-semibold text-[#4A3728]">${escapeHtml(m.cost_formatted || '—')}</td>
+                </tr>
+              `;
+            });
+            maintList.innerHTML = mRows;
+          }
+        }
+
+        // Hide loader, show content
+        if (loadingEl) loadingEl.style.display = 'none';
+        if (contentEl) contentEl.style.display = 'block';
+
+        if (window.lucide && typeof window.lucide.createIcons === 'function') {
+          window.lucide.createIcons();
+        }
+
+      } catch (err) {
+        console.error('Failed to fetch archived tenant:', err);
+        if (loadingEl) loadingEl.style.display = 'none';
+        if (contentEl) contentEl.style.display = 'none';
+        if (errorEl) {
+          errorEl.style.display = 'block';
+          const msgEl = document.getElementById('archivedModalErrorMessage');
+          if (msgEl) msgEl.textContent = err.message || 'Failed to load archived tenant records.';
+        }
+      }
+    }
+
+    function retryFetchArchivedTenant() {
+      if (currentArchivedTenantId) {
+        openArchivedModal(currentArchivedTenantId);
+      }
+    }
+
+    /**
+     * Close Archived Tenant Modal
+     */
+    function closeArchivedModal() {
+      const modal = document.getElementById('archivedTenantModal');
+      if (modal) {
+        modal.classList.add('hidden');
+        modal.classList.remove('open', 'active');
+        modal.style.display = 'none';
+        modal.style.pointerEvents = 'none';
+        document.body.style.overflow = '';
+      }
+      currentArchivedTenantId = null;
+    }
+
+    // Keyboard listener for Escape key
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape') {
+        const modal = document.getElementById('archivedTenantModal');
+        if (modal && !modal.classList.contains('hidden')) {
+          closeArchivedModal();
+        }
+      }
+    });
+
+    window.openArchivedModal = openArchivedModal;
+    window.closeArchivedModal = closeArchivedModal;
 
     async function openArchivedTenantDetails(tenantId) {
       const modal = document.getElementById('archivedTenantDetailsModal');
@@ -6071,7 +6637,7 @@ $archivedTenantsCount = (int)$pdo->query("
           const tickets = data.tickets || [];
 
           // Header
-          const nameEl = document.getElementById('archivedModalName');
+          const nameEl = document.getElementById('archivedDetailsModalName');
           const dateEl = document.getElementById('archivedModalDeletedDate');
           const avatarEl = document.getElementById('archivedModalAvatar');
           const usernameBadge = document.getElementById('archivedModalUsernameBadge');
@@ -8064,7 +8630,16 @@ $archivedTenantsCount = (int)$pdo->query("
       }
     }
 
-    document.addEventListener('DOMContentLoaded', loadDashboardAnalytics);
+    document.addEventListener('DOMContentLoaded', () => {
+      loadDashboardAnalytics();
+      const urlParams = new URLSearchParams(window.location.search);
+      if (urlParams.get('tab') === 'archived' || urlParams.get('section') === 'archived' || window.location.hash === '#directoryArchivedView') {
+        if (typeof switchSection === 'function' && typeof switchDirectoryTab === 'function') {
+          switchSection('sectionDirectory', document.getElementById('navTenantDirectory'));
+          switchDirectoryTab('archived');
+        }
+      }
+    });
   </script>
   <!-- Real-time Centralized Notification Client Handler -->
   <script src="assets/js/notifications.js"></script>

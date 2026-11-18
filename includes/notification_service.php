@@ -116,7 +116,7 @@ class NotificationService
         if (!$recipient || empty($recipient['email'])) {
             if ($role === 'landlord') {
                 $recipientEmail = 'rentconnect2026@gmail.com';
-                $recipientName  = $recipient['name'] ?? 'Lead Dimaculangan';
+                $recipientName  = $recipient['name'] ?? 'Leah Dimaculangan';
                 $userUnit       = 'Office';
             } else {
                 return;

@@ -12,6 +12,7 @@ header('Content-Type: application/json; charset=UTF-8');
 
 require_once __DIR__ . '/../config/auth.php';
 require_once __DIR__ . '/../includes/notification_service.php';
+require_once __DIR__ . '/../includes/email_service.php';
 
 $requestMethod = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
@@ -154,13 +155,64 @@ try {
                 false
             );
 
+            // Automated Email Notification to Tenant's Gmail
+            $tenantEmail = trim((string)($reportRow['tenant_email'] ?? ''));
+            $tenantId = (int)$reportRow['tenant_id'];
+            $reportSubject = (string)$reportRow['subject'];
+            $emailSent = false;
+
+            try {
+                if (!empty($tenantEmail) && filter_var($tenantEmail, FILTER_VALIDATE_EMAIL)) {
+                    // Exact prompt requirement:
+                    // "The status of your [Maintenance/Report] request regarding '[Issue/Title]' has been updated to: [New Status]."
+                    $emailTitle = "Report Request Update: {$reportSubject}";
+                    $emailMessage = "The status of your Report request regarding '<strong>" . htmlspecialchars($reportSubject, ENT_QUOTES, 'UTF-8') . "</strong>' has been updated to: <strong>{$statusToSave}</strong>.";
+                    if (!empty($remarksToSave)) {
+                        $emailMessage .= "<br><br><strong>Landlord Remarks:</strong> " . htmlspecialchars($remarksToSave, ENT_QUOTES, 'UTF-8');
+                    }
+
+                    $emailSent = sendTenantNotification(
+                        $tenantEmail,
+                        $emailTitle,
+                        $emailMessage,
+                        (string)($reportRow['tenant_name'] ?? 'Tenant'),
+                        [
+                            'Request Type'     => 'General Report',
+                            'Report Subject'   => $reportSubject,
+                            'Updated Status'   => $statusToSave,
+                            'Landlord Remarks' => $remarksToSave ?: 'Reviewed by property management.'
+                        ],
+                        'View Report History',
+                        MailConfig::get()['app_url'] . '/tenant_portal.php?section=tenantReport',
+                        $tenantId,
+                        $pdo
+                    );
+                } else {
+                    EmailService::logEmail(
+                        $pdo,
+                        $tenantEmail,
+                        (string)($reportRow['tenant_name'] ?? 'Tenant'),
+                        "Report Request Update: {$reportSubject}",
+                        'report_update',
+                        $reportId,
+                        'report',
+                        'failed',
+                        'Tenant record in database is missing a valid email address.',
+                        $tenantId
+                    );
+                }
+            } catch (Throwable $mailEx) {
+                error_log('[report_api] Failed to send report email: ' . $mailEx->getMessage());
+            }
+
             $fetchStmt->execute([':id' => $reportId]);
             $updatedRow = $fetchStmt->fetch();
 
             echo json_encode([
-                'status'  => 'success',
-                'message' => "Report #GR-" . str_pad((string)$reportId, 4, '0', STR_PAD_LEFT) . " marked as {$statusToSave}.",
-                'report'  => $updatedRow,
+                'status'     => 'success',
+                'message'    => "Report #GR-" . str_pad((string)$reportId, 4, '0', STR_PAD_LEFT) . " marked as {$statusToSave}.",
+                'email_sent' => $emailSent,
+                'report'     => $updatedRow,
             ]);
             exit;
         }

@@ -9,11 +9,11 @@ declare(strict_types=1);
 if (!function_exists('loadEnvFile')) {
     function loadEnvFile(string $filePath): void
     {
-        if (!file_exists($filePath) || !is_readable($filePath)) {
+        if (!file_exists($filePath)) {
             return;
         }
 
-        $lines = file($filePath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+        $lines = @file($filePath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
         if ($lines === false) {
             return;
         }
@@ -71,10 +71,10 @@ class MailConfig
 
         $fromEmail  = getenv('SMTP_FROM_EMAIL') ?: ($_ENV['SMTP_FROM_EMAIL'] ?? ($_SERVER['SMTP_FROM_EMAIL'] ?? ''));
         // If fromEmail is empty or default domain placeholder, use authenticated Gmail address so Google SMTP does not reject the sender
-        if (!empty($username) && (empty($fromEmail) || $fromEmail === 'rentconnect2026@gmail.com' || str_contains($fromEmail, '@rentconnect.ph'))) {
+        if (!empty($username) && (empty($fromEmail) || $fromEmail === 'TaraRent2026@gmail.com' || str_contains($fromEmail, '@rentconnect.ph'))) {
             $fromEmail = $username;
         } elseif (empty($fromEmail)) {
-            $fromEmail = 'rentconnect2026@gmail.com';
+            $fromEmail = 'TaraRent2026@gmail.com';
         }
 
         $fromName   = getenv('SMTP_FROM_NAME') ?: ($_ENV['SMTP_FROM_NAME'] ?? ($_SERVER['SMTP_FROM_NAME'] ?? 'TaraRent'));

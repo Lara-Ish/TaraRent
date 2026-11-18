@@ -98,6 +98,192 @@ $unit = $unitStmt->fetch() ?: [
     'monthly_rent' => 3000.00
 ];
 
+// ---------------------------------------------------------------------
+// TENANT PAYMENT PROOF SUBMISSION (POST Handler)
+// ---------------------------------------------------------------------
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['action']) && $_POST['action'] === 'upload_payment_proof' || isset($_POST['amount']) && isset($_POST['billing_month']))) {
+    // 1. Verify tenant authorization & verification status
+    if (!$isTenantVerified) {
+        header('Location: tenant_portal.php?section=tenantPayments&restricted=unverified');
+        exit;
+    }
+
+    $tenantId = (int)$user['id'];
+    $unitId = !empty($user['unit_id']) ? (int)$user['unit_id'] : (!empty($unit['id']) ? (int)$unit['id'] : 1);
+
+    // 2. Capture all $_POST variables
+    $amount = (float)($_POST['amount'] ?? 0.0);
+    $billingMonth = trim((string)($_POST['billing_month'] ?? ''));
+    $paymentMethod = trim((string)($_POST['payment_method'] ?? 'GCash'));
+    $payFor = trim((string)($_POST['pay_for'] ?? 'Rent'));
+    $referenceNumber = trim((string)($_POST['reference_number'] ?? ''));
+    $targetPaymentId = (int)($_POST['payment_id'] ?? 0);
+
+    // Normalize billing_cycle date format (YYYY-MM-01)
+    if (!empty($billingMonth)) {
+        $parsedTime = strtotime($billingMonth);
+        $billingCycle = $parsedTime ? date('Y-m-01', $parsedTime) : date('Y-m-01');
+    } else {
+        $billingCycle = date('Y-m-01');
+    }
+    $dueDate = date('Y-m-05', strtotime($billingCycle));
+
+    // Normalize payment type
+    $paymentType = 'Rent';
+    if ($payFor === 'Advance Deposit') {
+        $paymentType = 'Advance Deposit';
+    } elseif ($payFor === 'Additional Space') {
+        $paymentType = 'Additional Space';
+    } elseif ($payFor === 'Monthly Rent' || $payFor === 'Rent') {
+        $paymentType = 'Rent';
+    }
+
+    // Embed reference number into payment_method string if supplied and not already present
+    $fullPaymentMethod = $paymentMethod;
+    if ($referenceNumber !== '' && stripos($paymentMethod, $referenceNumber) === false) {
+        $fullPaymentMethod = $paymentMethod . ' (Ref: ' . $referenceNumber . ')';
+    }
+
+    // Determine base rent / amount due
+    $baseRent = (float)($unit['monthly_rent'] ?? 3000.00);
+    $amountDue = $amount > 0 ? $amount : $baseRent;
+
+    // 3. File Upload Handling (PHP)
+    $uploadDir = __DIR__ . '/uploads/receipts/';
+    if (!is_dir($uploadDir)) {
+        mkdir($uploadDir, 0755, true);
+    }
+
+    $receiptFilename = null;
+    if (isset($_FILES['receipt']) && $_FILES['receipt']['error'] === UPLOAD_ERR_OK) {
+        $file = $_FILES['receipt'];
+        $maxBytes = 10 * 1024 * 1024; // 10MB limit
+
+        if ($file['size'] > $maxBytes) {
+            header('Location: tenant_portal.php?section=tenantPayments&error=file_too_large');
+            exit;
+        }
+
+        $origExt = strtolower(pathinfo((string)$file['name'], PATHINFO_EXTENSION));
+        if (!in_array($origExt, ['jpg', 'jpeg', 'png', 'webp', 'pdf'], true)) {
+            header('Location: tenant_portal.php?section=tenantPayments&error=invalid_file_type');
+            exit;
+        }
+
+        // Validate MIME type
+        if (function_exists('finfo_open')) {
+            $finfo = finfo_open(FILEINFO_MIME_TYPE);
+            $mime = finfo_file($finfo, $file['tmp_name']);
+            finfo_close($finfo);
+            $allowedMimes = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
+            if (!in_array($mime, $allowedMimes, true)) {
+                header('Location: tenant_portal.php?section=tenantPayments&error=invalid_file_type');
+                exit;
+            }
+        }
+
+        // Generate unique filename: receipt_tenantID_timestamp.ext
+        $timestamp = time();
+        $safeName = "receipt_{$tenantId}_{$timestamp}.{$origExt}";
+        if (file_exists($uploadDir . $safeName)) {
+            $safeName = "receipt_{$tenantId}_{$timestamp}_" . bin2hex(random_bytes(3)) . ".{$origExt}";
+        }
+
+        if (move_uploaded_file($file['tmp_name'], $uploadDir . $safeName)) {
+            $receiptFilename = $safeName;
+        } else {
+            header('Location: tenant_portal.php?section=tenantPayments&error=upload_failed');
+            exit;
+        }
+    } else {
+        header('Location: tenant_portal.php?section=tenantPayments&error=no_file');
+        exit;
+    }
+
+    // 4. Database Insertion (PHP/PDO):
+    // Insert new payment record with hardcoded initial status 'pending'
+    $insertStmt = $pdo->prepare("
+        INSERT INTO payments (
+            tenant_id,
+            unit_id,
+            payment_type,
+            billing_cycle,
+            due_date,
+            base_rent_amount,
+            additional_space_fee,
+            amount_due,
+            amount_paid,
+            payment_date,
+            status,
+            payment_method,
+            receipt_filename,
+            verified_by_landlord,
+            created_at
+        ) VALUES (
+            :tenant_id,
+            :unit_id,
+            :payment_type,
+            :billing_cycle,
+            :due_date,
+            :base_rent_amount,
+            0.00,
+            :amount_due,
+            :amount_paid,
+            CURRENT_DATE,
+            'pending',
+            :payment_method,
+            :receipt_filename,
+            FALSE,
+            NOW()
+        )
+    ");
+
+    $insertStmt->execute([
+        ':tenant_id'        => $tenantId,
+        ':unit_id'          => $unitId,
+        ':payment_type'     => $paymentType,
+        ':billing_cycle'    => $billingCycle,
+        ':due_date'         => $dueDate,
+        ':base_rent_amount' => $baseRent,
+        ':amount_due'       => $amountDue,
+        ':amount_paid'      => $amount,
+        ':payment_method'   => $fullPaymentMethod,
+        ':receipt_filename' => $receiptFilename
+    ]);
+
+    $newPaymentId = (int)$pdo->lastInsertId();
+
+    // Clean up unpaid placeholder if the tenant paid an outstanding unpaid bill
+    if ($targetPaymentId > 0) {
+        $delStmt = $pdo->prepare("DELETE FROM payments WHERE id = :id AND tenant_id = :tid AND status = 'unpaid' AND amount_paid = 0");
+        $delStmt->execute([':id' => $targetPaymentId, ':tid' => $tenantId]);
+    }
+
+    // 5. Notify Landlords
+    try {
+        require_once __DIR__ . '/includes/notification_service.php';
+        $pTenantName = $user['name'] ?? 'Tenant';
+        $pUnitNum = $unit['unit_number'] ?? 'Unit';
+        $pAmountStr = '₱' . number_format($amount, 2);
+        $pSubDate = date('M j, Y');
+        NotificationService::notifyLandlords(
+            $pdo,
+            'payment',
+            'Tenant Rent Payment Submission',
+            "Tenant: {$pTenantName} • Unit: {$pUnitNum} • Amount Paid: {$pAmountStr} • Submitted: {$pSubDate}",
+            'sectionPayments',
+            $newPaymentId,
+            'payment_submitted'
+        );
+    } catch (Throwable $e) {
+        error_log('Notification error: ' . $e->getMessage());
+    }
+
+    // 6. Success Redirection: redirect tenant back with success flag and tracker tab active
+    header('Location: tenant_portal.php?section=tenantPayments&tab=tracker&success=1');
+    exit;
+}
+
 // Fetch tickets submitted by this tenant
 $ticketsStmt = $pdo->prepare("SELECT * FROM maintenance_tickets WHERE tenant_id = :tid ORDER BY created_at DESC");
 $ticketsStmt->execute([':tid' => $user['id']]);
@@ -1376,6 +1562,47 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
 
         <div class="max-w-4xl mx-auto space-y-6">
 
+          <!-- Success Alert Banner (Displayed after successful payment submission) -->
+          <?php if (isset($_GET['success']) && $_GET['success'] === '1'): ?>
+          <div class="bg-emerald-50 border-2 border-emerald-400 text-emerald-950 rounded-2xl shadow-md p-4 flex items-center justify-between gap-3" role="alert">
+            <div class="flex items-center gap-3">
+              <div class="w-10 h-10 rounded-xl bg-emerald-100 border border-emerald-300 text-emerald-700 flex items-center justify-center flex-shrink-0">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>
+              </div>
+              <div>
+                <h3 class="font-extrabold text-sm sm:text-base text-emerald-900 m-0">Payment Proof Submitted Successfully!</h3>
+                <p class="text-xs text-emerald-800 m-0 mt-0.5">Your payment receipt has been received and is currently <strong class="uppercase text-amber-700 font-black">Pending</strong> review by the property owner. You can track its status below.</p>
+              </div>
+            </div>
+            <button type="button" onclick="this.parentElement.remove()" class="text-emerald-700 hover:text-emerald-950 font-black p-1 text-base cursor-pointer" title="Dismiss">&times;</button>
+          </div>
+          <?php elseif (isset($_GET['error'])): ?>
+          <div class="bg-red-50 border-2 border-red-400 text-red-950 rounded-2xl shadow-md p-4 flex items-center justify-between gap-3" role="alert">
+            <div class="flex items-center gap-3">
+              <div class="w-10 h-10 rounded-xl bg-red-100 border border-red-300 text-red-700 flex items-center justify-center flex-shrink-0">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+              </div>
+              <div>
+                <h3 class="font-extrabold text-sm sm:text-base text-red-900 m-0">Payment Submission Notice</h3>
+                <p class="text-xs text-red-800 m-0 mt-0.5">
+                  <?php
+                  if ($_GET['error'] === 'file_too_large') echo 'The attached receipt file exceeds the 10MB limit.';
+                  elseif ($_GET['error'] === 'upload_failed') echo 'Failed to save the receipt image. Please try again.';
+                  elseif ($_GET['error'] === 'no_file') echo 'Please attach a payment receipt photo before submitting.';
+                  elseif ($_GET['error'] === 'invalid_file_type') echo 'Only JPG, PNG, WEBP, or PDF receipt files are allowed.';
+                  else echo 'An error occurred while saving your payment. Please try again.';
+                  ?>
+                </p>
+              </div>
+            </div>
+            <button type="button" onclick="this.parentElement.remove()" class="text-red-700 hover:text-red-950 font-black p-1 text-base cursor-pointer" title="Dismiss">&times;</button>
+          </div>
+          <?php endif; ?>
+
+          <?php
+          $isTrackerTabActive = (isset($_GET['tab']) && $_GET['tab'] === 'tracker') || (isset($_GET['success']) && $_GET['success'] === '1');
+          ?>
+
           <!-- 1. STATIC TOP HEADER CARD (60% Dominant Light Beige with 30% Border & 10% Text) -->
           <div class="bg-[#F5F0E6] border-2 border-[#8C6D43] rounded-2xl shadow-md p-6 text-center">
             <h1 class="text-2xl md:text-3xl font-black text-[#3E2723] tracking-wider uppercase mb-2">
@@ -1392,19 +1619,19 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
 
             <!-- Top Tab Bar -->
             <div class="flex items-stretch bg-[#F5F0E6] relative z-0">
-              <!-- Active Tab: Upload Proof (30% Secondary Medium Clay bg-[#B89B72]) -->
+              <!-- Tab: Upload Proof -->
               <button type="button" id="tabBtnUpload" onclick="switchPaymentTab('upload')"
-                class="flex-1 py-3.5 px-6 font-black text-sm md:text-base tracking-wide flex items-center justify-center gap-2 transition-all bg-[#B89B72] text-white rounded-tl-xl border-b-2 border-b-[#B89B72] z-10 cursor-pointer">
-                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                class="flex-1 py-3.5 px-6 font-black text-sm md:text-base tracking-wide flex items-center justify-center gap-2 transition-all <?= !$isTrackerTabActive ? 'bg-[#B89B72] text-white rounded-tl-xl border-b-2 border-b-[#B89B72] z-10' : 'bg-[#F5F0E6] text-[#3E2723] rounded-tl-xl border-r border-b-2 border-[#8C6D43] hover:bg-[#E8D8B0]' ?> cursor-pointer">
+                <svg class="w-5 h-5 <?= !$isTrackerTabActive ? 'text-white' : 'text-[#4A3728]' ?>" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
                 </svg>
                 <span>Upload Proof</span>
               </button>
 
-              <!-- Inactive Tab: Payment Tracker (60% Dominant Light Beige bg-[#F5F0E6]) -->
+              <!-- Tab: Payment Tracker -->
               <button type="button" id="tabBtnTracker" onclick="switchPaymentTab('tracker')"
-                class="flex-1 py-3.5 px-6 font-bold text-sm md:text-base tracking-wide flex items-center justify-center gap-2 transition-all bg-[#F5F0E6] text-[#3E2723] rounded-tr-xl border-l border-b-2 border-[#8C6D43] hover:bg-[#E8D8B0] cursor-pointer">
-                <svg class="w-5 h-5 text-[#4A3728]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                class="flex-1 py-3.5 px-6 font-bold text-sm md:text-base tracking-wide flex items-center justify-center gap-2 transition-all <?= $isTrackerTabActive ? 'bg-[#B89B72] text-white rounded-tr-xl border-b-2 border-b-[#B89B72] z-10' : 'bg-[#F5F0E6] text-[#3E2723] rounded-tr-xl border-l border-b-2 border-[#8C6D43] hover:bg-[#E8D8B0]' ?> cursor-pointer">
+                <svg class="w-5 h-5 <?= $isTrackerTabActive ? 'text-white' : 'text-[#4A3728]' ?>" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
                 </svg>
                 <span>Payment Tracker</span>
@@ -1417,8 +1644,8 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
             <!-- Main Content Area (30% Secondary Medium Clay bg-[#B89B72] Open Folder) -->
             <div class="p-6 md:p-8 bg-[#B89B72]">
 
-              <!-- TAB 1: UPLOAD PROOF (ACTIVE) -->
-              <div id="tabContentUpload">
+              <!-- TAB 1: UPLOAD PROOF -->
+              <div id="tabContentUpload" class="<?= $isTrackerTabActive ? 'hidden' : '' ?>">
                 <h2 class="text-2xl md:text-3xl font-black text-white mb-6 tracking-wide">Upload Payment Proof</h2>
 
                 <?php if (!$isTenantVerified): ?>
@@ -1467,8 +1694,9 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
                   </div>
                 </div>
 
-                <!-- Form -->
-                <form id="paymentUploadForm" onsubmit="return false;">
+                <!-- Form: Multipart POST Form for Payment Proof Upload -->
+                <form id="paymentUploadForm" method="POST" action="tenant_portal.php?section=tenantPayments" enctype="multipart/form-data">
+                  <input type="hidden" name="action" value="upload_payment_proof">
                   <input type="hidden" id="payTargetPayment" name="payment_id" value="<?= !empty($unpaidBills[0]['id']) ? (int)$unpaidBills[0]['id'] : '0' ?>">
 
                   <!-- Grid for Form Fields (60% Dominant Light Beige Form Inputs bg-[#F5F0E6]) -->
@@ -1570,7 +1798,7 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
 
                   <!-- Submit Proof Button (10% Accent Dark Roast Brown bg-[#4A3728]) -->
                   <div class="text-center">
-                    <button type="button" id="btnUploadReceipt" class="px-14 py-3.5 bg-[#4A3728] hover:bg-[#382618] text-white font-black text-base uppercase rounded-xl shadow-lg transition-all cursor-pointer border border-[#382618] <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed bg-gray-400 text-gray-700 pointer-events-none border-transparent' : '' ?>" <?= !$isTenantVerified ? 'disabled' : '' ?>>
+                    <button type="submit" id="btnUploadReceipt" class="px-14 py-3.5 bg-[#4A3728] hover:bg-[#382618] text-white font-black text-base uppercase rounded-xl shadow-lg transition-all cursor-pointer border border-[#382618] <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed bg-gray-400 text-gray-700 pointer-events-none border-transparent' : '' ?>" <?= !$isTenantVerified ? 'disabled' : '' ?>>
                       Submit Proof
                     </button>
                   </div>
@@ -1578,7 +1806,7 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
               </div>
 
               <!-- TAB 2: PAYMENT TRACKER -->
-              <div id="tabContentTracker" class="hidden">
+              <div id="tabContentTracker" class="<?= !$isTrackerTabActive ? 'hidden' : '' ?>">
                 <h2 class="text-2xl md:text-3xl font-black text-white mb-6 tracking-wide">Payment Tracker and History</h2>
 
                 <div class="space-y-4">
@@ -2955,7 +3183,7 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
       const closeBtn = e.target.closest('.modal-close-btn, .btn-remove-file, .btn-icon-close, .resident-reg-close, .tararent-modal-close-btn, [data-modal-close], button[aria-label="Close"], button[title*="Close"]');
       if (closeBtn) {
         if (closeBtn.id === 'btnRemoveFile' || closeBtn.id === 'btnRemoveAttachedPhoto' || closeBtn.id === 'btnRemoveIdFile' || closeBtn.classList.contains('btn-remove-attached-photo')) return; // File preview remove buttons, handled by dedicated upload handlers
-        const modal = closeBtn.closest('.modal-backdrop');
+        const modal = closeBtn.closest('.modal-backdrop, [role="dialog"], [id$="Modal"]');
         if (modal && modal.id && typeof window.closeModal === 'function') {
           e.preventDefault();
           e.stopPropagation();
@@ -6195,8 +6423,7 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
         const previewCard = document.getElementById('filePreviewCard');
         const btnRemoveFile = document.getElementById('btnRemoveFile');
         const btnUploadReceipt = document.getElementById('btnUploadReceipt');
-
-        const isRentPendingSetup = <?= ($currentPayment && $currentPayment['status'] === 'pending_setup') ? 'true' : 'false' ?>;
+        const paymentForm = document.getElementById('paymentUploadForm');
 
         if (dropZone && fileInput) {
           dropZone.addEventListener('click', (e) => {
@@ -6214,7 +6441,12 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
           }));
 
           dropZone.addEventListener('drop', (e) => {
-            if (e.dataTransfer && e.dataTransfer.files.length > 0) handleFile(e.dataTransfer.files[0]);
+            e.preventDefault();
+            dropZone.classList.remove('drag-over');
+            if (e.dataTransfer && e.dataTransfer.files.length > 0) {
+              fileInput.files = e.dataTransfer.files;
+              handleFile(e.dataTransfer.files[0]);
+            }
           });
 
           fileInput.addEventListener('change', () => {
@@ -6237,91 +6469,29 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
           });
         }
 
-        if (btnUploadReceipt) {
-          btnUploadReceipt.addEventListener('click', async (e) => {
-            if (e && typeof e.preventDefault === 'function') e.preventDefault();
+        if (paymentForm) {
+          paymentForm.addEventListener('submit', function(e) {
             if (!IS_TENANT_VERIFIED) {
+              e.preventDefault();
               openVerificationActionPrompt('payment');
-              return;
+              return false;
             }
-            if (!attachedFile) {
+            if (!fileInput || !fileInput.files || fileInput.files.length === 0) {
+              e.preventDefault();
               showToast('Please attach or drop a payment receipt first.', 'error');
-              return;
+              return false;
             }
-
             const checkAmountEl = document.getElementById('payAmount');
-            if (checkAmountEl && (!checkAmountEl.value || parseFloat(checkAmountEl.value) <= 0)) {
+            if (!checkAmountEl || !checkAmountEl.value || parseFloat(checkAmountEl.value) <= 0) {
+              e.preventDefault();
               showToast('Please enter a valid payment amount.', 'error');
-              return;
+              return false;
             }
-
-            btnUploadReceipt.disabled = true;
-            btnUploadReceipt.innerHTML = '<span>Uploading Proof...</span>';
-
-            const progressWrapper = document.getElementById('progressWrapper');
-            const progressFill = document.getElementById('progressFill');
-            if (progressWrapper) progressWrapper.style.display = 'block';
-
-            let p = 0;
-            const interval = setInterval(() => {
-              p += 25;
-              if (progressFill) progressFill.style.width = p + '%';
-              if (p >= 100) clearInterval(interval);
-            }, 100);
-
-            const payMonthEl = document.getElementById('payBillingMonth') || document.getElementById('payCycle');
-            const payMethodEl = document.getElementById('payMethod');
-            const payForEl = document.getElementById('payFor');
-            const payRefEl = document.getElementById('payReferenceNumber');
-            const payAmountEl = document.getElementById('payAmount');
-            const payTargetEl = document.getElementById('payTargetPayment');
-            const targetOpt = payTargetEl ? payTargetEl.options[payTargetEl.selectedIndex] : null;
-            const targetPayId = payTargetEl ? payTargetEl.value : '0';
-            const targetPayType = payForEl ? payForEl.value : (targetOpt && targetOpt.dataset.type ? targetOpt.dataset.type : 'Rent');
-
-            const formData = new FormData();
-            formData.append('receipt', attachedFile);
-            formData.append('payment_id', targetPayId);
-            formData.append('payment_type', targetPayType);
-            formData.append('billing_cycle', payMonthEl ? payMonthEl.value : '2026-11-01');
-            formData.append('payment_method', payMethodEl ? payMethodEl.value : 'GCash');
-            formData.append('reference_number', payRefEl ? payRefEl.value.trim() : '');
-            formData.append('amount_paid', payAmountEl ? payAmountEl.value : '3000.00');
-
-            try {
-              const res = await fetch('api/payment_api.php', { method: 'POST', body: formData });
-              const result = await res.json();
-              if (res.ok && result.status === 'success') {
-                showToast(result.message);
-                attachedFile = null;
-                if (fileInput) fileInput.value = '';
-                if (previewCard) {
-                  previewCard.style.display = 'none';
-                  previewCard.classList.add('hidden');
-                }
-                if (progressWrapper) progressWrapper.style.display = 'none';
-                btnUploadReceipt.disabled = false;
-                btnUploadReceipt.innerHTML = 'Submit Proof';
-                
-                // Refresh within payments section so tenant sees their newly uploaded receipt
-                setTimeout(() => {
-                  window.location.href = 'tenant_portal.php?section=tenantPayments';
-                }, 900);
-              } else if (res.status === 403 && result.code === 'ACCOUNT_NOT_VERIFIED') {
-                if (progressWrapper) progressWrapper.style.display = 'none';
-                btnUploadReceipt.disabled = false;
-                btnUploadReceipt.innerHTML = 'Submit Proof';
-                showFeatureLockedAlert('submit payment confirmations', result.message);
-              } else {
-                showToast(result.message || 'Error uploading receipt', 'error');
-                btnUploadReceipt.disabled = false;
-                btnUploadReceipt.innerHTML = 'Submit Proof';
-              }
-            } catch (err) {
-              showToast('Network error uploading receipt', 'error');
-              btnUploadReceipt.disabled = false;
-              btnUploadReceipt.innerHTML = 'Submit Proof';
+            if (btnUploadReceipt) {
+              btnUploadReceipt.disabled = true;
+              btnUploadReceipt.innerHTML = '<span>Submitting Proof...</span>';
             }
+            return true;
           });
         }
       } catch (e) {
@@ -6332,6 +6502,16 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
       const urlParams = new URLSearchParams(window.location.search);
       const targetSec = urlParams.get('section');
       const targetTab = urlParams.get('tab') || 'accountInfo';
+
+      // Auto-switch to Payment Tracker tab & surface toast if redirected with success
+      if (urlParams.get('tab') === 'tracker' || urlParams.get('success') === '1') {
+        if (typeof switchPaymentTab === 'function') {
+          switchPaymentTab('tracker');
+        }
+        if (urlParams.get('success') === '1' && typeof showToast === 'function') {
+          showToast('Payment proof submitted successfully! Your receipt is now pending review.', 'success');
+        }
+      }
 
       if (urlParams.get('restricted') === 'unverified') {
         if (typeof showToast === 'function') {

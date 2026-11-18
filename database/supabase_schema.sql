@@ -382,7 +382,7 @@ SET unit_number = EXCLUDED.unit_number, monthly_rent = EXCLUDED.monthly_rent;
 -- 2. Landlord / Property Owner Account (Lead Dimaculangan)
 -- admin: admin123 ($2y$10$L1oJw/e9iaOxHBBWA6p0G.EEPbgJ8jKQxXLEnjzxwY0DSzno7igyO)
 INSERT INTO users (id, unit_id, username, name, email, password_hash, role, phone, birthday, emergency_contact, move_in_date, is_active, is_verified, created_at) VALUES
-(1, NULL, 'admin', 'Lead Dimaculangan', 'rentconnect2026@gmail.com', '$2y$10$L1oJw/e9iaOxHBBWA6p0G.EEPbgJ8jKQxXLEnjzxwY0DSzno7igyO', 'landlord', '+63 917 123 4567', '1985-11-20', 'Property Management Office', '2024-01-01', TRUE, TRUE, CURRENT_TIMESTAMP)
+(1, NULL, 'admin', 'Lead Dimaculangan', 'TaraRent2026@gmail.com', '$2y$10$L1oJw/e9iaOxHBBWA6p0G.EEPbgJ8jKQxXLEnjzxwY0DSzno7igyO', 'landlord', '+63 917 123 4567', '1985-11-20', 'Property Management Office', '2024-01-01', TRUE, TRUE, CURRENT_TIMESTAMP)
 ON CONFLICT (id) DO UPDATE 
 SET email = EXCLUDED.email, password_hash = EXCLUDED.password_hash;
 

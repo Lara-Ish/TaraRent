@@ -2095,3 +2095,12 @@ body.admin-warm-theme .report-action-btn--reject {
     grid-template-columns: 1fr;
   }
 }
+
+/* High Z-Index for Archived Tenant Modal to overlay sidebar and navbar */
+#archivedTenantModal,
+.modal-backdrop#archivedTenantModal {
+  z-index: 99999 !important;
+  position: fixed !important;
+  inset: 0 !important;
+}
+
