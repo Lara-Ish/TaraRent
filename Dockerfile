@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libfreetype6-dev \
     libzip-dev \
     libcurl4-openssl-dev \
+    git \
     zip \
     unzip \
     && docker-php-ext-configure gd --with-freetype --with-jpeg \
@@ -21,6 +22,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         opcache \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+# Install official Composer binary
+COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
 
 # Enable Apache mod_rewrite for clean routing
 RUN a2enmod rewrite headers
@@ -48,6 +52,9 @@ log_errors = On" > /usr/local/etc/php/conf.d/custom-php.ini
 
 # Copy all project files into Apache web root
 COPY . /var/www/html/
+
+# Install Composer dependencies (including PHPMailer)
+RUN cd /var/www/html && composer install --no-dev --optimize-autoloader --no-interaction
 
 # Create required upload folders and set permissions
 RUN mkdir -p /var/www/html/uploads/receipts \
