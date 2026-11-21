@@ -31,12 +31,14 @@ try {
         SELECT 
             COUNT(DISTINCT u.id) AS total_units,
             (SELECT COUNT(*) FROM users WHERE role = 'tenant' AND is_active = TRUE) AS total_active_tenants,
+            (SELECT COUNT(*) FROM users WHERE role = 'tenant' AND is_archived = TRUE) AS total_archived_tenants,
+            (SELECT COUNT(*) FROM units WHERE status = 'available' OR occupant_id IS NULL) AS available_units,
             COALESCE(SUM(CASE WHEN p.status != 'pending_setup' THEN p.amount_due ELSE 0 END), 0) AS total_receivables_billed,
             COALESCE(SUM(CASE WHEN p.status = 'approved' THEN p.amount_paid ELSE 0 END), 0) AS total_revenue_collected,
             COALESCE(SUM(CASE WHEN p.status NOT IN ('approved', 'pending_setup') AND p.amount_due IS NOT NULL THEN (p.amount_due - p.amount_paid) ELSE 0 END), 0) AS total_outstanding_balance,
             CASE 
                 WHEN SUM(CASE WHEN p.status != 'pending_setup' THEN p.amount_due ELSE 0 END) > 0 
-                THEN ROUND((SUM(CASE WHEN p.status = 'approved' THEN p.amount_paid ELSE 0 END) / SUM(CASE WHEN p.status != 'pending_setup' THEN p.amount_due ELSE 0 END)) * 100, 2) 
+                THEN ROUND(((SUM(CASE WHEN p.status = 'approved' THEN p.amount_paid ELSE 0 END) / SUM(CASE WHEN p.status != 'pending_setup' THEN p.amount_due ELSE 0 END)) * 100)::numeric, 2) 
                 ELSE 0.00 
             END AS overall_collection_efficiency
         FROM units u
@@ -58,18 +60,18 @@ try {
     // 3. Monthly Collection Efficiency Timeline across 3 Units
     $monthlyStmt = $pdo->query("
         SELECT 
-            SUBSTR(billing_cycle, 1, 7) AS month_key,
-            ROUND(SUM(amount_due), 2) AS billed_rent,
-            ROUND(SUM(CASE WHEN status = 'approved' THEN amount_paid ELSE 0 END), 2) AS collected_rent,
-            ROUND(SUM(CASE WHEN status != 'approved' THEN (amount_due - amount_paid) ELSE 0 END), 2) AS outstanding_balance,
+            TO_CHAR(billing_cycle::date, 'YYYY-MM') AS month_key,
+            ROUND(SUM(amount_due)::numeric, 2) AS billed_rent,
+            ROUND(SUM(CASE WHEN status = 'approved' THEN amount_paid ELSE 0 END)::numeric, 2) AS collected_rent,
+            ROUND(SUM(CASE WHEN status != 'approved' THEN (amount_due - amount_paid) ELSE 0 END)::numeric, 2) AS outstanding_balance,
             CASE 
                 WHEN SUM(amount_due) > 0 
-                THEN ROUND((SUM(CASE WHEN status = 'approved' THEN amount_paid ELSE 0 END) / SUM(amount_due)) * 100, 2) 
+                THEN ROUND(((SUM(CASE WHEN status = 'approved' THEN amount_paid ELSE 0 END) / SUM(amount_due)) * 100)::numeric, 2) 
                 ELSE 0.00 
             END AS collection_efficiency_percentage
         FROM payments
         WHERE billing_cycle IS NOT NULL AND status != 'pending_setup'
-        GROUP BY SUBSTR(billing_cycle, 1, 7)
+        GROUP BY TO_CHAR(billing_cycle::date, 'YYYY-MM')
         ORDER BY month_key ASC
     ");
     $monthlyCollections = $monthlyStmt->fetchAll();
@@ -91,9 +93,9 @@ try {
             u.unit_number,
             u.monthly_rent,
             COUNT(mt.id) AS ticket_count,
-            COALESCE(ROUND(SUM(mt.actual_cost), 2), 0.00) AS total_cost,
+            COALESCE(ROUND(SUM(mt.actual_cost)::numeric, 2), 0.00) AS total_cost,
             CASE 
-                WHEN COUNT(mt.id) > 0 THEN ROUND(SUM(mt.actual_cost) / COUNT(mt.id), 2) 
+                WHEN COUNT(mt.id) > 0 THEN ROUND((SUM(mt.actual_cost) / COUNT(mt.id))::numeric, 2) 
                 ELSE 0.00 
             END AS avg_cost_per_ticket
         FROM units u
@@ -115,9 +117,9 @@ try {
         SELECT 
             category,
             COUNT(id) AS ticket_count,
-            ROUND(SUM(actual_cost), 2) AS total_cost,
+            ROUND(SUM(actual_cost)::numeric, 2) AS total_cost,
             CASE 
-                WHEN COUNT(id) > 0 THEN ROUND(SUM(actual_cost) / COUNT(id), 2) 
+                WHEN COUNT(id) > 0 THEN ROUND((SUM(actual_cost) / COUNT(id))::numeric, 2) 
                 ELSE 0.00 
             END AS avg_cost
         FROM maintenance_tickets
@@ -188,7 +190,9 @@ try {
         'kpis' => [
             'units' => [
                 'total_units' => (int)$finKpis['total_units'],
-                'total_active_tenants' => (int)$finKpis['total_active_tenants']
+                'total_active_tenants' => (int)$finKpis['total_active_tenants'],
+                'available_units' => (int)($finKpis['available_units'] ?? 0),
+                'total_archived_tenants' => (int)($finKpis['total_archived_tenants'] ?? 0)
             ],
             'financials' => [
                 'total_receivables_billed' => (float)$finKpis['total_receivables_billed'],

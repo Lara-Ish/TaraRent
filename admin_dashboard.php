@@ -1575,22 +1575,22 @@ try {
             <div id="paneActiveTickets" role="tabpanel" aria-labelledby="btnTabActiveTickets" style="display: block;">
               <div class="kanban-toolbar">
                 <div class="kanban-toolbar-hint">
-                  <span id="kanbanCategoryStateLabel">Pending Maintenance</span>
+                  <span id="kanbanCategoryStateLabel">All Active Maintenance</span>
                 </div>
                 <div class="kanban-filter-wrap">
                   <select id="activeStatusDropdown"
                           class="kanban-filter-select"
                           aria-label="Filter maintenance status"
                           onchange="handleActiveStatusDropdownChange(this.value)">
-                    <option value="All">All</option>
-                    <option value="Pending" selected>Pending</option>
+                    <option value="All" selected>All</option>
+                    <option value="Pending">Pending</option>
                     <option value="On-Going">On-going</option>
                   </select>
                   <span class="kanban-filter-caret" aria-hidden="true">▼</span>
                 </div>
               </div>
 
-              <div class="maintenance-unified-box" id="maintenanceUnifiedBox" data-board-status="Pending">
+              <div class="maintenance-unified-box" id="maintenanceUnifiedBox" data-board-status="All">
                 <div class="maintenance-unified-grid" id="maintenanceUnifiedGrid"></div>
               </div>
             </div>
@@ -1601,7 +1601,7 @@ try {
                 <div style="overflow-x: auto;">
                   <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 13.5px;">
                     <thead>
-                      <tr style="border-bottom: 2px solid rgba(166, 180, 204, 0.3); color: var(--text-muted); font-weight: 700; background: rgba(248, 250, 252, 0.6);">
+                      <tr style="border-bottom: 2px solid rgba(166, 180, 204, 0.3); color: #422B0B; font-weight: 800; background: #EFE3CC;">
                         <th style="padding: 14px 16px;">Ticket Number</th>
                         <th style="padding: 14px 16px;">Tenant Name</th>
                         <th style="padding: 14px 16px;">Unit</th>
@@ -1750,241 +1750,344 @@ try {
         <div class="dashboard-header-bar">
           <div class="dashboard-title-group">
             <h1>Rent Payment Verification &amp; Audit</h1>
-            <p>Review tenant-submitted payment receipts, inspect proof slips, and manually approve or reject payments</p>
+            <p>Review tenant-submitted payment receipts, inspect proof slips, and manage verified payment records</p>
           </div>
         </div>
 
-        <!-- Pending Review Queue (Displayed when tenant uploads receipts) -->
-        <?php if ($pendingReviewCount > 0): ?>
-        <div style="margin-bottom: 28px;">
-          <div class="widget-header" style="margin-bottom: 16px;">
-            <div>
-              <h2 class="widget-title" style="font-size: 18px; display: flex; align-items: center; gap: 8px;"><i data-lucide="clock" class="w-5 h-5" aria-hidden="true"></i> Pending Verification Queue</h2>
-              <p style="font-size: 12.5px; color: var(--text-muted); margin-top: 2px;">
-                Review submitted transaction slips and confirm payment legitimacy
-              </p>
-            </div>
+        <?php
+          // Filter payments that have already been processed (i.e. not pending verification)
+          $historyPayments = array_values(array_filter($payments, fn($p) => $p['status'] !== 'pending'));
+        ?>
+
+        <!-- PERSISTENT TABBED FOLDER CONTAINER (MATCHING MAINTENANCE & TENANT REPORTS) -->
+        <div class="maintenance-folder-shell" id="paymentsFolderShell">
+          <div class="maintenance-folder-tabs" role="tablist" aria-label="Payment Verification Views">
+            <button type="button"
+                    class="maintenance-folder-tab active"
+                    id="btnTabPendingPayments"
+                    role="tab"
+                    aria-selected="true"
+                    aria-controls="panePendingPayments"
+                    onclick="switchPaymentTab('pending')">
+              <span>Payments That Need to Be Verified</span>
+              <span id="pendingVerificationCountBadge" class="folder-tab-count"><?= $pendingReviewCount ?></span>
+            </button>
+            <button type="button"
+                    class="maintenance-folder-tab"
+                    id="btnTabPaymentHistory"
+                    role="tab"
+                    aria-selected="false"
+                    aria-controls="panePaymentHistory"
+                    onclick="switchPaymentTab('history')">
+              <span>Payment History &amp; Processed Records</span>
+              <span id="paymentHistoryCountBadge" class="folder-tab-count"><?= count($historyPayments) ?></span>
+            </button>
           </div>
 
-          <div class="payment-verification-queue">
-            <?php foreach ($pendingReviewPayments as $pending): ?>
-            <div class="verification-card" id="pending-card-<?= $pending['id'] ?>">
-              <div>
-                <div class="verification-card-header">
-                  <div>
-                    <span class="clay-badge" style="background: #F3E4C6; color: #56380E; border: 1px solid rgba(181, 143, 83, 0.35); font-weight: 800; font-size: 11.5px;">
-                      <?= htmlspecialchars($pending['unit_number']) ?>
-                    </span>
-                    <h3 style="font-size: 17px; font-weight: 800; color: #0f172a; margin-top: 8px; margin-bottom: 2px;">
-                      <?= htmlspecialchars($pending['tenant_name']) ?>
-                    </h3>
-                    <div style="font-size: 12px; color: var(--text-muted);">
-                      Billing Cycle: <strong><?= date('F Y', strtotime($pending['billing_cycle'])) ?></strong>
-                    </div>
-                  </div>
-                  <span class="clay-badge badge-pending">PENDING</span>
+          <div class="maintenance-folder-body" id="paymentsFolderBody">
+            <!-- PANE 1: PAYMENTS THAT NEED TO BE VERIFIED -->
+            <div id="panePendingPayments" role="tabpanel" aria-labelledby="btnTabPendingPayments" style="display: block;">
+              <div class="kanban-toolbar">
+                <div class="kanban-toolbar-hint">
+                  <span id="pendingVerificationToolbarLabel">Submissions Awaiting Verification</span>
                 </div>
-
-                <div class="verification-card-body">
-                  <div style="display: flex; justify-content: space-between; align-items: baseline; padding: 10px 14px; background: var(--clay-input-bg); border-radius: var(--radius-md); box-shadow: var(--clay-sunken-shadow);">
-                    <span style="font-size: 12.5px; color: var(--text-muted); font-weight: 600;">Submitted Amount:</span>
-                    <span style="font-size: 18px; font-weight: 800; color: #047857;">
-                      ₱<?= number_format((float)$pending['amount_paid'], 2) ?>
-                    </span>
-                  </div>
-                  <div style="font-size: 12px; color: var(--text-muted); display: flex; justify-content: space-between; margin-top: 4px;">
-                    <span>Due: ₱<?= number_format((float)$pending['amount_due'], 2) ?></span>
-                    <span>Method: <?= htmlspecialchars($pending['payment_method'] ?? 'Bank Transfer') ?></span>
-                  </div>
-
-                  <?php if ($pending['receipt_filename']): 
-                    $receiptUrl = (str_starts_with($pending['receipt_filename'], 'http://') || str_starts_with($pending['receipt_filename'], 'https://'))
-                      ? $pending['receipt_filename']
-                      : ('uploads/receipts/' . $pending['receipt_filename']);
-                  ?>
-                    <div style="margin-top: 10px;">
-                      <a href="<?= htmlspecialchars($receiptUrl, ENT_QUOTES, 'UTF-8') ?>" target="_blank" class="btn-inspect-proof" style="display: inline-flex; width: 100%; justify-content: center; align-items: center; gap: 6px; padding: 8px 12px; box-sizing: border-box;">
-                        <i data-lucide="file-text" class="w-4 h-4" aria-hidden="true"></i> Inspect Uploaded Proof
-                      </a>
-                    </div>
-                  <?php endif; ?>
+                <div class="kanban-toolbar-actions">
+                  <span id="pendingVerificationStatusBadge" class="clay-badge" style="background: #F3E4C6; color: #56380E; border: 1px solid rgba(181, 143, 83, 0.35); font-size: 11.5px; font-weight: 800; padding: 6px 14px; border-radius: 8px;">
+                    <?= $pendingReviewCount === 1 ? '1 submission awaiting review' : $pendingReviewCount . ' submissions awaiting review' ?>
+                  </span>
                 </div>
               </div>
 
-              <div class="verification-card-actions">
-                <button type="button" class="btn-verify-approve" style="display: inline-flex; align-items: center; justify-content: center; gap: 5px;" onclick="openPaymentDetailsModal(<?= htmlspecialchars(json_encode($pending), ENT_QUOTES, 'UTF-8') ?>, 'approved')">
-                  <i data-lucide="check" class="w-4 h-4" aria-hidden="true"></i> Approve
-                </button>
-                <button type="button" class="btn-verify-reject" style="display: inline-flex; align-items: center; justify-content: center; gap: 5px;" onclick="openPaymentDetailsModal(<?= htmlspecialchars(json_encode($pending), ENT_QUOTES, 'UTF-8') ?>, 'rejected')">
-                  <i data-lucide="x" class="w-4 h-4" aria-hidden="true"></i> Reject
-                </button>
+              <!-- Table Card for Payments Needing Verification -->
+              <div class="maintenance-completed-card">
+                <div style="overflow-x: auto;">
+                  <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 13.5px;">
+                    <thead>
+                      <tr style="border-bottom: 2px solid rgba(166, 180, 204, 0.3); color: #422B0B; font-weight: 800; background: #EFE3CC;">
+                        <th style="padding: 14px 16px;">Billing Month</th>
+                        <th style="padding: 14px 16px;">Unit</th>
+                        <th style="padding: 14px 16px;">Tenant Name</th>
+                        <th style="padding: 14px 16px;">Amount Due</th>
+                        <th style="padding: 14px 16px;">Submitted Amount</th>
+                        <th style="padding: 14px 16px;">Method</th>
+                        <th style="padding: 14px 16px;">Proof / Receipt</th>
+                        <th style="padding: 14px 16px; text-align: right;">Verification Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody id="pendingVerificationTableBody">
+                      <?php if (empty($pendingReviewPayments)): ?>
+                      <tr id="emptyPendingVerificationRow">
+                        <td colspan="8" style="text-align: center; padding: 42px 14px; color: var(--text-muted); font-size: 14px;">
+                          <div style="margin-bottom: 8px; display: flex; justify-content: center; color: #9E6E2E;"><i data-lucide="check-circle" class="w-8 h-8" aria-hidden="true"></i></div>
+                          <strong style="color: #302313;">All payment submissions are verified!</strong>
+                          <div style="font-size: 12px; color: #7A6245; margin-top: 4px;">There are currently no tenant payment submissions awaiting manual verification.</div>
+                        </td>
+                      </tr>
+                      <?php else: ?>
+                      <?php foreach ($pendingReviewPayments as $pending): 
+                        $receiptUrl = !empty($pending['receipt_filename'])
+                          ? ((str_starts_with($pending['receipt_filename'], 'http://') || str_starts_with($pending['receipt_filename'], 'https://'))
+                              ? $pending['receipt_filename']
+                              : ('uploads/receipts/' . $pending['receipt_filename']))
+                          : '';
+                      ?>
+                      <tr class="clickable-payment-row pending-verification-row"
+                          id="pending-row-<?= $pending['id'] ?>"
+                          data-id="<?= $pending['id'] ?>"
+                          data-tenant-id="<?= (int)$pending['tenant_id'] ?>"
+                          data-status="pending"
+                          style="border-bottom: 1px solid rgba(166, 180, 204, 0.15);"
+                          onclick="openPaymentDetailsModal(<?= htmlspecialchars(json_encode($pending), ENT_QUOTES, 'UTF-8') ?>)"
+                          title="Click to view detailed payment verification &amp; audit">
+                        <td style="padding: 14px 16px; font-weight: 700; color: #56380E; white-space: nowrap;">
+                          <?= !empty($pending['billing_cycle']) ? date('F Y', strtotime($pending['billing_cycle'])) : 'Current Cycle' ?>
+                        </td>
+                        <td style="padding: 14px 16px; white-space: nowrap;">
+                          <span class="clay-badge" style="background: #F3E4C6; color: #56380E; border: 1px solid rgba(181, 143, 83, 0.35); font-weight: 800; font-size: 11.5px;">
+                            <?= htmlspecialchars($pending['unit_number']) ?>
+                          </span>
+                        </td>
+                        <td style="padding: 14px 16px; font-weight: 600; color: #0f172a; white-space: nowrap;">
+                          <div style="display: flex; align-items: center; gap: 8px;">
+                            <div style="width: 28px; height: 28px; border-radius: 8px; background: linear-gradient(135deg, #B58F53, #56380E); color: #fffdf8; font-weight: 800; font-size: 12px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+                              <?= strtoupper(substr($pending['tenant_name'], 0, 1)) ?>
+                            </div>
+                            <span><?= htmlspecialchars($pending['tenant_name']) ?></span>
+                          </div>
+                        </td>
+                        <td style="padding: 14px 16px; font-weight: 700; color: #302313; white-space: nowrap;">
+                          ₱<?= number_format((float)$pending['amount_due'], 2) ?>
+                        </td>
+                        <td style="padding: 14px 16px; font-weight: 800; color: #047857; white-space: nowrap;">
+                          ₱<?= number_format((float)$pending['amount_paid'], 2) ?>
+                        </td>
+                        <td style="padding: 14px 16px; font-size: 12.5px; color: #56380E; font-weight: 600; white-space: nowrap;">
+                          <?= htmlspecialchars($pending['payment_method'] ?? 'Bank Transfer') ?>
+                        </td>
+                        <td style="padding: 14px 16px; white-space: nowrap;">
+                          <?php if (!empty($receiptUrl)): ?>
+                            <a href="<?= htmlspecialchars($receiptUrl, ENT_QUOTES, 'UTF-8') ?>" target="_blank" onclick="event.stopPropagation();" class="btn-inspect-proof" style="display: inline-flex; align-items: center; gap: 5px; padding: 6px 12px; font-size: 12px; text-decoration: none; border-radius: 8px;" title="Inspect uploaded receipt proof">
+                              <i data-lucide="file-text" class="w-3.5 h-3.5" aria-hidden="true"></i> View Proof
+                            </a>
+                          <?php else: ?>
+                            <span style="font-size: 12px; color: var(--text-muted); font-style: italic;">No attachment</span>
+                          <?php endif; ?>
+                        </td>
+                        <td style="padding: 14px 16px; text-align: right; white-space: nowrap;">
+                          <div style="display: inline-flex; align-items: center; gap: 6px;" onclick="event.stopPropagation();">
+                            <button type="button" class="btn-verify-approve" style="padding: 6px 14px; font-size: 12px; display: inline-flex; align-items: center; gap: 4px; font-weight: 700; border-radius: 8px;" onclick="openPaymentDetailsModal(<?= htmlspecialchars(json_encode($pending), ENT_QUOTES, 'UTF-8') ?>, 'approved')">
+                              <i data-lucide="check" class="w-3.5 h-3.5" aria-hidden="true"></i> Approve
+                            </button>
+                            <button type="button" class="btn-verify-reject" style="padding: 6px 14px; font-size: 12px; display: inline-flex; align-items: center; gap: 4px; font-weight: 700; border-radius: 8px;" onclick="openPaymentDetailsModal(<?= htmlspecialchars(json_encode($pending), ENT_QUOTES, 'UTF-8') ?>, 'rejected')">
+                              <i data-lucide="x" class="w-3.5 h-3.5" aria-hidden="true"></i> Reject
+                            </button>
+                            <button type="button" class="clay-btn clay-btn-secondary" style="padding: 6px 12px; font-size: 12px; border-radius: 8px;" onclick="openPaymentDetailsModal(<?= htmlspecialchars(json_encode($pending), ENT_QUOTES, 'UTF-8') ?>)" title="View full details">
+                              Details
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                      <?php endforeach; ?>
+                      <?php endif; ?>
+                    </tbody>
+                  </table>
+                </div>
               </div>
             </div>
-            <?php endforeach; ?>
-          </div>
-        </div>
-        <?php endif; ?>
 
-        <!-- Full Payments Ledger Table with Filtering Dropdowns & Clickable Detail View -->
-        <div class="clay-card">
-          <div class="widget-header" style="margin-bottom: 16px; display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 14px;">
-            <div>
-              <h2 class="widget-title" style="font-size: 18px;">All Invoices &amp; Verified Records</h2>
-              <p style="font-size: 12.5px; color: var(--text-muted); margin-top: 2px;">
-                Complete ledger tracking tenant payments, verification status, and audit notes. Click any row to view complete details.
-              </p>
-            </div>
+            <!-- PANE 2: PAYMENT HISTORY & PROCESSED RECORDS -->
+            <div id="panePaymentHistory" role="tabpanel" aria-labelledby="btnTabPaymentHistory" style="display: none;">
+              <!-- Toolbar with Filter Dropdowns and Search -->
+              <div class="kanban-toolbar" style="margin-bottom: 16px; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px;">
+                <div class="kanban-toolbar-hint">
+                  <span id="paymentHistoryToolbarLabel">All Processed Invoices &amp; Historical Ledgers</span>
+                </div>
 
-            <!-- Month & Year Filtering Dropdowns -->
-            <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
-              <div style="display: flex; align-items: center; gap: 6px;">
-                <label for="paymentFilterMonth" style="font-size: 12px; font-weight: 700; color: var(--text-muted);">Month:</label>
-                <select id="paymentFilterMonth" class="clay-select" onchange="applyPaymentFilters()" style="padding: 7px 12px; font-size: 13px; border-radius: var(--radius-sm); min-width: 130px; font-weight: 600;">
-                  <option value="all">All Months</option>
-                  <option value="01">January</option>
-                  <option value="02">February</option>
-                  <option value="03">March</option>
-                  <option value="04">April</option>
-                  <option value="05">May</option>
-                  <option value="06">June</option>
-                  <option value="07">July</option>
-                  <option value="08">August</option>
-                  <option value="09">September</option>
-                  <option value="10">October</option>
-                  <option value="11">November</option>
-                  <option value="12">December</option>
-                </select>
-              </div>
-
-              <div style="display: flex; align-items: center; gap: 6px;">
-                <label for="paymentFilterYear" style="font-size: 12px; font-weight: 700; color: var(--text-muted);">Year:</label>
-                <select id="paymentFilterYear" class="clay-select" onchange="applyPaymentFilters()" style="padding: 7px 12px; font-size: 13px; border-radius: var(--radius-sm); min-width: 105px; font-weight: 600;">
-                  <option value="all">All Years</option>
-                  <?php foreach ($availablePaymentYears as $yr): ?>
-                    <option value="<?= htmlspecialchars($yr) ?>"><?= htmlspecialchars($yr) ?></option>
-                  <?php endforeach; ?>
-                </select>
-              </div>
-
-              <button type="button" class="clay-btn clay-btn-secondary" onclick="resetPaymentFilters()" style="padding: 7px 14px; font-size: 12.5px;" title="Reset filters to show all records">
-                ↺ Reset
-              </button>
-
-              <span id="paymentFilterCountBadge" class="clay-badge" style="background: #F3E4C6; color: #56380E; border: 1px solid rgba(181, 143, 83, 0.35); font-size: 11.5px; font-weight: 700; padding: 7px 14px;">
-                Showing <?= count($payments) ?> Records
-              </span>
-            </div>
-          </div>
-
-          <div style="overflow-x: auto;">
-            <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 13.5px;">
-              <thead>
-                <tr style="border-bottom: 2px solid rgba(166, 180, 204, 0.3); color: var(--text-muted); font-weight: 700;">
-                  <th style="padding: 12px 14px;">Billing Month</th>
-                  <th style="padding: 12px 14px;">Type</th>
-                  <th style="padding: 12px 14px;">Unit</th>
-                  <th style="padding: 12px 14px;">Tenant</th>
-                  <th style="padding: 12px 14px;">Amount Due</th>
-                  <th style="padding: 12px 14px;">Amount Paid</th>
-                  <th style="padding: 12px 14px;">Status</th>
-                </tr>
-              </thead>
-              <tbody id="paymentRecordsTableBody">
-                <?php if (empty($payments)): ?>
-                <tr id="paymentEmptyStateRow">
-                  <td colspan="7" style="text-align: center; padding: 32px 14px; color: var(--text-muted); font-size: 14px;">
-                    No payment records found. Adding a resident will automatically generate a placeholder rent record awaiting setup.
-                  </td>
-                </tr>
-                <?php else: ?>
-                <?php foreach ($payments as $pm): ?>
-                <tr class="clickable-payment-row payment-record-row"
-                    id="payment-row-<?= $pm['id'] ?>"
-                    data-id="<?= $pm['id'] ?>"
-                    data-tenant-id="<?= (int)$pm['tenant_id'] ?>"
-                    data-month="<?= !empty($pm['billing_cycle']) ? date('m', strtotime($pm['billing_cycle'])) : '' ?>"
-                    data-year="<?= !empty($pm['billing_cycle']) ? date('Y', strtotime($pm['billing_cycle'])) : '' ?>"
-                    data-status="<?= htmlspecialchars($pm['status']) ?>"
-                    onclick="openPaymentDetailsModal(<?= htmlspecialchars(json_encode($pm), ENT_QUOTES, 'UTF-8') ?>)"
-                    title="Click to view detailed payment verification &amp; audit">
-                  <td style="padding: 14px; font-weight: 700;">
-                    <?php if (!empty($pm['billing_cycle'])): ?>
-                      <?= date('F Y', strtotime($pm['billing_cycle'])) ?>
-                    <?php else: ?>
-                      <span style="color: #92400e; font-style: italic; background: #fef3c7; padding: 3px 8px; border-radius: 6px; font-size: 11.5px; border: 1px solid rgba(245, 158, 11, 0.25);">To be assigned</span>
-                    <?php endif; ?>
-                  </td>
-                  <td style="padding: 14px;">
-                    <?php if (($pm['payment_type'] ?? 'Rent') === 'Advance Deposit'): ?>
-                      <span class="clay-badge" style="background: #F5E6C4; color: #7B4B19; font-weight: 800; font-size: 11px; border: 1px solid rgba(181, 143, 83, 0.45);">
-                        Advance Deposit
-                      </span>
-                    <?php else: ?>
-                      <span class="clay-badge" style="background: #e0f2fe; color: #0369a1; font-weight: 800; font-size: 11px; border: 1px solid rgba(3, 105, 161, 0.25);">
-                        Monthly Rent
-                      </span>
-                    <?php endif; ?>
-                  </td>
-                  <td style="padding: 14px;">
-                    <span class="clay-badge" style="background: #F3E4C6; color: #56380E; border: 1px solid rgba(181, 143, 83, 0.35); font-weight: 800; font-size: 11.5px;">
-                      <?= htmlspecialchars($pm['unit_number']) ?>
-                    </span>
-                  </td>
-                  <td style="padding: 14px;">
-                    <div style="display: flex; align-items: center; gap: 8px;">
-                      <div style="width: 28px; height: 28px; border-radius: 8px; background: linear-gradient(135deg, #B58F53, #56380E); color: #fffdf8; font-weight: 800; font-size: 12px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
-                        <?= strtoupper(substr($pm['tenant_name'], 0, 1)) ?>
-                      </div>
-                      <span style="font-weight: 600; color: #0f172a;"><?= htmlspecialchars($pm['tenant_name']) ?></span>
+                <!-- Filters: Status, Month, Year, Search, and Reset -->
+                <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                  <!-- Status Filter -->
+                  <div style="display: flex; align-items: center; gap: 6px;">
+                    <label for="paymentFilterStatus" style="font-size: 12px; font-weight: 700; color: #56380E;">Status:</label>
+                    <div class="kanban-filter-wrap" style="min-width: 125px;">
+                      <select id="paymentFilterStatus" class="kanban-filter-select" onchange="applyPaymentFilters()" style="min-width: 125px; padding: 7px 30px 7px 12px; font-size: 12.5px;">
+                        <option value="all">All Statuses</option>
+                        <option value="approved">Approved</option>
+                        <option value="rejected">Rejected</option>
+                        <option value="unpaid">Unpaid</option>
+                        <option value="pending_setup">Awaiting Setup</option>
+                      </select>
+                      <span class="kanban-filter-caret" aria-hidden="true">▼</span>
                     </div>
-                  </td>
-                  <td style="padding: 14px; font-weight: 700;">
-                    <?php if ($pm['amount_due'] !== null && (float)$pm['amount_due'] > 0): ?>
-                      ₱<?= number_format((float)$pm['amount_due'], 2) ?>
-                    <?php else: ?>
-                      <span style="color: var(--text-muted); font-style: italic; font-size: 12px;">Awaiting configuration</span>
-                    <?php endif; ?>
-                  </td>
-                  <td style="padding: 14px; font-weight: 700; color: <?= (float)$pm['amount_paid'] > 0 ? '#047857' : 'var(--text-muted)' ?>;">
-                    ₱<?= number_format((float)$pm['amount_paid'], 2) ?>
-                  </td>
-                  <td style="padding: 14px;">
-                    <?php if ($pm['status'] === 'pending_setup'): ?>
-                      <span class="clay-badge" style="background: #fef3c7; color: #92400e; font-weight: 800; border: 1px solid rgba(245, 158, 11, 0.35); font-size: 10.5px; padding: 4px 10px;">
-                        AWAITING CONFIGURATION
-                      </span>
-                    <?php elseif ($pm['status'] === 'unpaid'): ?>
-                      <span class="clay-badge" style="background: #fee2e2; color: #991b1b; font-weight: 800; border: 1px solid rgba(239, 68, 68, 0.35); font-size: 10.5px; padding: 4px 10px;">
-                        UNPAID
-                      </span>
-                    <?php elseif ($pm['status'] === 'pending'): ?>
-                      <span class="clay-badge badge-pending" style="font-size: 10.5px; padding: 4px 10px;">
-                        PENDING REVIEW
-                      </span>
-                    <?php elseif ($pm['status'] === 'approved'): ?>
-                      <span class="clay-badge badge-approved" style="font-size: 10.5px; padding: 4px 10px;">
-                        APPROVED
-                      </span>
-                    <?php elseif ($pm['status'] === 'rejected'): ?>
-                      <span class="clay-badge badge-rejected" style="font-size: 10.5px; padding: 4px 10px;">
-                        REJECTED
-                      </span>
-                    <?php else: ?>
-                      <span class="clay-badge badge-<?= strtolower($pm['status']) ?>" style="font-size: 10.5px; padding: 4px 10px;">
-                        <?= strtoupper($pm['status']) ?>
-                      </span>
-                    <?php endif; ?>
-                  </td>
-                </tr>
-                <?php endforeach; ?>
-                <tr id="paymentNoFilterResultsRow" style="display: none;">
-                  <td colspan="7" style="text-align: center; padding: 32px 14px; color: var(--text-muted); font-size: 13.5px;">
-                    No payment records match the selected month and year filters. <a href="javascript:void(0)" onclick="resetPaymentFilters()" style="color: var(--clay-primary); font-weight: 700; text-decoration: underline;">Reset filters</a>
-                  </td>
-                </tr>
-                <?php endif; ?>
-              </tbody>
-            </table>
+                  </div>
+
+                  <!-- Month Filter -->
+                  <div style="display: flex; align-items: center; gap: 6px;">
+                    <label for="paymentFilterMonth" style="font-size: 12px; font-weight: 700; color: #56380E;">Month:</label>
+                    <div class="kanban-filter-wrap" style="min-width: 125px;">
+                      <select id="paymentFilterMonth" class="kanban-filter-select" onchange="applyPaymentFilters()" style="min-width: 125px; padding: 7px 30px 7px 12px; font-size: 12.5px;">
+                        <option value="all">All Months</option>
+                        <option value="01">January</option>
+                        <option value="02">February</option>
+                        <option value="03">March</option>
+                        <option value="04">April</option>
+                        <option value="05">May</option>
+                        <option value="06">June</option>
+                        <option value="07">July</option>
+                        <option value="08">August</option>
+                        <option value="09">September</option>
+                        <option value="10">October</option>
+                        <option value="11">November</option>
+                        <option value="12">December</option>
+                      </select>
+                      <span class="kanban-filter-caret" aria-hidden="true">▼</span>
+                    </div>
+                  </div>
+
+                  <!-- Year Filter -->
+                  <div style="display: flex; align-items: center; gap: 6px;">
+                    <label for="paymentFilterYear" style="font-size: 12px; font-weight: 700; color: #56380E;">Year:</label>
+                    <div class="kanban-filter-wrap" style="min-width: 105px;">
+                      <select id="paymentFilterYear" class="kanban-filter-select" onchange="applyPaymentFilters()" style="min-width: 105px; padding: 7px 30px 7px 12px; font-size: 12.5px;">
+                        <option value="all">All Years</option>
+                        <?php foreach ($availablePaymentYears as $yr): ?>
+                          <option value="<?= htmlspecialchars($yr) ?>"><?= htmlspecialchars($yr) ?></option>
+                        <?php endforeach; ?>
+                      </select>
+                      <span class="kanban-filter-caret" aria-hidden="true">▼</span>
+                    </div>
+                  </div>
+
+                  <!-- Search Input -->
+                  <div style="position: relative; min-width: 180px;">
+                    <input type="text" id="paymentHistorySearchInput" class="clay-input" placeholder="Search tenant or unit..." style="padding: 7px 12px 7px 32px; font-size: 12.5px; border-radius: 8px; font-weight: 600; width: 100%; box-sizing: border-box; border: 1px solid rgba(86, 56, 14, 0.35); background: #FFFDF8;" oninput="applyPaymentFilters()">
+                    <i data-lucide="search" aria-hidden="true" style="width: 14px; height: 14px; position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: #6e5539; pointer-events: none;"></i>
+                  </div>
+
+                  <button type="button" class="clay-btn clay-btn-secondary" onclick="resetPaymentFilters()" style="padding: 7px 14px; font-size: 12.5px; border-radius: 8px; font-weight: 700;" title="Reset filters to show all records">
+                    ↺ Reset
+                  </button>
+
+                  <span id="paymentFilterCountBadge" class="clay-badge" style="background: #F3E4C6; color: #56380E; border: 1px solid rgba(181, 143, 83, 0.35); font-size: 11.5px; font-weight: 800; padding: 7px 14px; border-radius: 8px;">
+                    Showing <?= count($historyPayments) ?> Records
+                  </span>
+                </div>
+              </div>
+
+              <!-- Table Card for Payment History -->
+              <div class="maintenance-completed-card">
+                <div style="overflow-x: auto;">
+                  <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 13.5px;">
+                    <thead>
+                      <tr style="border-bottom: 2px solid rgba(166, 180, 204, 0.3); color: #422B0B; font-weight: 800; background: #EFE3CC;">
+                        <th style="padding: 14px 16px;">Billing Month</th>
+                        <th style="padding: 14px 16px;">Type</th>
+                        <th style="padding: 14px 16px;">Unit</th>
+                        <th style="padding: 14px 16px;">Tenant</th>
+                        <th style="padding: 14px 16px;">Amount Due</th>
+                        <th style="padding: 14px 16px;">Amount Paid</th>
+                        <th style="padding: 14px 16px;">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody id="paymentRecordsTableBody">
+                      <?php if (empty($historyPayments)): ?>
+                      <tr id="paymentEmptyStateRow">
+                        <td colspan="7" style="text-align: center; padding: 42px 14px; color: var(--text-muted); font-size: 14px;">
+                          <div style="margin-bottom: 8px; display: flex; justify-content: center; color: #94a3b8;"><i data-lucide="receipt" class="w-8 h-8" aria-hidden="true"></i></div>
+                          <strong style="color: #302313;">No processed payment records found.</strong>
+                          <div style="font-size: 12px; color: #7A6245; margin-top: 4px;">Verified, approved, and archived payment records will appear here.</div>
+                        </td>
+                      </tr>
+                      <?php else: ?>
+                      <?php foreach ($historyPayments as $pm): ?>
+                      <tr class="clickable-payment-row payment-record-row"
+                          id="payment-row-<?= $pm['id'] ?>"
+                          data-id="<?= $pm['id'] ?>"
+                          data-tenant-id="<?= (int)$pm['tenant_id'] ?>"
+                          data-tenant-name="<?= htmlspecialchars(strtolower($pm['tenant_name'] ?? '')) ?>"
+                          data-unit="<?= htmlspecialchars(strtolower($pm['unit_number'] ?? '')) ?>"
+                          data-month="<?= !empty($pm['billing_cycle']) ? date('m', strtotime($pm['billing_cycle'])) : '' ?>"
+                          data-year="<?= !empty($pm['billing_cycle']) ? date('Y', strtotime($pm['billing_cycle'])) : '' ?>"
+                          data-status="<?= htmlspecialchars($pm['status']) ?>"
+                          style="border-bottom: 1px solid rgba(166, 180, 204, 0.15);"
+                          onclick="openPaymentDetailsModal(<?= htmlspecialchars(json_encode($pm), ENT_QUOTES, 'UTF-8') ?>)"
+                          title="Click to view detailed payment verification &amp; audit">
+                        <td style="padding: 14px 16px; font-weight: 700; color: #56380E; white-space: nowrap;">
+                          <?php if (!empty($pm['billing_cycle'])): ?>
+                            <?= date('F Y', strtotime($pm['billing_cycle'])) ?>
+                          <?php else: ?>
+                            <span style="color: #92400e; font-style: italic; background: #fef3c7; padding: 3px 8px; border-radius: 6px; font-size: 11.5px; border: 1px solid rgba(245, 158, 11, 0.25);">To be assigned</span>
+                          <?php endif; ?>
+                        </td>
+                        <td style="padding: 14px 16px; white-space: nowrap;">
+                          <?php if (($pm['payment_type'] ?? 'Rent') === 'Advance Deposit'): ?>
+                            <span class="clay-badge" style="background: #F5E6C4; color: #7B4B19; font-weight: 800; font-size: 11px; border: 1px solid rgba(181, 143, 83, 0.45);">
+                              Advance Deposit
+                            </span>
+                          <?php else: ?>
+                            <span class="clay-badge" style="background: #e0f2fe; color: #0369a1; font-weight: 800; font-size: 11px; border: 1px solid rgba(3, 105, 161, 0.25);">
+                              Monthly Rent
+                            </span>
+                          <?php endif; ?>
+                        </td>
+                        <td style="padding: 14px 16px; white-space: nowrap;">
+                          <span class="clay-badge" style="background: #F3E4C6; color: #56380E; border: 1px solid rgba(181, 143, 83, 0.35); font-weight: 800; font-size: 11.5px;">
+                            <?= htmlspecialchars($pm['unit_number']) ?>
+                          </span>
+                        </td>
+                        <td style="padding: 14px 16px; white-space: nowrap;">
+                          <div style="display: flex; align-items: center; gap: 8px;">
+                            <div style="width: 28px; height: 28px; border-radius: 8px; background: linear-gradient(135deg, #B58F53, #56380E); color: #fffdf8; font-weight: 800; font-size: 12px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+                              <?= strtoupper(substr($pm['tenant_name'], 0, 1)) ?>
+                            </div>
+                            <span style="font-weight: 600; color: #0f172a;"><?= htmlspecialchars($pm['tenant_name']) ?></span>
+                          </div>
+                        </td>
+                        <td style="padding: 14px 16px; font-weight: 700; white-space: nowrap;">
+                          <?php if ($pm['amount_due'] !== null && (float)$pm['amount_due'] > 0): ?>
+                            ₱<?= number_format((float)$pm['amount_due'], 2) ?>
+                          <?php else: ?>
+                            <span style="color: var(--text-muted); font-style: italic; font-size: 12px;">Awaiting configuration</span>
+                          <?php endif; ?>
+                        </td>
+                        <td style="padding: 14px 16px; font-weight: 700; color: <?= (float)$pm['amount_paid'] > 0 ? '#047857' : 'var(--text-muted)' ?>; white-space: nowrap;">
+                          ₱<?= number_format((float)$pm['amount_paid'], 2) ?>
+                        </td>
+                        <td style="padding: 14px 16px; white-space: nowrap;">
+                          <?php if ($pm['status'] === 'pending_setup'): ?>
+                            <span class="clay-badge" style="background: #fef3c7; color: #92400e; font-weight: 800; border: 1px solid rgba(245, 158, 11, 0.35); font-size: 10.5px; padding: 4px 10px;">
+                              AWAITING CONFIGURATION
+                            </span>
+                          <?php elseif ($pm['status'] === 'unpaid'): ?>
+                            <span class="clay-badge" style="background: #fee2e2; color: #991b1b; font-weight: 800; border: 1px solid rgba(239, 68, 68, 0.35); font-size: 10.5px; padding: 4px 10px;">
+                              UNPAID
+                            </span>
+                          <?php elseif ($pm['status'] === 'approved'): ?>
+                            <span class="clay-badge badge-approved" style="font-size: 10.5px; padding: 4px 10px;">
+                              APPROVED
+                            </span>
+                          <?php elseif ($pm['status'] === 'rejected'): ?>
+                            <span class="clay-badge badge-rejected" style="font-size: 10.5px; padding: 4px 10px;">
+                              REJECTED
+                            </span>
+                          <?php else: ?>
+                            <span class="clay-badge badge-<?= strtolower($pm['status']) ?>" style="font-size: 10.5px; padding: 4px 10px;">
+                              <?= strtoupper($pm['status']) ?>
+                            </span>
+                          <?php endif; ?>
+                        </td>
+                      </tr>
+                      <?php endforeach; ?>
+                      <tr id="paymentNoFilterResultsRow" style="display: none;">
+                        <td colspan="7" style="text-align: center; padding: 32px 14px; color: var(--text-muted); font-size: 13.5px;">
+                          No payment records match the selected filters. <a href="javascript:void(0)" onclick="resetPaymentFilters()" style="color: var(--clay-primary); font-weight: 700; text-decoration: underline;">Reset filters</a>
+                        </td>
+                      </tr>
+                      <?php endif; ?>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </section>
@@ -2704,9 +2807,12 @@ try {
                 <option value="On-Going">On-Going</option>
                 <option value="Done">Done</option>
               </select>
-              <p style="font-size: 11.5px; color: var(--text-muted); margin: 4px 0 0 2px;">
+              <p id="mdlStatusHelpText" style="font-size: 11.5px; color: var(--text-muted); margin: 4px 0 0 2px;">
                 Setting status to <strong>Done</strong> automatically moves this ticket to Completed Maintenance.
               </p>
+              <div id="mdlStatusLockedNotice" style="display: none; align-items: center; gap: 6px; margin-top: 6px; font-size: 12px; color: #166534; background: #DCFCE7; border: 1px solid #BBF7D0; padding: 7px 10px; border-radius: 8px; font-weight: 700;">
+                <i data-lucide="lock" class="w-4 h-4" aria-hidden="true"></i> Status is permanently locked as Done.
+              </div>
             </div>
 
             <div class="form-group" style="margin-bottom: 14px;">
@@ -3850,10 +3956,19 @@ try {
         loadDashboardAnalytics();
       } else if (sectionId === 'sectionDirectory' && typeof fetchActiveDirectoryUnits === 'function') {
         fetchActiveDirectoryUnits();
-      } else if (sectionId === 'sectionTickets' && typeof fetchMaintenanceTickets === 'function') {
-        fetchMaintenanceTickets(true);
+      } else if (sectionId === 'sectionTickets') {
+        if (typeof switchTicketTab === 'function') {
+          switchTicketTab('active');
+        }
+        if (typeof fetchMaintenanceTickets === 'function') {
+          fetchMaintenanceTickets(true);
+        }
       } else if (sectionId === 'sectionReports' && typeof fetchTenantReports === 'function') {
         fetchTenantReports(true);
+      } else if (sectionId === 'sectionPayments') {
+        if (typeof switchPaymentTab === 'function') {
+          switchPaymentTab('pending');
+        }
       }
 
       // Synchronize profile name elements
@@ -6924,7 +7039,7 @@ try {
     // =========================================================================
     window.allTicketsData = <?= json_encode($tickets, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
     let activeTicketTab = 'active';
-    let activeBoardStatus = 'Pending';
+    let activeBoardStatus = 'All';
     let lastTicketsSnapshot = JSON.stringify(window.allTicketsData || []);
     const maintenanceScrollMemory = { windowY: null, boxTop: 0 };
 
@@ -7029,6 +7144,14 @@ try {
         }
         if (completedPane) completedPane.style.display = 'none';
         if (activePane) activePane.style.display = 'block';
+
+        // Requirement: Default Active/On-going Maintenance filter to All when opened
+        const dropdownEl = document.getElementById('activeStatusDropdown');
+        if (dropdownEl && dropdownEl.value !== 'All') {
+          dropdownEl.value = 'All';
+        }
+        activeBoardStatus = 'All';
+        renderMaintenanceUnifiedView();
         restoreMaintenanceScrollPositions();
       }
     }
@@ -7097,7 +7220,7 @@ try {
       const statusList = (window.allTicketsData || []).filter(tk => {
         const norm = normalizeTicketStatus(tk.status);
         if (activeBoardStatus === 'All') {
-          return norm === 'Pending' || norm === 'On-Going';
+          return norm !== 'Done';
         }
         return norm === activeBoardStatus;
       });
@@ -7233,6 +7356,12 @@ try {
 
     // Direct Status Update
     async function updateTicketStatus(id, newStatus) {
+      const idNum = parseInt(id, 10);
+      const cachedTk = (window.allTicketsData || []).find(t => parseInt(t.id, 10) === idNum);
+      if (cachedTk && normalizeTicketStatus(cachedTk.status) === 'Done') {
+        showToast(`Ticket #MT-${String(id).padStart(4, '0')} is marked as Done and its status is permanently locked.`, 'warning');
+        return;
+      }
       const normStatus = normalizeTicketStatus(newStatus);
 
       try {
@@ -7322,6 +7451,7 @@ try {
       const normStatus = (tk.status === 'Done' || tk.status === 'resolved' || tk.status === 'closed')
         ? 'Done'
         : ((tk.status === 'On-Going' || tk.status === 'in_progress') ? 'On-Going' : 'Pending');
+      const isDone = normStatus === 'Done';
 
       const statusBadge = document.getElementById('mdlStatusBadge');
       if (statusBadge) {
@@ -7330,8 +7460,22 @@ try {
       }
 
       const selStatus = document.getElementById('mdlSelectStatus');
+      const statusHelpText = document.getElementById('mdlStatusHelpText');
+      const statusLockedNotice = document.getElementById('mdlStatusLockedNotice');
       if (selStatus) {
         selStatus.value = normStatus;
+        selStatus.disabled = isDone;
+        if (isDone) {
+          selStatus.classList.add('opacity-60', 'cursor-not-allowed');
+        } else {
+          selStatus.classList.remove('opacity-60', 'cursor-not-allowed');
+        }
+      }
+      if (statusHelpText) {
+        statusHelpText.style.display = isDone ? 'none' : 'block';
+      }
+      if (statusLockedNotice) {
+        statusLockedNotice.style.display = isDone ? 'flex' : 'none';
       }
 
       // 5. Tenant Info
@@ -7433,6 +7577,13 @@ try {
       const reply = document.getElementById('mdlResolutionNotes').value.trim();
 
       if (!id) return;
+
+      const cachedTk = (window.allTicketsData || []).find(t => parseInt(t.id, 10) === parseInt(id, 10));
+      const wasDone = cachedTk && normalizeTicketStatus(cachedTk.status) === 'Done';
+      if (wasDone && status !== 'Done') {
+        showToast('Ticket status is permanently locked as Done and cannot be modified.', 'warning');
+        return;
+      }
 
       const origText = btn.innerHTML;
       btn.innerHTML = '<span>Saving...</span>';
@@ -7918,22 +8069,50 @@ try {
     let allPaymentsData = <?= json_encode($payments) ?>;
     let isPaymentVerificationInProgress = false;
     let currentViewingPayment = null;
+    let currentPaymentFolderTab = 'pending';
 
-    // Filter payments ledger table by Month and Year
+    function switchPaymentTab(tab) {
+      currentPaymentFolderTab = (tab === 'history') ? 'history' : 'pending';
+      const pendingBtn = document.getElementById('btnTabPendingPayments');
+      const historyBtn = document.getElementById('btnTabPaymentHistory');
+      const pendingPane = document.getElementById('panePendingPayments');
+      const historyPane = document.getElementById('panePaymentHistory');
+
+      const isHistory = currentPaymentFolderTab === 'history';
+      if (pendingBtn) {
+        pendingBtn.classList.toggle('active', !isHistory);
+        pendingBtn.setAttribute('aria-selected', !isHistory ? 'true' : 'false');
+      }
+      if (historyBtn) {
+        historyBtn.classList.toggle('active', isHistory);
+        historyBtn.setAttribute('aria-selected', isHistory ? 'true' : 'false');
+      }
+      if (pendingPane) pendingPane.style.display = isHistory ? 'none' : 'block';
+      if (historyPane) historyPane.style.display = isHistory ? 'block' : 'none';
+    }
+
+    // Filter payments ledger table by Status, Month, Year, and Search
     function applyPaymentFilters() {
-      const selectedMonth = document.getElementById('paymentFilterMonth').value;
-      const selectedYear = document.getElementById('paymentFilterYear').value;
+      const selectedStatus = document.getElementById('paymentFilterStatus')?.value || 'all';
+      const selectedMonth = document.getElementById('paymentFilterMonth')?.value || 'all';
+      const selectedYear = document.getElementById('paymentFilterYear')?.value || 'all';
+      const searchQuery = (document.getElementById('paymentHistorySearchInput')?.value || '').trim().toLowerCase();
       const rows = document.querySelectorAll('.payment-record-row');
       let visibleCount = 0;
 
       rows.forEach(row => {
-        const rowMonth = row.getAttribute('data-month');
-        const rowYear = row.getAttribute('data-year');
+        const rowStatus = (row.getAttribute('data-status') || '').toLowerCase();
+        const rowMonth = row.getAttribute('data-month') || '';
+        const rowYear = row.getAttribute('data-year') || '';
+        const rowTenant = (row.getAttribute('data-tenant-name') || '').toLowerCase();
+        const rowUnit = (row.getAttribute('data-unit') || '').toLowerCase();
 
+        const statusMatch = (selectedStatus === 'all') || (rowStatus === selectedStatus.toLowerCase());
         const monthMatch = (selectedMonth === 'all') || (rowMonth === selectedMonth);
         const yearMatch = (selectedYear === 'all') || (rowYear === selectedYear);
+        const searchMatch = !searchQuery || rowTenant.includes(searchQuery) || rowUnit.includes(searchQuery);
 
-        if (monthMatch && yearMatch) {
+        if (statusMatch && monthMatch && yearMatch && searchMatch) {
           row.style.display = '';
           visibleCount++;
         } else {
@@ -7952,12 +8131,16 @@ try {
       }
     }
 
-    // Reset month & year filters to 'all'
+    // Reset status, month, year & search filters to default
     function resetPaymentFilters() {
+      const statusSelect = document.getElementById('paymentFilterStatus');
       const monthSelect = document.getElementById('paymentFilterMonth');
       const yearSelect = document.getElementById('paymentFilterYear');
+      const searchInput = document.getElementById('paymentHistorySearchInput');
+      if (statusSelect) statusSelect.value = 'all';
       if (monthSelect) monthSelect.value = 'all';
       if (yearSelect) yearSelect.value = 'all';
+      if (searchInput) searchInput.value = '';
       applyPaymentFilters();
     }
 
@@ -8433,6 +8616,12 @@ try {
         openReportDetailsModal(item.payload);
       } else if (item.kind === 'payment') {
         switchSection('sectionPayments', document.getElementById('navPaymentVerification'));
+        const pStatus = ((item.payload && item.payload.status) || '').toLowerCase();
+        if (pStatus !== 'pending' && typeof switchPaymentTab === 'function') {
+          switchPaymentTab('history');
+        } else if (typeof switchPaymentTab === 'function') {
+          switchPaymentTab('pending');
+        }
         openPaymentDetailsModal(item.payload);
       }
     }
@@ -8627,6 +8816,16 @@ try {
           const openTicketsEl = document.getElementById('overviewOpenTickets');
           if (openTicketsEl && data.kpis.maintenance) {
             openTicketsEl.textContent = String(Number(data.kpis.maintenance.active_tickets || 0));
+          }
+          const overviewUnitsEl = document.getElementById('overviewUnitsValue');
+          if (overviewUnitsEl && data.kpis.units) {
+            const avail = data.kpis.units.available_units ?? 0;
+            const tot = data.kpis.units.total_units ?? 3;
+            overviewUnitsEl.textContent = `${avail} of ${tot}`;
+          }
+          const archivedTenantsEl = document.getElementById('overviewArchivedTenants');
+          if (archivedTenantsEl && data.kpis.units && data.kpis.units.total_archived_tenants !== undefined) {
+            archivedTenantsEl.textContent = String(data.kpis.units.total_archived_tenants);
           }
 
           if (window.lucide && typeof window.lucide.createIcons === 'function') {

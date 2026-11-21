@@ -1120,68 +1120,111 @@ body.tenant-portal-shell .maintenance-folder-tab {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 14px 20px;
+  padding: 13px 18px;
   font-family: inherit;
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 700;
   letter-spacing: 0.01em;
-  background: #F5F0E6;
-  color: #3E2723;
-  border: 2px solid #8C6D43;
+  background: #FFFFFF;
+  color: #302313;
+  border: 1.5px solid #422B0B;
   border-bottom: none;
   border-top-left-radius: 16px;
   border-top-right-radius: 16px;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: background-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+}
+
+body.tenant-portal-shell .maintenance-folder-tab + .maintenance-folder-tab {
+  margin-left: -1.5px;
 }
 
 body.tenant-portal-shell .maintenance-folder-tab:hover:not(.active) {
-  background: #E8D8B0;
-  color: #2A1B0A;
+  background: #FAF1DF;
+  color: #56380E;
 }
 
 body.tenant-portal-shell .maintenance-folder-tab.active {
-  background: #B89B72 !important;
-  color: #FFFFFF !important;
-  box-shadow: inset 0 1.5px 0 rgba(255, 255, 255, 0.3);
+  background: #5E3F12 !important;
+  color: #FFFDF8 !important;
+  border: 1.5px solid #422B0B !important;
+  border-bottom: none !important;
+  box-shadow: inset 0 1.5px 0 rgba(245, 217, 158, 0.28);
 }
 
 body.tenant-portal-shell .maintenance-folder-tab .folder-tab-count {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 800;
   padding: 2px 9px;
   border-radius: 999px;
-  background: #E8D8B0;
-  color: #3E2723;
-  border: 1px solid #B89B72;
+  background: #F1E3C9;
+  color: #56380E;
+  border: 1px solid rgba(86, 56, 14, 0.2);
   line-height: 1.3;
 }
 
 body.tenant-portal-shell .maintenance-folder-tab.active .folder-tab-count {
-  background: rgba(255, 255, 255, 0.25);
-  color: #FFFFFF;
-  border-color: rgba(255, 255, 255, 0.45);
+  background: rgba(245, 217, 158, 0.22) !important;
+  color: #FFF8EB !important;
+  border: 1px solid rgba(245, 217, 158, 0.48) !important;
 }
 
 body.tenant-portal-shell .maintenance-folder-body {
-  border: 2px solid #8C6D43;
+  border: 1.5px solid #422B0B;
   border-radius: 0 0 16px 16px;
-  background: #B89B72;
-  padding: 28px 34px 34px;
-  min-height: 520px;
-  box-shadow: 0 10px 25px rgba(74, 55, 40, 0.15);
+  background: linear-gradient(180deg, #FBF8F1 0%, #EFE3CC 52%, #DFC8A4 76%, #F3EAD9 100%) !important;
+  padding: 24px 28px 30px;
+  min-height: 480px;
+  box-shadow: 0 14px 30px rgba(48, 35, 19, 0.12);
+}
+
+body.tenant-portal-shell .maintenance-folder-body h2,
+body.tenant-portal-shell .maintenance-folder-body h3,
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantPayments, #tenantReport) h2,
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantPayments, #tenantReport) h3 {
+  color: #422B0B !important;
+  font-weight: 900 !important;
+  letter-spacing: -0.01em !important;
+}
+
+body.tenant-portal-shell .maintenance-folder-body label,
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantPayments, #tenantReport) label {
+  color: #422B0B !important;
+}
+
+body.tenant-portal-shell .maintenance-folder-body input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+body.tenant-portal-shell .maintenance-folder-body select,
+body.tenant-portal-shell .maintenance-folder-body textarea,
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantPayments, #tenantReport) input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantPayments, #tenantReport) select,
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantPayments, #tenantReport) textarea {
+  background: #FFFDF8 !important;
+  color: #302313 !important;
+  border: 1.5px solid rgba(86, 56, 14, 0.35) !important;
+  border-radius: 10px !important;
+}
+
+body.tenant-portal-shell .maintenance-folder-body input:focus,
+body.tenant-portal-shell .maintenance-folder-body select:focus,
+body.tenant-portal-shell .maintenance-folder-body textarea:focus,
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantPayments, #tenantReport) input:focus,
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantPayments, #tenantReport) select:focus,
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantPayments, #tenantReport) textarea:focus {
+  outline: none !important;
+  border-color: #5E3F12 !important;
+  box-shadow: 0 0 0 2px rgba(94, 63, 18, 0.25), 0 4px 10px rgba(48, 35, 19, 0.15) !important;
 }
 
 body.tenant-portal-shell #tenantMaintenance .maintenance-request-card {
   width: 100%;
-  padding: 28px 34px 32px;
+  padding: 24px 28px 30px;
   border-radius: 14px;
-  background: #B89B72;
-  border: 2px solid #8C6D43;
-  box-shadow: 0 10px 25px rgba(74, 55, 40, 0.15);
+  background: transparent;
+  border: none;
+  box-shadow: none;
 }
 
 body.tenant-portal-shell #tenantMaintenance .maintenance-form-title {
@@ -1189,30 +1232,30 @@ body.tenant-portal-shell #tenantMaintenance .maintenance-form-title {
   font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
   font-size: clamp(1.6rem, 2.35vw, 2rem);
   font-weight: 900;
-  color: #FFFFFF;
+  color: #422B0B;
   letter-spacing: -0.02em;
   line-height: 1.15;
 }
 
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-request-form {
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-request-form {
   width: 100%;
 }
 
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-form-grid {
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-form-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.52fr) minmax(0, 1fr);
   gap: 34px;
   align-items: stretch;
 }
 
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-form-left {
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-form-left {
   display: flex;
   flex-direction: column;
   gap: 22px;
   min-width: 0;
 }
 
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-form-right {
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-form-right {
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -1225,67 +1268,67 @@ body.tenant-portal-shell #tenantMaintenance .maintenance-meta-row {
   align-items: start;
 }
 
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-field-group {
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-field-group {
   display: flex;
   flex-direction: column;
   min-width: 0;
 }
 
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-desc-group {
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-desc-group {
   flex: 1;
   height: 100%;
 }
 
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-field-label {
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-field-label {
   display: block;
   margin-bottom: 8px;
-  font-size: 14.5px;
+  font-size: 14px;
   font-weight: 800;
-  color: #FFFFFF;
+  color: #422B0B !important;
   line-height: 1.25;
 }
 
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-text-input,
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-select-trigger,
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-textarea-input {
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-text-input,
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-select-trigger,
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-textarea-input {
   width: 100%;
   box-sizing: border-box;
-  background: #F5F0E6 !important;
-  color: #3E2723 !important;
-  border: 1.5px solid rgba(140, 109, 67, 0.6) !important;
+  background: #FFFDF8 !important;
+  color: #302313 !important;
+  border: 1.5px solid rgba(86, 56, 14, 0.35) !important;
   border-radius: 10px;
-  box-shadow: 0 2px 4px rgba(74, 55, 40, 0.08);
+  box-shadow: 0 2px 4px rgba(48, 35, 19, 0.05);
   font-family: inherit;
   font-size: 13.5px;
   font-weight: 600;
   transition: all 0.16s ease;
 }
 
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-text-input {
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-text-input {
   height: 44px;
   padding: 10px 14px;
 }
 
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-text-input::placeholder,
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-textarea-input::placeholder {
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-text-input::placeholder,
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-textarea-input::placeholder {
   color: #9C8262;
   font-weight: 500;
 }
 
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-text-input:focus,
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-select-trigger:focus,
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-textarea-input:focus {
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-text-input:focus,
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-select-trigger:focus,
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-textarea-input:focus {
   outline: none;
-  box-shadow: 0 0 0 2px #4A3728, 0 4px 10px rgba(74, 55, 40, 0.2);
-  border-color: #4A3728 !important;
+  box-shadow: 0 0 0 2px rgba(94, 63, 18, 0.25), 0 4px 10px rgba(48, 35, 19, 0.15);
+  border-color: #5E3F12 !important;
 }
 
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-select-wrap {
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-select-wrap {
   position: relative;
   width: 100%;
 }
 
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-native-select-hidden {
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-native-select-hidden {
   position: absolute;
   opacity: 0;
   width: 100%;
@@ -1295,7 +1338,7 @@ body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-nat
   padding: 0;
 }
 
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-select-trigger {
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-select-trigger {
   height: 44px;
   padding: 10px 42px 10px 14px;
   display: flex;
@@ -1306,37 +1349,37 @@ body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-sel
   position: relative;
 }
 
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-select-trigger::after {
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-select-trigger::after {
   content: '';
   position: absolute;
   right: 15px;
   top: 50%;
-  width: 13px;
-  height: 13px;
+  width: 11px;
+  height: 11px;
   transform: translateY(-65%) rotate(45deg);
-  border-right: 1.8px solid #4A3728;
-  border-bottom: 1.8px solid #4A3728;
+  border-right: 1.8px solid #5E3F12;
+  border-bottom: 1.8px solid #5E3F12;
   pointer-events: none;
   transition: transform 0.15s ease;
 }
 
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-select-wrap.is-open .maintenance-select-trigger::after {
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-select-wrap.is-open .maintenance-select-trigger::after {
   transform: translateY(-25%) rotate(-135deg);
 }
 
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-select-value {
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-select-value {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #3E2723;
+  color: #302313;
 }
 
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-select-value.is-placeholder {
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-select-value.is-placeholder {
   color: #9C8262;
   font-weight: 500;
 }
 
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-select-menu {
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-select-menu {
   position: absolute;
   top: calc(100% + 4px);
   left: 0;
@@ -1344,43 +1387,43 @@ body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-sel
   z-index: 60;
   display: none;
   flex-direction: column;
-  background: #F5F0E6;
+  background: #FFFDF8;
   border: 1.5px solid #8C6D43;
   border-radius: 10px;
-  box-shadow: 0 8px 20px rgba(74, 55, 40, 0.2);
+  box-shadow: 0 8px 20px rgba(48, 35, 19, 0.15);
   overflow: hidden;
 }
 
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-select-wrap.is-open .maintenance-select-menu {
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-select-wrap.is-open .maintenance-select-menu {
   display: flex;
 }
 
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-select-option {
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-select-option {
   width: 100%;
   padding: 10px 14px;
-  background: #F5F0E6;
+  background: #FFFDF8;
   border: none;
-  border-bottom: 1px solid rgba(140, 109, 67, 0.2);
+  border-bottom: 1px solid rgba(140, 109, 67, 0.15);
   text-align: left;
   font-family: inherit;
   font-size: 13px;
   font-weight: 600;
-  color: #3E2723;
+  color: #302313;
   cursor: pointer;
   transition: background-color 0.12s ease;
 }
 
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-select-option:last-child {
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-select-option:last-child {
   border-bottom: none;
 }
 
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-select-option:hover,
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-select-option.is-selected {
-  background: #E8D8B0;
-  color: #2A1B0A;
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-select-option:hover,
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-select-option.is-selected {
+  background: #FAF1DF;
+  color: #56380E;
 }
 
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-textarea-input {
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-textarea-input {
   flex: 1;
   min-height: 255px;
   padding: 14px 16px;
@@ -1418,9 +1461,9 @@ body.tenant-portal-shell #tenantMaintenance .maintenance-radio-circle {
   width: 21px;
   height: 21px;
   border-radius: 50%;
-  background: #F5F0E6;
-  border: 1.5px solid #8C6D43;
-  box-shadow: 0 1px 2px rgba(74, 55, 40, 0.12);
+  background: #FFFDF8;
+  border: 1.5px solid #56380E;
+  box-shadow: 0 1px 2px rgba(48, 35, 19, 0.1);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1433,7 +1476,7 @@ body.tenant-portal-shell #tenantMaintenance .maintenance-radio-circle::after {
   width: 11px;
   height: 11px;
   border-radius: 50%;
-  background: #4A3728;
+  background: #5E3F12;
   transform: scale(0);
   transition: transform 0.14s ease;
 }
@@ -1447,34 +1490,34 @@ body.tenant-portal-shell #tenantMaintenance .maintenance-radio-option input[type
 }
 
 body.tenant-portal-shell #tenantMaintenance .maintenance-radio-option input[type="radio"]:focus-visible + .maintenance-radio-circle {
-  outline: 2px solid #4A3728;
+  outline: 2px solid #5E3F12;
   outline-offset: 2px;
 }
 
 body.tenant-portal-shell #tenantMaintenance .maintenance-radio-text {
   font-size: 13.5px;
   font-weight: 800;
-  color: #FFFFFF;
+  color: #422B0B;
   line-height: 1.2;
 }
 
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-upload-section {
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-upload-section {
   margin-top: 28px;
 }
 
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-upload-center {
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-upload-center {
   display: flex;
   justify-content: center;
   margin-top: 10px;
 }
 
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-upload-btn-wrap {
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-upload-btn-wrap {
   position: relative;
   display: inline-block;
   max-width: 100%;
 }
 
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-file-input {
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-file-input {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -1484,11 +1527,11 @@ body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-fil
   z-index: 5;
 }
 
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-file-input:disabled {
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-file-input:disabled {
   cursor: not-allowed;
 }
 
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-upload-btn {
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-upload-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1496,36 +1539,36 @@ body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-upl
   min-width: 225px;
   max-width: 100%;
   padding: 10px 24px;
-  background: #F5F0E6;
-  color: #3E2723;
-  border: 2px solid #8C6D43;
+  background: #F3E4C6;
+  color: #56380E;
+  border: 1.5px solid rgba(86, 56, 14, 0.35);
   border-radius: 12px;
-  box-shadow: 0 2px 6px rgba(74, 55, 40, 0.15);
-  font-size: 15px;
+  box-shadow: 0 2px 6px rgba(48, 35, 19, 0.08);
+  font-size: 14.5px;
   font-weight: 700;
   cursor: pointer;
   transition: transform 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease;
 }
 
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-upload-btn-wrap:hover .maintenance-upload-btn:not(.clay-btn-locked) {
-  background: #E8D8B0;
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-upload-btn-wrap:hover .maintenance-upload-btn:not(.clay-btn-locked) {
+  background: #EAD5B0;
   transform: translateY(-1px);
-  box-shadow: 0 4px 10px rgba(74, 55, 40, 0.22);
+  box-shadow: 0 4px 10px rgba(48, 35, 19, 0.15);
 }
 
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-upload-btn.clay-btn-locked {
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-upload-btn.clay-btn-locked {
   opacity: 0.78;
   cursor: not-allowed;
 }
 
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-upload-icon {
-  width: 25px;
-  height: 25px;
-  color: #4A3728;
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-upload-icon {
+  width: 24px;
+  height: 24px;
+  color: #5E3F12;
   flex-shrink: 0;
 }
 
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-photos-preview {
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-photos-preview {
   margin-top: 12px;
   display: flex;
   justify-content: center;
@@ -1533,44 +1576,85 @@ body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-pho
   flex-wrap: wrap;
 }
 
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-submit-row {
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-submit-row {
   display: flex;
   justify-content: center;
   margin-top: 26px;
 }
 
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-submit-btn {
-  min-width: 280px;
-  padding: 13px 40px;
-  background: #4A3728 !important;
-  color: #FFFFFF !important;
-  border: 1.5px solid #382618 !important;
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-submit-btn,
+body.tenant-portal-shell #btnLogTicket,
+body.tenant-portal-shell #btnUploadReceipt,
+body.tenant-portal-shell #btnSubmitApproval {
+  min-width: 260px;
+  padding: 13px 36px;
+  background: #5E3F12 !important;
+  color: #FFFDF8 !important;
+  border: 1.5px solid #422B0B !important;
   border-radius: 12px;
-  box-shadow: 0 4px 12px rgba(74, 55, 40, 0.28);
+  box-shadow: 0 4px 12px rgba(48, 35, 19, 0.25);
   font-family: inherit;
-  font-size: 17.5px;
+  font-size: 16px;
   font-weight: 900;
   letter-spacing: 0.01em;
   cursor: pointer;
   transition: background-color 0.16s ease, transform 0.15s ease, box-shadow 0.15s ease;
 }
 
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-submit-btn:hover:not(:disabled) {
-  background: #382618 !important;
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-submit-btn:hover:not(:disabled),
+body.tenant-portal-shell #btnLogTicket:hover:not(:disabled),
+body.tenant-portal-shell #btnUploadReceipt:hover:not(:disabled),
+body.tenant-portal-shell #btnSubmitApproval:hover:not(:disabled) {
+  background: #4A320E !important;
   transform: translateY(-1px);
-  box-shadow: 0 6px 16px rgba(74, 55, 40, 0.35);
+  box-shadow: 0 6px 16px rgba(48, 35, 19, 0.35);
 }
 
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-submit-btn:disabled {
-  opacity: 0.72;
-  cursor: wait;
-}
-
-body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport) .maintenance-submit-btn-locked {
-  background: #DFD2B8;
-  color: #5C472E;
+body.tenant-portal-shell :is(#tenantMaintenance, #tenantReport, #tenantPayments) .maintenance-submit-btn:disabled,
+body.tenant-portal-shell #btnLogTicket:disabled,
+body.tenant-portal-shell #btnUploadReceipt:disabled,
+body.tenant-portal-shell #btnSubmitApproval:disabled {
+  opacity: 0.65;
   cursor: not-allowed;
 }
+
+body.tenant-portal-shell .maintenance-track-card,
+body.tenant-portal-shell #tenantReport #trackerList > div,
+body.tenant-portal-shell #tenantPayments .payment-tracker-row {
+  background: #FCF9F4 !important;
+  border: 1.5px solid rgba(86, 56, 14, 0.22) !important;
+  border-radius: 14px !important;
+  box-shadow: 0 4px 12px rgba(48, 35, 19, 0.08) !important;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+body.tenant-portal-shell .maintenance-track-card:hover,
+body.tenant-portal-shell #tenantReport #trackerList > div:hover,
+body.tenant-portal-shell #tenantPayments .payment-tracker-row:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 18px rgba(48, 35, 19, 0.12) !important;
+}
+
+body.tenant-portal-shell #tenantPayments .payment-summary-card {
+  background: #FFFFFF !important;
+  border: 1.5px solid rgba(86, 56, 14, 0.2) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 4px 10px rgba(48, 35, 19, 0.06) !important;
+}
+
+@media (max-width: 720px) {
+  body.tenant-portal-shell .maintenance-folder-tab {
+    padding: 11px 10px;
+    font-size: 12.5px;
+    gap: 5px;
+    flex-wrap: wrap;
+    text-align: center;
+  }
+  body.tenant-portal-shell .maintenance-folder-body {
+    padding: 16px 14px 22px;
+  }
+}
+
 
 /* ============================================================================
    4C. General Report Section ("Submit General Report" + My General Reports)

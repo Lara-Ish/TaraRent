@@ -549,7 +549,7 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
 
   <!-- Claymorphism Design System, Aligned Layout Shell & Shared Sidebar Controller -->
   <link rel="stylesheet" href="assets/css/claymorphism.css?v=20261112">
-  <link rel="stylesheet" href="assets/css/tenant_theme.css?v=20261112f">
+  <link rel="stylesheet" href="assets/css/tenant_theme.css?v=20261121d">
   <script src="assets/js/sidebar.js?v=20261112b"></script>
 
   <!-- Dedicated OCR Library (Tesseract.js) -->
@@ -1418,10 +1418,10 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
 
       <!-- CATEGORY 2: LOG MAINTENANCE -->
       <section id="tenantMaintenance" class="app-view-section">
-        <div class="max-w-4xl mx-auto border-2 border-[#8C6D43] rounded-2xl shadow-xl overflow-hidden bg-[#B89B72]" id="maintenanceFolderShell">
-          <div class="flex items-stretch bg-[#F5F0E6] relative z-0" role="tablist" aria-label="Maintenance Views">
+        <div class="max-w-4xl mx-auto maintenance-folder-shell" id="maintenanceFolderShell">
+          <div class="maintenance-folder-tabs" role="tablist" aria-label="Maintenance Views">
             <button type="button"
-                    class="flex-1 py-3.5 px-6 font-black text-sm md:text-base tracking-wide flex items-center justify-center gap-2 transition-all bg-[#B89B72] text-white rounded-tl-xl border-b-2 border-b-[#B89B72] z-10 cursor-pointer active"
+                    class="maintenance-folder-tab active"
                     id="btn-submit"
                     role="tab"
                     aria-selected="true"
@@ -1431,7 +1431,7 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
               <span>Submit Request</span>
             </button>
             <button type="button"
-                    class="flex-1 py-3.5 px-6 font-bold text-sm md:text-base tracking-wide flex items-center justify-center gap-2 transition-all bg-[#F5F0E6] text-[#3E2723] rounded-tr-xl border-l border-b-2 border-[#8C6D43] hover:bg-[#E8D8B0] cursor-pointer"
+                    class="maintenance-folder-tab"
                     id="btn-track"
                     role="tab"
                     aria-selected="false"
@@ -1439,14 +1439,14 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
                     onclick="toggleMaintenanceTabs('track')">
               <i data-lucide="list-checks" class="w-4 h-4"></i>
               <span>Track Requests</span>
-              <span id="tenantMaintenanceCountBadge" class="ml-1.5 px-2 py-0.5 rounded-full text-xs font-black bg-[#E8D8B0] text-[#3E2723] border border-[#B89B72]"><?= count($myTickets) ?></span>
+              <span id="tenantMaintenanceCountBadge" class="folder-tab-count"><?= count($myTickets) ?></span>
             </button>
           </div>
 
-          <div class="p-6 md:p-8 bg-[#B89B72]" id="maintenanceFolderBody">
+          <div class="maintenance-folder-body" id="maintenanceFolderBody">
             <!-- 1. SUBMIT SECTION -->
             <div id="submit-section" class="w-full">
-              <h2 class="text-2xl md:text-3xl font-black text-white mb-6 tracking-wide text-center sm:text-left">Submit Maintenance Request</h2>
+              <h2 class="text-2xl md:text-3xl font-black text-[#422B0B] mb-6 tracking-wide text-center sm:text-left">Submit Maintenance Request</h2>
 
               <?php if (!$isTenantVerified): ?>
               <div class="mb-5 p-4 rounded-xl border border-amber-400 bg-amber-100 text-amber-950 flex items-center justify-between gap-3 shadow-md" role="alert">
@@ -1470,13 +1470,13 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
                   <!-- Left Column: Issue, Repair Category, Urgency Level -->
                   <div class="maintenance-form-left">
                     <div class="maintenance-field-group">
-                      <label for="ticketTitle" class="maintenance-field-label">Issue:</label>
-                      <input type="text" id="ticketTitle" class="w-full h-11 px-3.5 py-2.5 rounded-lg bg-[#F5F0E6] text-[#3E2723] font-semibold text-sm border border-[#8C6D43]/60 focus:outline-none focus:ring-2 focus:ring-[#4A3728] shadow-sm <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed bg-gray-200' : '' ?>" placeholder="e.g. Bathroom sink pipe dripping" required <?= !$isTenantVerified ? 'disabled' : '' ?>>
+                      <label for="ticketTitle" class="maintenance-field-label" style="color: #422B0B !important;">Issue:</label>
+                      <input type="text" id="ticketTitle" class="w-full h-11 px-3.5 py-2.5 rounded-xl bg-[#FFFDF8] text-[#302313] font-semibold text-sm border border-[#8C6D43]/60 focus:outline-none focus:ring-2 focus:ring-[#5E3F12] shadow-sm <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed bg-gray-200' : '' ?>" placeholder="e.g. Bathroom sink pipe dripping" required <?= !$isTenantVerified ? 'disabled' : '' ?>>
                     </div>
 
                     <div class="maintenance-meta-row">
                       <div class="maintenance-field-group">
-                        <label for="ticketCategoryTrigger" class="maintenance-field-label">Repair Category:</label>
+                        <label for="ticketCategoryTrigger" class="maintenance-field-label" style="color: #422B0B !important;">Repair Category:</label>
                         <div class="maintenance-select-wrap" id="ticketCategoryWrap">
                           <select id="ticketCategory" class="maintenance-native-select-hidden" tabindex="-1" aria-hidden="true" <?= !$isTenantVerified ? 'disabled' : '' ?>>
                             <option value="" disabled selected hidden></option>
@@ -1489,7 +1489,7 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
                           </select>
                           <button type="button"
                                   id="ticketCategoryTrigger"
-                                  class="w-full h-11 px-3.5 py-2.5 rounded-lg bg-[#F5F0E6] text-[#3E2723] font-semibold text-sm border border-[#8C6D43]/60 focus:outline-none focus:ring-2 focus:ring-[#4A3728] shadow-sm flex items-center justify-between <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed pointer-events-none' : '' ?>"
+                                  class="w-full h-11 px-3.5 py-2.5 rounded-xl bg-[#FFFDF8] text-[#302313] font-semibold text-sm border border-[#8C6D43]/60 focus:outline-none focus:ring-2 focus:ring-[#5E3F12] shadow-sm flex items-center justify-between <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed pointer-events-none' : '' ?>"
                                   aria-haspopup="listbox"
                                   aria-expanded="false"
                                   aria-controls="ticketCategoryMenu"
@@ -1508,7 +1508,7 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
                       </div>
 
                       <div class="maintenance-field-group">
-                        <span class="maintenance-field-label" id="urgencyLevelLabel">Urgency Level:</span>
+                        <span class="maintenance-field-label" id="urgencyLevelLabel" style="color: #422B0B !important;">Urgency Level:</span>
                         <div class="maintenance-urgency-list" role="radiogroup" aria-labelledby="urgencyLevelLabel">
                           <label class="maintenance-radio-option">
                             <input type="radio" name="ticketPriority" value="urgent" checked <?= !$isTenantVerified ? 'disabled' : '' ?>>
@@ -1538,20 +1538,20 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
                   <!-- Right Column: Detailed Description -->
                   <div class="maintenance-form-right">
                     <div class="maintenance-field-group maintenance-desc-group">
-                      <label for="ticketDesc" class="maintenance-field-label">Detailed Description:</label>
-                      <textarea id="ticketDesc" class="w-full min-h-[220px] p-3.5 rounded-lg bg-[#F5F0E6] text-[#3E2723] font-semibold text-sm border border-[#8C6D43]/60 focus:outline-none focus:ring-2 focus:ring-[#4A3728] shadow-sm resize-none <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed bg-gray-200' : '' ?>" placeholder="Describe and put the details of your issue." required <?= !$isTenantVerified ? 'disabled' : '' ?>></textarea>
+                      <label for="ticketDesc" class="maintenance-field-label" style="color: #422B0B !important;">Detailed Description:</label>
+                      <textarea id="ticketDesc" class="w-full min-h-[220px] p-3.5 rounded-xl bg-[#FFFDF8] text-[#302313] font-semibold text-sm border border-[#8C6D43]/60 focus:outline-none focus:ring-2 focus:ring-[#5E3F12] shadow-sm resize-none <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed bg-gray-200' : '' ?>" placeholder="Describe and put the details of your issue." required <?= !$isTenantVerified ? 'disabled' : '' ?>></textarea>
                     </div>
                   </div>
                 </div>
 
                 <!-- File Upload Section -->
                 <div class="maintenance-upload-section">
-                  <label for="ticketPhotos" class="maintenance-field-label">Attach photos of issue to be repaired:</label>
+                  <label for="ticketPhotos" class="maintenance-field-label" style="color: #422B0B !important;">Attach photos of issue to be repaired:</label>
                   <div class="maintenance-upload-center">
                     <div class="maintenance-upload-btn-wrap">
                       <input type="file" id="ticketPhotos" name="maintenance_photos[]" accept="image/*" multiple class="maintenance-file-input" <?= !$isTenantVerified ? 'disabled' : '' ?>>
-                      <label for="ticketPhotos" class="inline-flex items-center justify-center gap-2.5 px-6 py-2.5 rounded-xl bg-[#F5F0E6] text-[#3E2723] font-bold text-sm border-2 border-[#8C6D43] shadow-md hover:bg-[#E8D8B0] transition cursor-pointer <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed pointer-events-none' : '' ?>">
-                        <i data-lucide="image" class="w-5 h-5 text-[#4A3728]" aria-hidden="true"></i>
+                      <label for="ticketPhotos" class="inline-flex items-center justify-center gap-2.5 px-6 py-2.5 rounded-xl bg-[#F3E4C6] text-[#56380E] font-bold text-sm border border-[#8C6D43] shadow-md hover:bg-[#EAD5B0] transition cursor-pointer <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed pointer-events-none' : '' ?>">
+                        <i data-lucide="image" class="w-5 h-5 text-[#5E3F12]" aria-hidden="true"></i>
                         <span id="ticketPhotosUploadLabel">Upload Photo</span>
                       </label>
                     </div>
@@ -1561,18 +1561,18 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
 
                 <!-- Centered Submit Request Button -->
                 <div class="maintenance-submit-row">
-                  <button type="submit" class="min-w-[260px] py-3.5 px-8 rounded-xl bg-[#4A3728] hover:bg-[#382618] text-white font-black text-base shadow-lg border border-[#382618] transition-all cursor-pointer <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed bg-gray-400 pointer-events-none' : '' ?>" id="btnLogTicket" <?= !$isTenantVerified ? 'disabled' : '' ?>>Submit Request</button>
+                  <button type="submit" class="min-w-[260px] py-3.5 px-8 rounded-xl bg-[#5E3F12] hover:bg-[#4A320E] text-white font-black text-base shadow-lg border border-[#422B0B] transition-all cursor-pointer <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed bg-gray-400 pointer-events-none' : '' ?>" id="btnLogTicket" <?= !$isTenantVerified ? 'disabled' : '' ?>>Submit Request</button>
                 </div>
               </form>
             </div>
 
             <!-- 2. TRACK SECTION -->
             <div id="track-section" class="w-full hidden">
-              <h2 class="text-2xl md:text-3xl font-black text-white mb-6 tracking-wide text-center sm:text-left">Track Maintenance Requests</h2>
+              <h2 class="text-2xl md:text-3xl font-black text-[#422B0B] mb-6 tracking-wide text-center sm:text-left" style="color: #422B0B !important;">Track Maintenance Requests</h2>
 
               <div id="ticketHistoryContainer" class="flex flex-col gap-6">
                 <?php if (empty($myTickets)): ?>
-                  <div class="text-center py-12 px-6 rounded-2xl bg-[#F5F0E6] border-2 border-[#8C6D43]/40 text-[#7A6245]">
+                  <div class="text-center py-12 px-6 rounded-2xl bg-[#FCF9F4] border border-[#8C6D43]/40 text-[#7A6245]">
                     <i data-lucide="inbox" class="w-8 h-8 mx-auto mb-2 opacity-60"></i>
                     <p class="font-bold text-base m-0">No maintenance requests submitted yet.</p>
                     <p class="text-xs text-[#7A6245] mt-1 mb-0">Submit your first repair request using the "Submit Request" tab.</p>
@@ -1758,26 +1758,26 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
           $isTrackerTabActive = (isset($_GET['tab']) && $_GET['tab'] === 'tracker') || (isset($_GET['success']) && $_GET['success'] === '1');
           ?>
 
-          <!-- 1. STATIC TOP HEADER CARD (60% Dominant Light Beige with 30% Border & 10% Text) -->
-          <div class="bg-[#F5F0E6] border-2 border-[#8C6D43] rounded-2xl shadow-md p-6 text-center">
-            <h1 class="text-2xl md:text-3xl font-black text-[#3E2723] tracking-wider uppercase mb-2">
+          <!-- 1. STATIC TOP HEADER CARD (Dominant Warm Card) -->
+          <div class="bg-[#FCF9F4] border-2 border-[#422B0B]/30 rounded-2xl shadow-md p-6 text-center">
+            <h1 class="text-2xl md:text-3xl font-black text-[#422B0B] tracking-wider uppercase mb-2">
               <?= htmlspecialchars($unitHeaderTitle) ?>
             </h1>
             <div class="flex flex-wrap items-center justify-center gap-x-12 gap-y-2 text-sm md:text-base font-bold text-[#7A6245]">
-              <div>Rent Balance: <span class="font-black text-[#3E2723]">Php <?= $rentBalanceDisplay ?></span></div>
-              <div>Next Due Date: <span class="font-black text-[#3E2723]"><?= htmlspecialchars($nextDueDateDisplay) ?></span></div>
+              <div>Rent Balance: <span class="font-black text-[#422B0B]">Php <?= $rentBalanceDisplay ?></span></div>
+              <div>Next Due Date: <span class="font-black text-[#422B0B]"><?= htmlspecialchars($nextDueDateDisplay) ?></span></div>
             </div>
           </div>
 
-          <!-- 2. UNIFIED PARENT FOLDER CONTAINER (30% Secondary Medium Clay bg-[#B89B72]) -->
-          <div class="border-2 border-[#8C6D43] rounded-2xl shadow-xl overflow-hidden bg-[#B89B72]">
+          <!-- 2. UNIFIED PARENT FOLDER CONTAINER -->
+          <div class="maintenance-folder-shell" id="tenantPaymentsFolderShell">
 
             <!-- Top Tab Bar -->
-            <div class="flex items-stretch bg-[#F5F0E6] relative z-0">
+            <div class="maintenance-folder-tabs" role="tablist" aria-label="Payment Views">
               <!-- Tab: Upload Proof -->
               <button type="button" id="tabBtnUpload" onclick="switchPaymentTab('upload')"
-                class="flex-1 py-3.5 px-6 font-black text-sm md:text-base tracking-wide flex items-center justify-center gap-2 transition-all <?= !$isTrackerTabActive ? 'bg-[#B89B72] text-white rounded-tl-xl border-b-2 border-b-[#B89B72] z-10' : 'bg-[#F5F0E6] text-[#3E2723] rounded-tl-xl border-r border-b-2 border-[#8C6D43] hover:bg-[#E8D8B0]' ?> cursor-pointer">
-                <svg class="w-5 h-5 <?= !$isTrackerTabActive ? 'text-white' : 'text-[#4A3728]' ?>" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                class="maintenance-folder-tab <?= !$isTrackerTabActive ? 'active' : '' ?>" role="tab" aria-selected="<?= !$isTrackerTabActive ? 'true' : 'false' ?>">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
                 </svg>
                 <span>Upload Proof</span>
@@ -1785,23 +1785,23 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
 
               <!-- Tab: Payment Tracker -->
               <button type="button" id="tabBtnTracker" onclick="switchPaymentTab('tracker')"
-                class="flex-1 py-3.5 px-6 font-bold text-sm md:text-base tracking-wide flex items-center justify-center gap-2 transition-all <?= $isTrackerTabActive ? 'bg-[#B89B72] text-white rounded-tr-xl border-b-2 border-b-[#B89B72] z-10' : 'bg-[#F5F0E6] text-[#3E2723] rounded-tr-xl border-l border-b-2 border-[#8C6D43] hover:bg-[#E8D8B0]' ?> cursor-pointer">
-                <svg class="w-5 h-5 <?= $isTrackerTabActive ? 'text-white' : 'text-[#4A3728]' ?>" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                class="maintenance-folder-tab <?= $isTrackerTabActive ? 'active' : '' ?>" role="tab" aria-selected="<?= $isTrackerTabActive ? 'true' : 'false' ?>">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
                 </svg>
                 <span>Payment Tracker</span>
-                <span id="paymentCountBadge" class="ml-1.5 px-2 py-0.5 rounded-full text-xs font-black bg-[#E8D8B0] text-[#3E2723] border border-[#B89B72]">
+                <span id="paymentCountBadge" class="folder-tab-count">
                   <?= count($allTenantPayments) ?>
                 </span>
               </button>
             </div>
 
-            <!-- Main Content Area (30% Secondary Medium Clay bg-[#B89B72] Open Folder) -->
-            <div class="p-6 md:p-8 bg-[#B89B72]">
+            <!-- Main Content Area -->
+            <div class="maintenance-folder-body" id="tenantPaymentsFolderBody">
 
               <!-- TAB 1: UPLOAD PROOF -->
               <div id="tabContentUpload" class="<?= $isTrackerTabActive ? 'hidden' : '' ?>">
-                <h2 class="text-2xl md:text-3xl font-black text-white mb-6 tracking-wide">Upload Payment Proof</h2>
+                <h2 class="text-2xl md:text-3xl font-black text-[#422B0B] mb-6 tracking-wide" style="color: #422B0B !important;">Upload Payment Proof</h2>
 
                 <?php if (!$isTenantVerified): ?>
                 <div class="mb-6 p-4 rounded-xl border border-amber-400 bg-amber-100 text-amber-950 flex items-center justify-between gap-3 shadow-md" role="alert">
@@ -1854,13 +1854,13 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
                   <input type="hidden" name="action" value="upload_payment_proof">
                   <input type="hidden" id="payTargetPayment" name="payment_id" value="<?= !empty($unpaidBills[0]['id']) ? (int)$unpaidBills[0]['id'] : '0' ?>">
 
-                  <!-- Grid for Form Fields (60% Dominant Light Beige Form Inputs bg-[#F5F0E6]) -->
+                  <!-- Grid for Form Fields -->
                   <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4 mb-6">
                     <!-- 1. Billing Month -->
                     <div>
-                      <label for="payBillingMonth" class="block font-bold text-sm text-[#F5F0E6] mb-1.5">Billing Month:</label>
+                      <label for="payBillingMonth" class="block font-bold text-sm text-[#422B0B] mb-1.5" style="color: #422B0B !important;">Billing Month:</label>
                       <div class="relative">
-                        <select id="payBillingMonth" name="billing_month" onchange="handleBillingMonthChange()" class="w-full bg-[#F5F0E6] text-[#3E2723] font-bold text-sm px-4 py-2.5 rounded-xl border border-[#8C6D43]/60 shadow-md focus:outline-none focus:ring-2 focus:ring-[#4A3728] appearance-none pr-10 cursor-pointer <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed' : '' ?>" <?= !$isTenantVerified ? 'disabled' : '' ?>>
+                        <select id="payBillingMonth" name="billing_month" onchange="handleBillingMonthChange()" class="w-full bg-[#FFFDF8] text-[#3E2723] font-bold text-sm px-4 py-2.5 rounded-xl border border-[#8C6D43]/60 shadow-md focus:outline-none focus:ring-2 focus:ring-[#5E3F12] appearance-none pr-10 cursor-pointer <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed' : '' ?>" <?= !$isTenantVerified ? 'disabled' : '' ?>>
                           <?php foreach ($unpaidBills as $idx => $ub): ?>
                             <?php
                             $cycleDate = !empty($ub['billing_cycle']) ? $ub['billing_cycle'] : date('Y-m-01');
@@ -1885,9 +1885,9 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
 
                     <!-- 2. Payment Method -->
                     <div>
-                      <label for="payMethod" class="block font-bold text-sm text-[#F5F0E6] mb-1.5">Payment Method:</label>
+                      <label for="payMethod" class="block font-bold text-sm text-[#422B0B] mb-1.5" style="color: #422B0B !important;">Payment Method:</label>
                       <div class="relative">
-                        <select id="payMethod" name="payment_method" class="w-full bg-[#F5F0E6] text-[#3E2723] font-bold text-sm px-4 py-2.5 rounded-xl border border-[#8C6D43]/60 shadow-md focus:outline-none focus:ring-2 focus:ring-[#4A3728] appearance-none pr-10 cursor-pointer <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed' : '' ?>" <?= !$isTenantVerified ? 'disabled' : '' ?>>
+                        <select id="payMethod" name="payment_method" class="w-full bg-[#FFFDF8] text-[#3E2723] font-bold text-sm px-4 py-2.5 rounded-xl border border-[#8C6D43]/60 shadow-md focus:outline-none focus:ring-2 focus:ring-[#5E3F12] appearance-none pr-10 cursor-pointer <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed' : '' ?>" <?= !$isTenantVerified ? 'disabled' : '' ?>>
                           <option value="GCash" selected>GCash</option>
                           <option value="Bank Transfer">Bank Transfer</option>
                           <option value="Maya">Maya</option>
@@ -1901,9 +1901,9 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
 
                     <!-- 3. Pay for -->
                     <div>
-                      <label for="payFor" class="block font-bold text-sm text-[#F5F0E6] mb-1.5">Pay for:</label>
+                      <label for="payFor" class="block font-bold text-sm text-[#422B0B] mb-1.5" style="color: #422B0B !important;">Pay for:</label>
                       <div class="relative">
-                        <select id="payFor" name="pay_for" class="w-full bg-[#F5F0E6] text-[#3E2723] font-bold text-sm px-4 py-2.5 rounded-xl border border-[#8C6D43]/60 shadow-md focus:outline-none focus:ring-2 focus:ring-[#4A3728] appearance-none pr-10 cursor-pointer <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed' : '' ?>" <?= !$isTenantVerified ? 'disabled' : '' ?>>
+                        <select id="payFor" name="pay_for" class="w-full bg-[#FFFDF8] text-[#3E2723] font-bold text-sm px-4 py-2.5 rounded-xl border border-[#8C6D43]/60 shadow-md focus:outline-none focus:ring-2 focus:ring-[#5E3F12] appearance-none pr-10 cursor-pointer <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed' : '' ?>" <?= !$isTenantVerified ? 'disabled' : '' ?>>
                           <option value="Rent" <?= (!empty($unpaidBills[0]['payment_type']) && $unpaidBills[0]['payment_type'] === 'Rent') ? 'selected' : '' ?>>Monthly Rent</option>
                           <option value="Advance Deposit" <?= (!empty($unpaidBills[0]['payment_type']) && $unpaidBills[0]['payment_type'] === 'Advance Deposit') ? 'selected' : '' ?>>Advance Deposit</option>
                           <option value="Additional Space">Additional Space</option>
@@ -1914,28 +1914,28 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
                       </div>
                     </div>
 
-                    <!-- 4. Payment Amount (Required field, 60% Dominant Light Beige fill bg-[#F5F0E6]) -->
+                    <!-- 4. Payment Amount -->
                     <div>
-                      <label for="payAmount" class="block font-bold text-sm text-[#F5F0E6] mb-1.5">Payment Amount (Php):</label>
+                      <label for="payAmount" class="block font-bold text-sm text-[#422B0B] mb-1.5" style="color: #422B0B !important;">Payment Amount (Php):</label>
                       <?php
                       $initialPayAmount = !empty($unpaidBills[0]) ? max(0.0, (float)$unpaidBills[0]['amount_due'] - (float)$unpaidBills[0]['amount_paid']) : 3000.00;
                       if ($initialPayAmount <= 0.01) $initialPayAmount = 3000.00;
                       ?>
-                      <input type="number" step="0.01" min="1" name="amount" id="payAmount" required value="<?= number_format($initialPayAmount, 2, '.', '') ?>" placeholder="0.00" class="w-full bg-[#F5F0E6] text-[#3E2723] font-bold text-sm px-4 py-2.5 rounded-xl border border-[#8C6D43]/60 shadow-md placeholder-[#9A7B4F] focus:outline-none focus:ring-2 focus:ring-[#4A3728] <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed' : '' ?>" <?= !$isTenantVerified ? 'disabled' : '' ?>>
+                      <input type="number" step="0.01" min="1" name="amount" id="payAmount" required value="<?= number_format($initialPayAmount, 2, '.', '') ?>" placeholder="0.00" class="w-full bg-[#FFFDF8] text-[#3E2723] font-bold text-sm px-4 py-2.5 rounded-xl border border-[#8C6D43]/60 shadow-md placeholder-[#9A7B4F] focus:outline-none focus:ring-2 focus:ring-[#5E3F12] <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed' : '' ?>" <?= !$isTenantVerified ? 'disabled' : '' ?>>
                     </div>
 
                     <!-- 5. Reference Number -->
                     <div class="md:col-span-2">
-                      <label for="payReferenceNumber" class="block font-bold text-sm text-[#F5F0E6] mb-1.5">Reference Number:</label>
-                      <input type="text" id="payReferenceNumber" name="reference_number" placeholder="Enter reference number (e.g. 083948857486783)" class="w-full bg-[#F5F0E6] text-[#3E2723] font-bold text-sm px-4 py-2.5 rounded-xl border border-[#8C6D43]/60 shadow-md placeholder-[#9A7B4F] focus:outline-none focus:ring-2 focus:ring-[#4A3728] <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed' : '' ?>" <?= !$isTenantVerified ? 'disabled' : '' ?>>
+                      <label for="payReferenceNumber" class="block font-bold text-sm text-[#422B0B] mb-1.5" style="color: #422B0B !important;">Reference Number:</label>
+                      <input type="text" id="payReferenceNumber" name="reference_number" placeholder="Enter reference number (e.g. 083948857486783)" class="w-full bg-[#FFFDF8] text-[#3E2723] font-bold text-sm px-4 py-2.5 rounded-xl border border-[#8C6D43]/60 shadow-md placeholder-[#9A7B4F] focus:outline-none focus:ring-2 focus:ring-[#5E3F12] <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed' : '' ?>" <?= !$isTenantVerified ? 'disabled' : '' ?>>
                     </div>
                   </div>
 
-                  <!-- Dashed-Border Upload Zone (30% Secondary Overlay) -->
-                  <div id="receiptDropZone" class="border-2 border-dashed border-[#8C6D43] rounded-xl p-6 text-center max-w-lg mx-auto mb-6 bg-[#9A7B4F]/20 transition-all hover:bg-[#9A7B4F]/30 cursor-pointer <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed pointer-events-none' : '' ?>">
-                    <div class="font-bold text-sm text-[#F5F0E6] mb-3">Upload Photos of Payment Receipt:</div>
-                    <label for="receiptFileInput" class="inline-flex items-center gap-2 px-6 py-2 bg-[#F5F0E6] hover:bg-white text-[#3E2723] text-sm font-bold rounded shadow-sm border border-[#8C6D43] cursor-pointer transition-all">
-                      <svg class="w-4 h-4 text-[#4A3728]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                  <!-- Dashed-Border Upload Zone -->
+                  <div id="receiptDropZone" class="border-2 border-dashed border-[#8C6D43] rounded-xl p-6 text-center max-w-lg mx-auto mb-6 bg-[#FBF8F1]/80 transition-all hover:bg-white cursor-pointer <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed pointer-events-none' : '' ?>">
+                    <div class="font-bold text-sm text-[#422B0B] mb-3" style="color: #422B0B !important;">Upload Photos of Payment Receipt:</div>
+                    <label for="receiptFileInput" class="inline-flex items-center gap-2 px-6 py-2 bg-[#F3E4C6] hover:bg-[#EAD5B0] text-[#56380E] text-sm font-bold rounded shadow-sm border border-[#8C6D43] cursor-pointer transition-all">
+                      <svg class="w-4 h-4 text-[#5E3F12]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
                       + Add Photo
                     </label>
                     <input type="file" id="receiptFileInput" name="receipt" accept="image/*,.pdf" class="hidden" onchange="handleReceiptFileSelect(event)" <?= !$isTenantVerified ? 'disabled' : '' ?>>
@@ -1951,9 +1951,9 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
                     </div>
                   </div>
 
-                  <!-- Submit Proof Button (10% Accent Dark Roast Brown bg-[#4A3728]) -->
+                  <!-- Submit Proof Button -->
                   <div class="text-center">
-                    <button type="submit" id="btnUploadReceipt" class="px-14 py-3.5 bg-[#4A3728] hover:bg-[#382618] text-white font-black text-base uppercase rounded-xl shadow-lg transition-all cursor-pointer border border-[#382618] <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed bg-gray-400 text-gray-700 pointer-events-none border-transparent' : '' ?>" <?= !$isTenantVerified ? 'disabled' : '' ?>>
+                    <button type="submit" id="btnUploadReceipt" class="px-14 py-3.5 bg-[#5E3F12] hover:bg-[#4A320E] text-white font-black text-base uppercase rounded-xl shadow-lg transition-all cursor-pointer border border-[#422B0B] <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed bg-gray-400 text-gray-700 pointer-events-none border-transparent' : '' ?>" <?= !$isTenantVerified ? 'disabled' : '' ?>>
                       Submit Proof
                     </button>
                   </div>
@@ -1962,7 +1962,7 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
 
               <!-- TAB 2: PAYMENT TRACKER -->
               <div id="tabContentTracker" class="<?= !$isTrackerTabActive ? 'hidden' : '' ?>">
-                <h2 class="text-2xl md:text-3xl font-black text-white mb-6 tracking-wide">Payment Tracker and History</h2>
+                <h2 class="text-2xl md:text-3xl font-black text-[#422B0B] mb-6 tracking-wide">Payment Tracker and History</h2>
 
                 <div class="space-y-4">
                   <?php if (!empty($allTenantPayments)): ?>
@@ -2039,13 +2039,13 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
              • 30% Secondary (Medium Brown): #B89B72 (Active Submit Tab & Submit Container)
              • 10% Accent (Dark Brown): #4A3728 (Buttons, Headers, Progress Fill)
              ═══════════════════════════════════════════════════════════════════ -->
-        <div class="w-full max-w-4xl mx-auto" id="approvalTabsContainer">
+        <div class="w-full max-w-4xl mx-auto maintenance-folder-shell" id="approvalTabsContainer">
 
           <?php
           $isReportTrackerActive = (isset($_GET['tab']) && $_GET['tab'] === 'tracker') || (isset($_GET['success']) && $_GET['success'] === 'report_submitted');
           ?>
-          <!-- ── Top Tab Bar ─────────────────────────────────────────────── -->
-          <div class="flex items-end gap-1.5" role="tablist" aria-label="Approval Request Navigation">
+          <!-- Top Tab Bar -->
+          <div class="maintenance-folder-tabs" role="tablist" aria-label="Approval Request Navigation">
             <!-- Tab 1: Submit Request -->
             <button
               type="button"
@@ -2054,11 +2054,9 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
               aria-selected="<?= $isReportTrackerActive ? 'false' : 'true' ?>"
               aria-controls="tabPaneSubmit"
               onclick="switchApprovalTab('submit')"
-              class="<?= $isReportTrackerActive 
-                ? 'relative z-0 px-6 py-2.5 rounded-t-2xl font-bold text-sm sm:text-base tracking-wide bg-[#B89B72]/70 text-[#261909]/80 border-2 border-[#7C5A36] hover:bg-[#B89B72] transition-all cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#4A3728]' 
-                : 'relative z-10 px-6 py-3 rounded-t-2xl font-black text-sm sm:text-base tracking-wide bg-[#B89B72] text-[#261909] border-2 border-b-0 border-[#7C5A36] shadow-[0_-2px_6px_rgba(74,55,40,0.1)] transition-all cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#4A3728]' ?>"
-              style="margin-bottom: -2px;">
-              Submit Request
+              class="maintenance-folder-tab <?= !$isReportTrackerActive ? 'active' : '' ?>">
+              <i data-lucide="file-text" class="w-4 h-4"></i>
+              <span>Submit Request</span>
             </button>
 
             <!-- Tab 2: Status Tracker -->
@@ -2069,169 +2067,170 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
               aria-selected="<?= $isReportTrackerActive ? 'true' : 'false' ?>"
               aria-controls="tabPaneTracker"
               onclick="switchApprovalTab('tracker')"
-              class="<?= $isReportTrackerActive 
-                ? 'relative z-10 px-6 py-3 rounded-t-2xl font-black text-sm sm:text-base tracking-wide bg-[#E8D8B0] text-[#261909] border-2 border-b-0 border-[#8C6D43] shadow-[0_-2px_6px_rgba(74,55,40,0.1)] transition-all cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#4A3728]' 
-                : 'relative z-0 px-6 py-2.5 rounded-t-2xl font-bold text-sm sm:text-base tracking-wide bg-[#E8D8B0] text-[#5C3D1E] border-2 border-[#8C6D43] hover:bg-[#DFCE9F] transition-all cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#4A3728]' ?>"
-              style="margin-bottom: -2px;">
-              Status Tracker
+              class="maintenance-folder-tab <?= $isReportTrackerActive ? 'active' : '' ?>">
+              <i data-lucide="list-checks" class="w-4 h-4"></i>
+              <span>Status Tracker</span>
+              <span id="tenantReportCountBadge" class="folder-tab-count"><?= count($myReports) ?></span>
             </button>
           </div>
 
-          <!-- ── Tab 1: "Submit Request" Pane ─────────────── -->
-          <div
-            id="tabPaneSubmit"
-            role="tabpanel"
-            aria-labelledby="tabBtnSubmit"
-            class="<?= $isReportTrackerActive ? 'hidden ' : '' ?>relative z-0 rounded-b-3xl rounded-tr-3xl border-2 border-[#7C5A36]
-                   bg-[#B89B72] p-6 sm:p-9 shadow-xl">
+          <!-- Main Content Area -->
+          <div class="maintenance-folder-body" id="tenantReportFolderBody">
 
-            <!-- Card Header: Large Dark Text -->
-            <h2 class="text-2xl sm:text-4xl font-black text-[#3E2723] text-center mb-7 tracking-wide drop-shadow-sm">
-              Report and Approval Request
-            </h2>
+            <!-- Tab 1: "Submit Request" Pane -->
+            <div
+              id="tabPaneSubmit"
+              role="tabpanel"
+              aria-labelledby="tabBtnSubmit"
+              class="<?= $isReportTrackerActive ? 'hidden' : '' ?>">
 
-            <?php if (!$isTenantVerified): ?>
-            <div class="mb-6 p-4 rounded-xl border border-amber-300 bg-amber-50 text-amber-900 flex items-center justify-between gap-3 shadow-sm" role="alert">
-              <div class="flex items-center gap-3">
-                <i data-lucide="eye" class="w-5 h-5 text-amber-700 flex-shrink-0" aria-hidden="true"></i>
-                <p class="font-bold text-xs sm:text-sm m-0">Viewing Mode: Verify your identity to submit new approval requests.</p>
-              </div>
-              <button type="button" onclick="openModal('verifyAccountModal')" class="flex-shrink-0 px-3.5 py-1.5 rounded-lg text-xs font-bold bg-[#4A3728] text-white hover:bg-[#382618] transition-colors cursor-pointer">
-                Verify Now
-              </button>
-            </div>
-            <?php endif; ?>
+              <!-- Card Header -->
+              <h2 class="text-2xl md:text-3xl font-black text-[#422B0B] mb-6 tracking-wide text-center sm:text-left" style="color: #422B0B !important;">
+                Report and Approval Request
+              </h2>
 
-            <form id="approvalForm" method="POST" action="tenant_portal.php?section=tenantReport" enctype="multipart/form-data" class="flex flex-col gap-5" autocomplete="off">
-              <input type="hidden" name="action" value="submit_report">
-              <!-- Form Layout: Two-Column Label & Input Grid -->
-              <div class="grid grid-cols-1 md:grid-cols-[180px_1fr] items-center gap-2 sm:gap-4">
-                <label for="requestCategory" class="font-black text-sm sm:text-base text-[#2E1A0C]">
-                  Request Category:
-                </label>
-                <div class="relative">
-                  <select
-                    id="requestCategory"
-                    name="request_category"
-                    required
-                    <?= !$isTenantVerified ? 'disabled' : '' ?>
-                    class="w-full appearance-none rounded-xl border-2 border-[#7C5A36]
-                           bg-[#FAF5EC] text-[#2E1A0C] font-semibold text-sm sm:text-base
-                           px-4 py-3 pr-10 shadow-inner
-                           focus:outline-none focus:ring-2 focus:ring-[#4A3728] focus:border-[#4A3728]
-                           transition-colors cursor-pointer <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed' : '' ?>">
-                    <option value="" disabled selected hidden>Select a request category...</option>
-                    <option value="Unit Customization">Unit Customization</option>
-                    <option value="Pet Addition">Pet Addition</option>
-                    <option value="Appliance or Wi-Fi Installation">Appliance or Wi-Fi Installation</option>
-                    <option value="Additional Occupant">Additional Occupant</option>
-                    <option value="Vehicle Parking Request">Vehicle Parking Request</option>
-                    <option value="Move-Out or Lease Renewal Notice">Move-Out or Lease Renewal Notice</option>
-                    <option value="Key Duplication or Replacement">Key Duplication or Replacement</option>
-                  </select>
-                  <div class="pointer-events-none absolute inset-y-0 right-3.5 flex items-center text-[#5C3D1E]">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
-                    </svg>
-                  </div>
+              <?php if (!$isTenantVerified): ?>
+              <div class="mb-6 p-4 rounded-xl border border-amber-300 bg-amber-50 text-amber-900 flex items-center justify-between gap-3 shadow-sm" role="alert">
+                <div class="flex items-center gap-3">
+                  <i data-lucide="eye" class="w-5 h-5 text-amber-700 flex-shrink-0" aria-hidden="true"></i>
+                  <p class="font-bold text-xs sm:text-sm m-0">Viewing Mode: Verify your identity to submit new approval requests.</p>
                 </div>
-              </div>
-
-              <!-- Request Specification -->
-              <div class="grid grid-cols-1 md:grid-cols-[180px_1fr] items-center gap-2 sm:gap-4">
-                <label for="requestSpecification" class="font-black text-sm sm:text-base text-[#2E1A0C]">
-                  Request Specification:
-                </label>
-                <input
-                  type="text"
-                  id="requestSpecification"
-                  name="request_specification"
-                  placeholder="e.g. Add Dog (Golden Retriever)"
-                  maxlength="160"
-                  required
-                  <?= !$isTenantVerified ? 'disabled' : '' ?>
-                  class="w-full rounded-xl border-2 border-[#7C5A36]
-                         bg-[#FAF5EC] text-[#2E1A0C] font-semibold text-sm sm:text-base
-                         px-4 py-3 placeholder-[#9E835F] shadow-inner
-                         focus:outline-none focus:ring-2 focus:ring-[#4A3728] focus:border-[#4A3728]
-                         transition-colors <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed' : '' ?>">
-              </div>
-
-              <!-- Describe your Request -->
-              <div class="grid grid-cols-1 md:grid-cols-[180px_1fr] items-start gap-2 sm:gap-4">
-                <label for="requestDescription" class="font-black text-sm sm:text-base text-[#2E1A0C] pt-2">
-                  Describe your Request:
-                </label>
-                <textarea
-                  id="requestDescription"
-                  name="request_description"
-                  rows="4"
-                  placeholder="Describe and put the details of your request."
-                  required
-                  <?= !$isTenantVerified ? 'disabled' : '' ?>
-                  class="w-full rounded-xl border-2 border-[#7C5A36]
-                         bg-[#FAF5EC] text-[#2E1A0C] font-semibold text-sm sm:text-base
-                         px-4 py-3 placeholder-[#9E835F] shadow-inner resize-none
-                         focus:outline-none focus:ring-2 focus:ring-[#4A3728] focus:border-[#4A3728]
-                         transition-colors <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed' : '' ?>"></textarea>
-              </div>
-
-              <!-- Upload Supporting Document/Photo Zone with Dashed Border -->
-              <div class="w-full mt-1">
-                <input
-                  type="file"
-                  id="requestAttachments"
-                  name="request_attachments[]"
-                  accept="image/*,.pdf,.doc,.docx"
-                  multiple
-                  class="hidden"
-                  <?= !$isTenantVerified ? 'disabled' : '' ?>
-                  onchange="handleRequestFileSelect(this)">
-                <label
-                  for="requestAttachments"
-                  id="uploadDashedZone"
-                  class="flex items-center justify-center gap-3 w-full rounded-xl
-                         border-2 border-dashed border-[#7C5A36]
-                         bg-[#FAF5EC]/70 text-[#3E2723] hover:bg-[#FAF5EC]
-                         py-5 px-4 text-center transition-all cursor-pointer shadow-sm
-                         <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed pointer-events-none' : '' ?>">
-                  <span class="font-bold text-sm sm:text-base text-[#3E2723]">
-                    Upload Supporting Document/Photo
-                  </span>
-                  <!-- Upload Arrow Icon -->
-                  <svg class="w-6 h-6 text-[#3E2723]" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M12 12V4m0 0L8 8m4-4l4 4"/>
-                  </svg>
-                </label>
-                <div id="requestFilePreview" class="flex flex-wrap gap-2 mt-2"></div>
-              </div>
-
-              <!-- Submit Request Button (10% Dark Brown Accent Color) -->
-              <div class="flex justify-center mt-3">
-                <button
-                  type="submit"
-                  id="btnSubmitApproval"
-                  <?= !$isTenantVerified ? 'disabled' : '' ?>
-                  class="min-w-[240px] sm:min-w-[280px] py-3.5 px-8 rounded-xl font-black text-lg tracking-wide
-                         text-white bg-[#4A3728] hover:bg-[#382618] active:bg-[#2A1A0E]
-                         border-2 border-[#2D1B0E] shadow-lg hover:shadow-xl hover:-translate-y-0.5
-                         transition-all cursor-pointer <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed pointer-events-none' : '' ?>">
-                  Submit Request
+                <button type="button" onclick="openModal('verifyAccountModal')" class="flex-shrink-0 px-3.5 py-1.5 rounded-lg text-xs font-bold bg-[#4A3728] text-white hover:bg-[#382618] transition-colors cursor-pointer">
+                  Verify Now
                 </button>
               </div>
+              <?php endif; ?>
 
-          <!-- ── Tab 2: "Status Tracker" Pane ─────────────── -->
-          <div
-            id="tabPaneTracker"
-            role="tabpanel"
-            aria-labelledby="tabBtnTracker"
-            class="<?= !$isReportTrackerActive ? 'hidden ' : '' ?>relative z-0 rounded-b-3xl rounded-tr-3xl border-2 border-[#8C6D43]
-                   bg-[#E8D8B0] p-6 sm:p-9 shadow-xl">
+              <form id="approvalForm" method="POST" action="tenant_portal.php?section=tenantReport" enctype="multipart/form-data" class="flex flex-col gap-5" autocomplete="off">
+                <input type="hidden" name="action" value="submit_report">
+                <!-- Form Layout: Two-Column Label & Input Grid -->
+                <div class="grid grid-cols-1 md:grid-cols-[180px_1fr] items-center gap-2 sm:gap-4">
+                  <label for="requestCategory" class="font-bold text-sm text-[#422B0B]" style="color: #422B0B !important;">
+                    Request Category:
+                  </label>
+                  <div class="relative">
+                    <select
+                      id="requestCategory"
+                      name="request_category"
+                      required
+                      <?= !$isTenantVerified ? 'disabled' : '' ?>
+                      class="w-full appearance-none rounded-xl border border-[#8C6D43]/60
+                             bg-[#FFFDF8] text-[#302313] font-semibold text-sm
+                             px-4 py-2.5 pr-10 shadow-sm
+                             focus:outline-none focus:ring-2 focus:ring-[#5E3F12]
+                             transition-colors cursor-pointer <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed' : '' ?>">
+                      <option value="" disabled selected hidden>Select a request category...</option>
+                      <option value="Unit Customization">Unit Customization</option>
+                      <option value="Pet Addition">Pet Addition</option>
+                      <option value="Appliance or Wi-Fi Installation">Appliance or Wi-Fi Installation</option>
+                      <option value="Additional Occupant">Additional Occupant</option>
+                      <option value="Vehicle Parking Request">Vehicle Parking Request</option>
+                      <option value="Move-Out or Lease Renewal Notice">Move-Out or Lease Renewal Notice</option>
+                      <option value="Key Duplication or Replacement">Key Duplication or Replacement</option>
+                    </select>
+                    <div class="pointer-events-none absolute inset-y-0 right-3.5 flex items-center text-[#7A6245]">
+                      <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
+                      </svg>
+                    </div>
+                  </div>
+                </div>
 
-            <!-- Card Header: Large Dark Text -->
-            <h2 class="text-2xl sm:text-3xl font-black text-[#3E2723] mb-6 tracking-wide">
-              Owner Approval Status Tracker and History:
-            </h2>
+                <!-- Request Specification -->
+                <div class="grid grid-cols-1 md:grid-cols-[180px_1fr] items-center gap-2 sm:gap-4">
+                  <label for="requestSpecification" class="font-bold text-sm text-[#422B0B]" style="color: #422B0B !important;">
+                    Request Specification:
+                  </label>
+                  <input
+                    type="text"
+                    id="requestSpecification"
+                    name="request_specification"
+                    placeholder="e.g. Add Dog (Golden Retriever)"
+                    maxlength="160"
+                    required
+                    <?= !$isTenantVerified ? 'disabled' : '' ?>
+                    class="w-full rounded-xl border border-[#8C6D43]/60
+                           bg-[#FFFDF8] text-[#302313] font-semibold text-sm
+                           px-4 py-2.5 placeholder-[#9C8262] shadow-sm
+                           focus:outline-none focus:ring-2 focus:ring-[#5E3F12]
+                           transition-colors <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed' : '' ?>">
+                </div>
+
+                <!-- Describe your Request -->
+                <div class="grid grid-cols-1 md:grid-cols-[180px_1fr] items-start gap-2 sm:gap-4">
+                  <label for="requestDescription" class="font-bold text-sm text-[#422B0B] pt-2" style="color: #422B0B !important;">
+                    Describe your Request:
+                  </label>
+                  <textarea
+                    id="requestDescription"
+                    name="request_description"
+                    rows="4"
+                    placeholder="Describe and put the details of your request."
+                    required
+                    <?= !$isTenantVerified ? 'disabled' : '' ?>
+                    class="w-full rounded-xl border border-[#8C6D43]/60
+                           bg-[#FFFDF8] text-[#302313] font-semibold text-sm
+                           px-4 py-2.5 placeholder-[#9C8262] shadow-sm resize-none
+                           focus:outline-none focus:ring-2 focus:ring-[#5E3F12]
+                           transition-colors <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed' : '' ?>"></textarea>
+                </div>
+
+                <!-- Upload Supporting Document/Photo Zone with Dashed Border -->
+                <div class="w-full mt-1">
+                  <input
+                    type="file"
+                    id="requestAttachments"
+                    name="request_attachments[]"
+                    accept="image/*,.pdf,.doc,.docx"
+                    multiple
+                    class="hidden"
+                    <?= !$isTenantVerified ? 'disabled' : '' ?>
+                    onchange="handleRequestFileSelect(this)">
+                  <label
+                    for="requestAttachments"
+                    id="uploadDashedZone"
+                    class="flex items-center justify-center gap-3 w-full rounded-xl
+                           border-2 border-dashed border-[#8C6D43]
+                           bg-[#FBF8F1]/80 text-[#422B0B] hover:bg-white
+                           py-5 px-4 text-center transition-all cursor-pointer shadow-sm
+                           <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed pointer-events-none' : '' ?>">
+                    <span class="font-bold text-sm sm:text-base text-[#422B0B]" style="color: #422B0B !important;">
+                      Upload Supporting Document/Photo
+                    </span>
+                    <svg class="w-6 h-6 text-[#5E3F12]" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M12 12V4m0 0L8 8m4-4l4 4"/>
+                    </svg>
+                  </label>
+                  <div id="requestFilePreview" class="flex flex-wrap gap-2 mt-2"></div>
+                </div>
+
+                <!-- Submit Request Button -->
+                <div class="flex justify-center mt-3">
+                  <button
+                    type="submit"
+                    id="btnSubmitApproval"
+                    <?= !$isTenantVerified ? 'disabled' : '' ?>
+                    class="min-w-[260px] py-3.5 px-8 rounded-xl font-black text-base tracking-wide
+                           text-white bg-[#5E3F12] hover:bg-[#4A320E]
+                           border border-[#422B0B] shadow-lg
+                           transition-all cursor-pointer <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed pointer-events-none' : '' ?>">
+                    Submit Request
+                  </button>
+                </div>
+              </form>
+            </div>
+
+            <!-- Tab 2: Status Tracker Pane -->
+            <div
+              id="tabPaneTracker"
+              role="tabpanel"
+              aria-labelledby="tabBtnTracker"
+              class="<?= !$isReportTrackerActive ? 'hidden' : '' ?>">
+
+              <!-- Card Header -->
+              <h2 class="text-2xl md:text-3xl font-black text-[#422B0B] mb-6 tracking-wide text-center sm:text-left" style="color: #422B0B !important;">
+                Owner Approval Status Tracker and History
+              </h2>
 
             <!-- Tracker List Flex Container -->
             <div id="trackerList" class="flex flex-col gap-5">
@@ -2353,13 +2352,14 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
             </div>
           </div>
         </div>
+      </div>
 
         <!-- ── Vanilla JavaScript for Tab Switching & Upload Handling ── -->
         <script>
         /**
          * switchApprovalTab:
          * Toggles the 'hidden' class between the two content sections.
-         * Dynamically swaps styles so active tab seamlessly connects to container below.
+         * Sets active/inactive classes on the standardized folder tabs.
          */
         function switchApprovalTab(tabName) {
           const tabBtnSubmit = document.getElementById('tabBtnSubmit');
@@ -2370,34 +2370,26 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
           if (!tabBtnSubmit || !tabBtnTracker || !tabPaneSubmit || !tabPaneTracker) return;
 
           if (tabName === 'submit') {
-            // Show Submit pane, hide Tracker pane
             tabPaneSubmit.classList.remove('hidden');
             tabPaneTracker.classList.add('hidden');
 
-            // Style Submit Tab as Active (Medium Brown seamless connect)
             tabBtnSubmit.setAttribute('aria-selected', 'true');
-            tabBtnSubmit.className = "relative z-10 px-6 py-3 rounded-t-2xl font-black text-sm sm:text-base tracking-wide bg-[#B89B72] text-[#261909] border-2 border-b-0 border-[#7C5A36] shadow-[0_-2px_6px_rgba(74,55,40,0.1)] transition-all cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#4A3728]";
-            tabBtnSubmit.style.marginBottom = "-2px";
+            tabBtnSubmit.className = "maintenance-folder-tab active";
 
-            // Style Tracker Tab as Inactive (Light Beige)
             tabBtnTracker.setAttribute('aria-selected', 'false');
-            tabBtnTracker.className = "relative z-0 px-6 py-2.5 rounded-t-2xl font-bold text-sm sm:text-base tracking-wide bg-[#E8D8B0] text-[#5C3D1E] border-2 border-[#8C6D43] hover:bg-[#DFCE9F] transition-all cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#4A3728]";
-            tabBtnTracker.style.marginBottom = "-2px";
-
+            tabBtnTracker.className = "maintenance-folder-tab";
           } else if (tabName === 'tracker') {
-            // Show Tracker pane, hide Submit pane
             tabPaneTracker.classList.remove('hidden');
             tabPaneSubmit.classList.add('hidden');
 
-            // Style Tracker Tab as Active (Light Beige seamless connect)
             tabBtnTracker.setAttribute('aria-selected', 'true');
-            tabBtnTracker.className = "relative z-10 px-6 py-3 rounded-t-2xl font-black text-sm sm:text-base tracking-wide bg-[#E8D8B0] text-[#261909] border-2 border-b-0 border-[#8C6D43] shadow-[0_-2px_6px_rgba(74,55,40,0.1)] transition-all cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#4A3728]";
-            tabBtnTracker.style.marginBottom = "-2px";
+            tabBtnTracker.className = "maintenance-folder-tab active";
 
-            // Style Submit Tab as Inactive (Medium Brown recessed)
             tabBtnSubmit.setAttribute('aria-selected', 'false');
-            tabBtnSubmit.className = "relative z-0 px-6 py-2.5 rounded-t-2xl font-bold text-sm sm:text-base tracking-wide bg-[#B89B72]/70 text-[#261909]/80 border-2 border-[#7C5A36] hover:bg-[#B89B72] transition-all cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#4A3728]";
-            tabBtnSubmit.style.marginBottom = "-2px";
+            tabBtnSubmit.className = "maintenance-folder-tab";
+          }
+          if (window.lucide && typeof window.lucide.createIcons === 'function') {
+            window.lucide.createIcons();
           }
         }
 
@@ -3012,51 +3004,264 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
             </select>
           </div>
 
-          <!-- 2. ID Upload Zone -->
+          <!-- 2A. Front Side of ID Upload & Camera Zone -->
           <div class="form-group flex flex-col gap-1.5" style="margin: 0;">
-            <label class="form-label text-xs sm:text-sm font-bold text-[#3E2723] block" style="font-weight: 800; color: #3E2723; font-size: 13px; margin-bottom: 6px; display: block;">
-              Upload Document Photo <span class="text-red-600 font-bold" style="color: #b91c1c;">*</span>
-            </label>
-            <div class="tararent-id-upload-zone w-full flex flex-col items-center justify-center border-2 border-dashed border-[#B89B72] hover:border-[#4A3728] rounded-2xl p-6 bg-[#F5F0E6]/60 hover:bg-[#F5F0E6] transition-all duration-200 cursor-pointer text-center group" 
-                 id="idDropZone" 
-                 onclick="document.getElementById('idFileInput').click()"
-                 style="border: 2px dashed #B89B72; border-radius: 16px; background: rgba(245, 240, 230, 0.6); padding: 24px 16px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; cursor: pointer; transition: all 0.2s ease; width: 100%; box-sizing: border-box;">
-              <div class="tararent-upload-icon-circle w-12 h-12 rounded-full bg-[#4A3728]/10 flex items-center justify-center text-[#4A3728] mb-2.5 transition-transform group-hover:scale-110" style="width: 48px; height: 48px; border-radius: 9999px; background: rgba(74, 55, 40, 0.1); display: flex; align-items: center; justify-content: center; color: #4A3728; margin-bottom: 10px;">
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" class="w-6 h-6" style="width: 26px; height: 26px;">
+            <div class="flex items-center justify-between gap-2" style="margin-bottom: 6px;">
+              <label class="form-label text-xs sm:text-sm font-bold text-[#3E2723] block m-0" style="font-weight: 800; color: #3E2723; font-size: 13px; margin: 0;">
+                Front Side of ID <span class="text-red-600 font-bold" style="color: #b91c1c;">*</span>
+              </label>
+              <button type="button" 
+                      id="btnOpenFrontIdCamera" 
+                      onclick="openIdCaptureCamera('front')" 
+                      class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-[#F5F0E6] hover:bg-[#E8D8B0] text-[#4A3728] border border-[#B89B72] transition-colors cursor-pointer shadow-xs active:scale-95"
+                      style="background: #F5F0E6; color: #4A3728; border: 1.5px solid #B89B72; font-size: 12px; font-weight: 700; padding: 5px 12px; border-radius: 10px; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; transition: all 0.15s ease;">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width: 14px; height: 14px;">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M6.827 6.175A2.31 2.31 0 0 1 5.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 0 0-1.134-.175 2.31 2.31 0 0 1-1.64-1.055l-.822-1.316a2.192 2.192 0 0 0-1.736-1.039 48.774 48.774 0 0 0-5.232 0 2.192 2.192 0 0 0-1.736 1.039l-.821 1.316Z" />
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 12.75a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0ZM18.75 10.5h.008v.008h-.008V10.5Z" />
+                </svg>
+                <span>Open Camera</span>
+              </button>
+            </div>
+
+            <!-- Upload Drop Zone (Front) -->
+            <div class="tararent-id-upload-zone w-full flex flex-col items-center justify-center border-2 border-dashed border-[#B89B72] hover:border-[#4A3728] rounded-2xl p-5 bg-[#F5F0E6]/60 hover:bg-[#F5F0E6] transition-all duration-200 cursor-pointer text-center group" 
+                 id="idFrontDropZone" 
+                 onclick="document.getElementById('idFrontFileInput').click()"
+                 style="border: 2px dashed #B89B72; border-radius: 16px; background: rgba(245, 240, 230, 0.6); padding: 20px 16px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; cursor: pointer; transition: all 0.2s ease; width: 100%; box-sizing: border-box;">
+              <div class="tararent-upload-icon-circle w-11 h-11 rounded-full bg-[#4A3728]/10 flex items-center justify-center text-[#4A3728] mb-2 transition-transform group-hover:scale-110" style="width: 44px; height: 44px; border-radius: 9999px; background: rgba(74, 55, 40, 0.1); display: flex; align-items: center; justify-content: center; color: #4A3728; margin-bottom: 8px;">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" class="w-6 h-6" style="width: 24px; height: 24px;">
                   <path stroke-linecap="round" stroke-linejoin="round" d="M12 16.5V9.75m0 0 3 3m-3-3-3 3M6.75 19.5a4.5 4.5 0 0 1-1.41-8.775 5.25 5.25 0 0 1 10.233-2.33 3 3 0 0 1 3.758 3.848A3.752 3.752 0 0 1 18 19.5H6.75Z" />
                 </svg>
               </div>
-              <div class="tararent-upload-prompt text-sm font-bold text-[#3E2723] mb-1" style="font-size: 13.5px; font-weight: 700; color: #3E2723; margin-bottom: 3px;">Click to upload or drag and drop your ID here</div>
-              <div class="tararent-upload-hint text-xs text-[#7A6245] font-semibold" style="font-size: 11.5px; color: #7A6245; font-weight: 600;">Supports JPG, PNG, or WEBP (Max 10MB)</div>
+              <div class="tararent-upload-prompt text-sm font-bold text-[#3E2723] mb-1" style="font-size: 13px; font-weight: 700; color: #3E2723; margin-bottom: 2px;">Click to upload or drag &amp; drop Front ID</div>
+              <div class="tararent-upload-hint text-xs text-[#7A6245] font-semibold" style="font-size: 11px; color: #7A6245; font-weight: 600;">Supports JPG, PNG, or WEBP (Max 10MB)</div>
             </div>
-            <input type="file" id="idFileInput" name="id_photo" accept="image/jpeg,image/png,image/webp" style="display: none;" onchange="handleVerificationFileSelect(event)">
 
-            <!-- Image Preview Card -->
-            <div id="idImagePreviewCard" class="hidden rounded-xl overflow-hidden bg-white border-2 border-[#B89B72] shadow-md" style="display: none; border-radius: 14px; overflow: hidden; background: #ffffff; border: 2px solid #B89B72; box-shadow: 0 4px 12px rgba(43,26,6,0.12);">
-              <div class="relative w-full h-48 bg-[#1c1206] flex items-center justify-center overflow-hidden" style="position: relative; width: 100%; height: 190px; background: #1c1206; display: flex; align-items: center; justify-content: center; overflow: hidden;">
-                <img id="idVisualPreviewImg" src="" alt="Uploaded ID Preview" class="w-full h-full object-contain block" style="width: 100%; height: 100%; object-fit: contain; display: block;">
+            <!-- Live Camera Capture Interface (Front) -->
+            <div id="idFrontCameraCaptureContainer" class="hidden rounded-2xl overflow-hidden bg-[#1c1206] border-2 border-[#B89B72] shadow-lg flex-col" style="display: none; border-radius: 16px; overflow: hidden; background: #1c1206; border: 2px solid #B89B72; box-shadow: 0 6px 20px rgba(43,26,6,0.18); flex-direction: column;">
+              <div class="relative w-full h-52 sm:h-60 bg-[#0f0b06] flex items-center justify-center overflow-hidden" style="position: relative; width: 100%; height: 220px; background: #0f0b06; display: flex; align-items: center; justify-content: center; overflow: hidden;">
+                <video id="idFrontCameraVideo" autoplay playsinline muted class="w-full h-full object-cover block" style="width: 100%; height: 100%; object-fit: cover; display: block;"></video>
+                <canvas id="idFrontCameraCanvas" style="display: none;"></canvas>
+                <img id="idFrontCameraCapturedPreview" alt="Captured Front ID Preview" class="hidden w-full h-full object-contain" style="display: none; width: 100%; height: 100%; object-fit: contain;">
+                <div id="idFrontCameraCardGuide" class="pointer-events-none absolute inset-3 sm:inset-5 border-2 border-dashed border-[#B89B72]/80 rounded-xl flex items-end justify-center pb-2.5 transition-opacity" style="position: absolute; top: 12px; bottom: 12px; left: 16px; right: 16px; border: 2px dashed rgba(184, 155, 114, 0.85); border-radius: 12px; display: flex; align-items: flex-end; justify-content: center; padding-bottom: 8px; pointer-events: none;">
+                  <span class="bg-[#1c1206]/80 text-[#F5F0E6] text-[11px] font-bold px-2.5 py-0.5 rounded-full border border-white/20" style="background: rgba(28, 18, 6, 0.85); color: #F5F0E6; font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 9999px; border: 1px solid rgba(255, 255, 255, 0.2);">
+                    Align FRONT side of ID card within frame
+                  </span>
+                </div>
+              </div>
+              <div class="p-3 bg-[#F5F0E6] border-t border-[#B89B72]/40" style="padding: 10px 14px; background: #F5F0E6; border-top: 1px solid rgba(184, 155, 114, 0.4);">
+                <div id="idFrontCameraLiveControls" class="flex items-center justify-between gap-2.5" style="display: flex; align-items: center; justify-content: space-between; gap: 10px;">
+                  <button type="button" 
+                          onclick="closeIdCaptureCamera('front')" 
+                          class="px-3.5 py-1.5 rounded-xl text-xs font-bold text-[#4A3728] hover:text-[#382618] hover:bg-[#E8D8B0] transition-colors cursor-pointer border border-[#B89B72]"
+                          style="background: transparent; color: #4A3728; border: 1.5px solid #B89B72; font-size: 12px; font-weight: 700; padding: 6px 12px; border-radius: 10px; cursor: pointer;">
+                    Cancel
+                  </button>
+                  <button type="button" 
+                          onclick="captureIdPhotoFromCamera('front')" 
+                          class="px-4 py-1.5 rounded-xl text-xs font-black bg-[#4A3728] hover:bg-[#382618] text-white transition-all cursor-pointer shadow-md inline-flex items-center gap-1.5 active:scale-95"
+                          style="background: #4A3728; color: #ffffff; border: 1px solid #382618; font-size: 12px; font-weight: 800; padding: 7px 16px; border-radius: 10px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width: 14px; height: 14px;">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M6.827 6.175A2.31 2.31 0 0 1 5.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 0 0-1.134-.175 2.31 2.31 0 0 1-1.64-1.055l-.822-1.316a2.192 2.192 0 0 0-1.736-1.039 48.774 48.774 0 0 0-5.232 0 2.192 2.192 0 0 0-1.736 1.039l-.821 1.316Z" />
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 12.75a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0ZM18.75 10.5h.008v.008h-.008V10.5Z" />
+                    </svg>
+                    <span>Capture Front</span>
+                  </button>
+                </div>
+                <div id="idFrontCameraReviewControls" class="hidden flex items-center justify-between gap-2" style="display: none; align-items: center; justify-content: space-between; gap: 8px;">
+                  <button type="button" 
+                          onclick="closeIdCaptureCamera('front')" 
+                          class="px-3 py-1.5 rounded-xl text-xs font-bold text-[#4A3728] hover:text-[#382618] hover:bg-[#E8D8B0] transition-colors cursor-pointer border border-[#B89B72]"
+                          style="background: transparent; color: #4A3728; border: 1.5px solid #B89B72; font-size: 12px; font-weight: 700; padding: 6px 12px; border-radius: 10px; cursor: pointer;">
+                    Cancel
+                  </button>
+                  <div class="flex items-center gap-2" style="display: flex; align-items: center; gap: 8px;">
+                    <button type="button" 
+                            onclick="retakeIdPhotoCamera('front')" 
+                            class="px-3 py-1.5 rounded-xl text-xs font-bold text-[#4A3728] bg-white hover:bg-[#FAF8F5] transition-colors cursor-pointer border border-[#B89B72] inline-flex items-center gap-1 shadow-xs"
+                            style="background: #ffffff; color: #4A3728; border: 1.5px solid #B89B72; font-size: 11.5px; font-weight: 700; padding: 6px 10px; border-radius: 10px; cursor: pointer; display: inline-flex; align-items: center; gap: 4px;">
+                      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width: 13px; height: 13px;">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" />
+                      </svg>
+                      <span>Retake</span>
+                    </button>
+                    <button type="button" 
+                            onclick="confirmUseCapturedIdPhoto('front')" 
+                            class="px-3.5 py-1.5 rounded-xl text-xs font-black bg-[#4A3728] hover:bg-[#382618] text-white transition-all cursor-pointer shadow-md inline-flex items-center gap-1 active:scale-95"
+                            style="background: #4A3728; color: #ffffff; border: 1px solid #382618; font-size: 12px; font-weight: 800; padding: 6px 12px; border-radius: 10px; cursor: pointer; display: inline-flex; align-items: center; gap: 5px;">
+                      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor" style="width: 13px; height: 13px;">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+                      </svg>
+                      <span>Use Photo</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <input type="file" id="idFrontFileInput" name="id_photo" accept="image/jpeg,image/png,image/webp" style="display: none;" onchange="handleVerificationFileSelect(event, 'front')">
+            <!-- Legacy alias reference -->
+            <input type="file" id="idFileInput" style="display: none;" onchange="handleVerificationFileSelect(event, 'front')">
+            <input type="hidden" name="captured_id_base64" id="captured_front_id_base64" value="">
+            <input type="hidden" id="captured_id_base64" value="">
+
+            <!-- Image Preview Card (Front) -->
+            <div id="idFrontImagePreviewCard" class="hidden rounded-xl overflow-hidden bg-white border-2 border-[#B89B72] shadow-md" style="display: none; border-radius: 14px; overflow: hidden; background: #ffffff; border: 2px solid #B89B72; box-shadow: 0 4px 12px rgba(43,26,6,0.12);">
+              <div class="relative w-full h-44 bg-[#1c1206] flex items-center justify-center overflow-hidden" style="position: relative; width: 100%; height: 175px; background: #1c1206; display: flex; align-items: center; justify-content: center; overflow: hidden;">
+                <img id="idFrontVisualPreviewImg" src="" alt="Uploaded Front ID Preview" class="w-full h-full object-contain block" style="width: 100%; height: 100%; object-fit: contain; display: block;">
                 <button type="button" 
                         class="btn-remove-attached-photo absolute top-2.5 right-2.5 bg-[#1c1206]/85 hover:bg-[#1c1206] text-white w-8 h-8 rounded-full flex items-center justify-center cursor-pointer border border-white/35 transition-colors" 
-                        id="btnRemoveAttachedPhoto" 
-                        onclick="removeAttachedPhoto(event)" 
-                        title="Remove Attached Photo" 
-                        aria-label="Remove Attached Photo" 
+                        id="btnRemoveFrontAttachedPhoto" 
+                        onclick="removeAttachedPhoto(event, 'front')" 
+                        title="Remove Front ID" 
+                        aria-label="Remove Front ID" 
                         style="position: absolute; top: 10px; right: 10px; background: rgba(28, 18, 6, 0.85); color: #ffffff; width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; border: 1.5px solid rgba(255, 255, 255, 0.35); z-index: 20;">
                   <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-4 h-4 pointer-events-none" style="width: 16px; height: 16px; pointer-events: none;">
                     <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" />
                   </svg>
                 </button>
               </div>
-              <div class="p-2.5 sm:p-3 bg-[#F5F0E6] flex items-center justify-between gap-2.5 border-t border-[#B89B72]/30" style="padding: 10px 14px; background: #F5F0E6; display: flex; align-items: center; justify-content: space-between; gap: 10px; border-top: 1px solid rgba(184, 155, 114, 0.3);">
+              <div class="p-2.5 bg-[#F5F0E6] flex items-center justify-between gap-2.5 border-t border-[#B89B72]/30" style="padding: 9px 12px; background: #F5F0E6; display: flex; align-items: center; justify-content: space-between; gap: 8px; border-top: 1px solid rgba(184, 155, 114, 0.3);">
                 <div class="flex items-center gap-2 overflow-hidden" style="display: flex; align-items: center; gap: 8px; overflow: hidden;">
                   <span class="inline-flex text-[#4A3728]" style="display: inline-flex; color: #4A3728;"><i data-lucide="id-card" class="w-4 h-4" aria-hidden="true"></i></span>
                   <div class="overflow-hidden truncate" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-                    <div id="idPreviewFileName" class="text-xs sm:text-sm font-bold text-[#3E2723] truncate" style="font-size: 13px; font-weight: 700; color: #3E2723; overflow: hidden; text-overflow: ellipsis;"></div>
-                    <div id="idPreviewFileSize" class="text-[11px] text-[#7A6245] font-semibold" style="font-size: 11px; color: #7A6245; font-weight: 600;"></div>
+                    <div id="idFrontPreviewFileName" class="text-xs font-bold text-[#3E2723] truncate" style="font-size: 12.5px; font-weight: 700; color: #3E2723; overflow: hidden; text-overflow: ellipsis;"></div>
+                    <div id="idFrontPreviewFileSize" class="text-[11px] text-[#7A6245] font-semibold" style="font-size: 10.5px; color: #7A6245; font-weight: 600;"></div>
                   </div>
                 </div>
-                <span class="bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs px-2.5 py-1 rounded-full font-bold inline-flex items-center gap-1 shrink-0" style="background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0; font-size: 11.5px; padding: 4px 10px; font-weight: 800; display: inline-flex; align-items: center; gap: 4px;">
-                  <i data-lucide="check" class="w-3.5 h-3.5" aria-hidden="true"></i> Document Attached
+                <span class="bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs px-2.5 py-0.5 rounded-full font-bold inline-flex items-center gap-1 shrink-0" style="background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0; font-size: 11px; padding: 3px 8px; font-weight: 800; display: inline-flex; align-items: center; gap: 4px;">
+                  <i data-lucide="check" class="w-3 h-3" aria-hidden="true"></i> Front Attached
+                </span>
+              </div>
+            </div>
+            <!-- Legacy alias preview container -->
+            <div id="idImagePreviewCard" style="display: none;"></div>
+          </div>
+
+          <!-- 2B. Back Side of ID Upload & Camera Zone -->
+          <div class="form-group flex flex-col gap-1.5" style="margin: 0;">
+            <div class="flex items-center justify-between gap-2" style="margin-bottom: 6px;">
+              <label class="form-label text-xs sm:text-sm font-bold text-[#3E2723] block m-0" style="font-weight: 800; color: #3E2723; font-size: 13px; margin: 0;">
+                Back Side of ID <span class="text-red-600 font-bold" style="color: #b91c1c;">*</span>
+              </label>
+              <button type="button" 
+                      id="btnOpenBackIdCamera" 
+                      onclick="openIdCaptureCamera('back')" 
+                      class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-[#F5F0E6] hover:bg-[#E8D8B0] text-[#4A3728] border border-[#B89B72] transition-colors cursor-pointer shadow-xs active:scale-95"
+                      style="background: #F5F0E6; color: #4A3728; border: 1.5px solid #B89B72; font-size: 12px; font-weight: 700; padding: 5px 12px; border-radius: 10px; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; transition: all 0.15s ease;">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width: 14px; height: 14px;">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M6.827 6.175A2.31 2.31 0 0 1 5.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 0 0-1.134-.175 2.31 2.31 0 0 1-1.64-1.055l-.822-1.316a2.192 2.192 0 0 0-1.736-1.039 48.774 48.774 0 0 0-5.232 0 2.192 2.192 0 0 0-1.736 1.039l-.821 1.316Z" />
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 12.75a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0ZM18.75 10.5h.008v.008h-.008V10.5Z" />
+                </svg>
+                <span>Open Camera</span>
+              </button>
+            </div>
+
+            <!-- Upload Drop Zone (Back) -->
+            <div class="tararent-id-upload-zone w-full flex flex-col items-center justify-center border-2 border-dashed border-[#B89B72] hover:border-[#4A3728] rounded-2xl p-5 bg-[#F5F0E6]/60 hover:bg-[#F5F0E6] transition-all duration-200 cursor-pointer text-center group" 
+                 id="idBackDropZone" 
+                 onclick="document.getElementById('idBackFileInput').click()"
+                 style="border: 2px dashed #B89B72; border-radius: 16px; background: rgba(245, 240, 230, 0.6); padding: 20px 16px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; cursor: pointer; transition: all 0.2s ease; width: 100%; box-sizing: border-box;">
+              <div class="tararent-upload-icon-circle w-11 h-11 rounded-full bg-[#4A3728]/10 flex items-center justify-center text-[#4A3728] mb-2 transition-transform group-hover:scale-110" style="width: 44px; height: 44px; border-radius: 9999px; background: rgba(74, 55, 40, 0.1); display: flex; align-items: center; justify-content: center; color: #4A3728; margin-bottom: 8px;">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" class="w-6 h-6" style="width: 24px; height: 24px;">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M12 16.5V9.75m0 0 3 3m-3-3-3 3M6.75 19.5a4.5 4.5 0 0 1-1.41-8.775 5.25 5.25 0 0 1 10.233-2.33 3 3 0 0 1 3.758 3.848A3.752 3.752 0 0 1 18 19.5H6.75Z" />
+                </svg>
+              </div>
+              <div class="tararent-upload-prompt text-sm font-bold text-[#3E2723] mb-1" style="font-size: 13px; font-weight: 700; color: #3E2723; margin-bottom: 2px;">Click to upload or drag &amp; drop Back ID</div>
+              <div class="tararent-upload-hint text-xs text-[#7A6245] font-semibold" style="font-size: 11px; color: #7A6245; font-weight: 600;">Supports JPG, PNG, or WEBP (Max 10MB)</div>
+            </div>
+
+            <!-- Live Camera Capture Interface (Back) -->
+            <div id="idBackCameraCaptureContainer" class="hidden rounded-2xl overflow-hidden bg-[#1c1206] border-2 border-[#B89B72] shadow-lg flex-col" style="display: none; border-radius: 16px; overflow: hidden; background: #1c1206; border: 2px solid #B89B72; box-shadow: 0 6px 20px rgba(43,26,6,0.18); flex-direction: column;">
+              <div class="relative w-full h-52 sm:h-60 bg-[#0f0b06] flex items-center justify-center overflow-hidden" style="position: relative; width: 100%; height: 220px; background: #0f0b06; display: flex; align-items: center; justify-content: center; overflow: hidden;">
+                <video id="idBackCameraVideo" autoplay playsinline muted class="w-full h-full object-cover block" style="width: 100%; height: 100%; object-fit: cover; display: block;"></video>
+                <canvas id="idBackCameraCanvas" style="display: none;"></canvas>
+                <img id="idBackCameraCapturedPreview" alt="Captured Back ID Preview" class="hidden w-full h-full object-contain" style="display: none; width: 100%; height: 100%; object-fit: contain;">
+                <div id="idBackCameraCardGuide" class="pointer-events-none absolute inset-3 sm:inset-5 border-2 border-dashed border-[#B89B72]/80 rounded-xl flex items-end justify-center pb-2.5 transition-opacity" style="position: absolute; top: 12px; bottom: 12px; left: 16px; right: 16px; border: 2px dashed rgba(184, 155, 114, 0.85); border-radius: 12px; display: flex; align-items: flex-end; justify-content: center; padding-bottom: 8px; pointer-events: none;">
+                  <span class="bg-[#1c1206]/80 text-[#F5F0E6] text-[11px] font-bold px-2.5 py-0.5 rounded-full border border-white/20" style="background: rgba(28, 18, 6, 0.85); color: #F5F0E6; font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 9999px; border: 1px solid rgba(255, 255, 255, 0.2);">
+                    Align BACK side of ID card within frame
+                  </span>
+                </div>
+              </div>
+              <div class="p-3 bg-[#F5F0E6] border-t border-[#B89B72]/40" style="padding: 10px 14px; background: #F5F0E6; border-top: 1px solid rgba(184, 155, 114, 0.4);">
+                <div id="idBackCameraLiveControls" class="flex items-center justify-between gap-2.5" style="display: flex; align-items: center; justify-content: space-between; gap: 10px;">
+                  <button type="button" 
+                          onclick="closeIdCaptureCamera('back')" 
+                          class="px-3.5 py-1.5 rounded-xl text-xs font-bold text-[#4A3728] hover:text-[#382618] hover:bg-[#E8D8B0] transition-colors cursor-pointer border border-[#B89B72]"
+                          style="background: transparent; color: #4A3728; border: 1.5px solid #B89B72; font-size: 12px; font-weight: 700; padding: 6px 12px; border-radius: 10px; cursor: pointer;">
+                    Cancel
+                  </button>
+                  <button type="button" 
+                          onclick="captureIdPhotoFromCamera('back')" 
+                          class="px-4 py-1.5 rounded-xl text-xs font-black bg-[#4A3728] hover:bg-[#382618] text-white transition-all cursor-pointer shadow-md inline-flex items-center gap-1.5 active:scale-95"
+                          style="background: #4A3728; color: #ffffff; border: 1px solid #382618; font-size: 12px; font-weight: 800; padding: 7px 16px; border-radius: 10px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width: 14px; height: 14px;">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M6.827 6.175A2.31 2.31 0 0 1 5.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 0 0-1.134-.175 2.31 2.31 0 0 1-1.64-1.055l-.822-1.316a2.192 2.192 0 0 0-1.736-1.039 48.774 48.774 0 0 0-5.232 0 2.192 2.192 0 0 0-1.736 1.039l-.821 1.316Z" />
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 12.75a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0ZM18.75 10.5h.008v.008h-.008V10.5Z" />
+                    </svg>
+                    <span>Capture Back</span>
+                  </button>
+                </div>
+                <div id="idBackCameraReviewControls" class="hidden flex items-center justify-between gap-2" style="display: none; align-items: center; justify-content: space-between; gap: 8px;">
+                  <button type="button" 
+                          onclick="closeIdCaptureCamera('back')" 
+                          class="px-3 py-1.5 rounded-xl text-xs font-bold text-[#4A3728] hover:text-[#382618] hover:bg-[#E8D8B0] transition-colors cursor-pointer border border-[#B89B72]"
+                          style="background: transparent; color: #4A3728; border: 1.5px solid #B89B72; font-size: 12px; font-weight: 700; padding: 6px 12px; border-radius: 10px; cursor: pointer;">
+                    Cancel
+                  </button>
+                  <div class="flex items-center gap-2" style="display: flex; align-items: center; gap: 8px;">
+                    <button type="button" 
+                            onclick="retakeIdPhotoCamera('back')" 
+                            class="px-3 py-1.5 rounded-xl text-xs font-bold text-[#4A3728] bg-white hover:bg-[#FAF8F5] transition-colors cursor-pointer border border-[#B89B72] inline-flex items-center gap-1 shadow-xs"
+                            style="background: #ffffff; color: #4A3728; border: 1.5px solid #B89B72; font-size: 11.5px; font-weight: 700; padding: 6px 10px; border-radius: 10px; cursor: pointer; display: inline-flex; align-items: center; gap: 4px;">
+                      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width: 13px; height: 13px;">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" />
+                      </svg>
+                      <span>Retake</span>
+                    </button>
+                    <button type="button" 
+                            onclick="confirmUseCapturedIdPhoto('back')" 
+                            class="px-3.5 py-1.5 rounded-xl text-xs font-black bg-[#4A3728] hover:bg-[#382618] text-white transition-all cursor-pointer shadow-md inline-flex items-center gap-1 active:scale-95"
+                            style="background: #4A3728; color: #ffffff; border: 1px solid #382618; font-size: 12px; font-weight: 800; padding: 6px 12px; border-radius: 10px; cursor: pointer; display: inline-flex; align-items: center; gap: 5px;">
+                      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor" style="width: 13px; height: 13px;">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+                      </svg>
+                      <span>Use Photo</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <input type="file" id="idBackFileInput" name="id_photo_back" accept="image/jpeg,image/png,image/webp" style="display: none;" onchange="handleVerificationFileSelect(event, 'back')">
+            <input type="hidden" name="captured_id_back_base64" id="captured_back_id_base64" value="">
+
+            <!-- Image Preview Card (Back) -->
+            <div id="idBackImagePreviewCard" class="hidden rounded-xl overflow-hidden bg-white border-2 border-[#B89B72] shadow-md" style="display: none; border-radius: 14px; overflow: hidden; background: #ffffff; border: 2px solid #B89B72; box-shadow: 0 4px 12px rgba(43,26,6,0.12);">
+              <div class="relative w-full h-44 bg-[#1c1206] flex items-center justify-center overflow-hidden" style="position: relative; width: 100%; height: 175px; background: #1c1206; display: flex; align-items: center; justify-content: center; overflow: hidden;">
+                <img id="idBackVisualPreviewImg" src="" alt="Uploaded Back ID Preview" class="w-full h-full object-contain block" style="width: 100%; height: 100%; object-fit: contain; display: block;">
+                <button type="button" 
+                        class="btn-remove-attached-photo absolute top-2.5 right-2.5 bg-[#1c1206]/85 hover:bg-[#1c1206] text-white w-8 h-8 rounded-full flex items-center justify-center cursor-pointer border border-white/35 transition-colors" 
+                        id="btnRemoveBackAttachedPhoto" 
+                        onclick="removeAttachedPhoto(event, 'back')" 
+                        title="Remove Back ID" 
+                        aria-label="Remove Back ID" 
+                        style="position: absolute; top: 10px; right: 10px; background: rgba(28, 18, 6, 0.85); color: #ffffff; width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; border: 1.5px solid rgba(255, 255, 255, 0.35); z-index: 20;">
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-4 h-4 pointer-events-none" style="width: 16px; height: 16px; pointer-events: none;">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+              <div class="p-2.5 bg-[#F5F0E6] flex items-center justify-between gap-2.5 border-t border-[#B89B72]/30" style="padding: 9px 12px; background: #F5F0E6; display: flex; align-items: center; justify-content: space-between; gap: 8px; border-top: 1px solid rgba(184, 155, 114, 0.3);">
+                <div class="flex items-center gap-2 overflow-hidden" style="display: flex; align-items: center; gap: 8px; overflow: hidden;">
+                  <span class="inline-flex text-[#4A3728]" style="display: inline-flex; color: #4A3728;"><i data-lucide="id-card" class="w-4 h-4" aria-hidden="true"></i></span>
+                  <div class="overflow-hidden truncate" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                    <div id="idBackPreviewFileName" class="text-xs font-bold text-[#3E2723] truncate" style="font-size: 12.5px; font-weight: 700; color: #3E2723; overflow: hidden; text-overflow: ellipsis;"></div>
+                    <div id="idBackPreviewFileSize" class="text-[11px] text-[#7A6245] font-semibold" style="font-size: 10.5px; color: #7A6245; font-weight: 600;"></div>
+                  </div>
+                </div>
+                <span class="bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs px-2.5 py-0.5 rounded-full font-bold inline-flex items-center gap-1 shrink-0" style="background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0; font-size: 11px; padding: 3px 8px; font-weight: 800; display: inline-flex; align-items: center; gap: 4px;">
+                  <i data-lucide="check" class="w-3 h-3" aria-hidden="true"></i> Back Attached
                 </span>
               </div>
             </div>
@@ -4111,23 +4316,21 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
             const d = imgData.data;
 
             // Pre-processing parameters:
-            // Contrast enhancement factor (-100 to 100, set to 40)
-            const contrast = 40;
+            // Convert to grayscale and apply gentle, continuous contrast enhancement.
+            // Avoid destructive static 1-bit thresholding (cVal >= 135) which destroys camera photos under varied ambient lighting.
+            // Preserving tonal gradients allows Tesseract's adaptive block binarizer (Leptonica) to properly segment characters.
+            const contrast = 30;
             const factor = (259 * (contrast + 255)) / (255 * (259 - contrast));
-            // Luminance threshold for binarization (0-255)
-            const threshold = 135;
 
             for (let i = 0; i < d.length; i += 4) {
               // 1. Grayscale luminance conversion: 0.299R + 0.587G + 0.114B
               const gray = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-              // 2. Contrast enhancement
-              const cVal = factor * (gray - 128) + 128;
-              // 3. Binarization thresholding
-              const bin = cVal >= threshold ? 255 : 0;
+              // 2. Contrast enhancement preserving gradient detail
+              const cVal = Math.min(255, Math.max(0, factor * (gray - 128) + 128));
 
-              d[i] = bin;     // R
-              d[i + 1] = bin; // G
-              d[i + 2] = bin; // B
+              d[i] = cVal;     // R
+              d[i + 1] = cVal; // G
+              d[i + 2] = cVal; // B
             }
 
             ctx.putImageData(imgData, 0, 0);
@@ -4147,137 +4350,307 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
       reader.readAsDataURL(file);
     }
 
-    // Portal ID Camera Streaming and Capture State
-    let portalCameraStream = null;
+    // =========================================================================
+    // PHYSICAL ID CAMERA STREAMING & PHOTO CAPTURE CONTROLLER (FRONT & BACK)
+    // Allows tenants to take a clear photo of their physical ID (Front & Back)
+    // using device camera, preview, retake, and automatically attach.
+    // =========================================================================
+    let idCameraStream = null;
+    let currentCameraSide = 'front';
+    let selectedFrontIdFile = null;
+    let selectedBackIdFile = null;
 
-    function togglePortalIdMethod(method) {
-      const tabUpload = document.getElementById('portalTabUploadId');
-      const tabCamera = document.getElementById('portalTabUseCamera');
-      const secUpload = document.getElementById('portalSectionUploadId');
-      const secCamera = document.getElementById('portalSectionUseCamera');
-
-      if (method === 'upload') {
-        if (tabUpload) {
-          tabUpload.className = 'py-2 px-3 rounded-lg text-xs sm:text-sm font-black bg-[#B89B72] text-white shadow-xs flex items-center justify-center gap-1.5 transition cursor-pointer';
-        }
-        if (tabCamera) {
-          tabCamera.className = 'py-2 px-3 rounded-lg text-xs sm:text-sm font-bold bg-[#F5F0E6] text-[#4A3728] hover:bg-[#E8D8B0] flex items-center justify-center gap-1.5 transition cursor-pointer';
-        }
-        if (secUpload) secUpload.classList.remove('hidden');
-        if (secCamera) secCamera.classList.add('hidden');
-        stopPortalCamera();
-      } else {
-        if (tabCamera) {
-          tabCamera.className = 'py-2 px-3 rounded-lg text-xs sm:text-sm font-black bg-[#B89B72] text-white shadow-xs flex items-center justify-center gap-1.5 transition cursor-pointer';
-        }
-        if (tabUpload) {
-          tabUpload.className = 'py-2 px-3 rounded-lg text-xs sm:text-sm font-bold bg-[#F5F0E6] text-[#4A3728] hover:bg-[#E8D8B0] flex items-center justify-center gap-1.5 transition cursor-pointer';
-        }
-        if (secCamera) secCamera.classList.remove('hidden');
-        if (secUpload) secUpload.classList.add('hidden');
-
-        const capturedBase64 = document.getElementById('captured_id_base64') ? document.getElementById('captured_id_base64').value : '';
-        if (!capturedBase64) {
-          startPortalCamera();
-        }
+    async function openIdCaptureCamera(side = 'front') {
+      if (typeof side !== 'string' || (side !== 'front' && side !== 'back')) {
+        side = 'front';
       }
-      if (window.lucide) lucide.createIcons();
-    }
+      currentCameraSide = side;
+      const cap = side === 'back' ? 'Back' : 'Front';
 
-    async function startPortalCamera() {
-      const videoEl = document.getElementById('camera_feed');
-      const viewport = document.getElementById('portalCameraViewport');
-      const card = document.getElementById('portalCapturedCard');
-      const btnCap = document.getElementById('btnCaptureId');
-      const btnRet = document.getElementById('btnRetakeId');
+      const alertBox = document.getElementById('verifyModalAlert');
+      if (alertBox) {
+        alertBox.style.display = 'none';
+        alertBox.innerHTML = '';
+      }
 
-      if (viewport) viewport.classList.remove('hidden');
-      if (card) card.classList.add('hidden');
-      if (btnCap) btnCap.classList.remove('hidden');
-      if (btnRet) btnRet.classList.add('hidden');
+      const dropZone = document.getElementById('id' + cap + 'DropZone') || document.getElementById('idDropZone');
+      const previewCard = document.getElementById('id' + cap + 'ImagePreviewCard') || document.getElementById('idImagePreviewCard');
+      const cameraContainer = document.getElementById('id' + cap + 'CameraCaptureContainer') || document.getElementById('idCameraCaptureContainer');
+      const videoEl = document.getElementById('id' + cap + 'CameraVideo') || document.getElementById('idCameraVideo') || document.getElementById('camera_feed');
+      const previewImg = document.getElementById('id' + cap + 'CameraCapturedPreview') || document.getElementById('idCameraCapturedPreview');
+      const cardGuide = document.getElementById('id' + cap + 'CameraCardGuide') || document.getElementById('idCameraCardGuide');
+      const liveControls = document.getElementById('id' + cap + 'CameraLiveControls') || document.getElementById('idCameraLiveControls');
+      const reviewControls = document.getElementById('id' + cap + 'CameraReviewControls') || document.getElementById('idCameraReviewControls');
 
-      stopPortalCamera();
+      if (previewCard) previewCard.style.setProperty('display', 'none', 'important');
+      if (dropZone) dropZone.style.setProperty('display', 'none', 'important');
+
+      if (cameraContainer) {
+        cameraContainer.classList.remove('hidden');
+        cameraContainer.style.setProperty('display', 'flex', 'important');
+      }
+      if (videoEl) {
+        videoEl.style.display = 'block';
+      }
+      if (previewImg) {
+        previewImg.src = '';
+        previewImg.style.display = 'none';
+      }
+      if (cardGuide) cardGuide.style.display = 'flex';
+      if (liveControls) liveControls.style.display = 'flex';
+      if (reviewControls) reviewControls.style.display = 'none';
+
+      stopIdCamera();
 
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } },
+        // Prioritize rear/environment camera for mobile ID framing
+        idCameraStream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: { ideal: 'environment' },
+            width: { ideal: 1920, min: 640 },
+            height: { ideal: 1080, min: 480 }
+          },
           audio: false
         });
-        portalCameraStream = stream;
-        if (videoEl) {
-          videoEl.srcObject = stream;
-          videoEl.play();
-        }
-      } catch (err) {
-        console.warn('Rear camera unavailable, trying any camera:', err);
+      } catch (err1) {
+        console.warn('Rear camera not available, attempting fallback to default camera:', err1);
         try {
-          const fallback = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-          portalCameraStream = fallback;
-          if (videoEl) {
-            videoEl.srcObject = fallback;
-            videoEl.play();
+          // Desktop webcam fallback
+          idCameraStream = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: false
+          });
+        } catch (err2) {
+          console.error('Camera access failed:', err2);
+          let userMsg = 'Unable to access device camera. Please check camera permissions or upload an image file instead.';
+          if (err2.name === 'NotAllowedError' || err2.name === 'PermissionDeniedError') {
+            userMsg = 'Camera permission denied. Please allow camera access in your browser settings to capture your physical ID.';
+          } else if (err2.name === 'NotFoundError' || err2.name === 'DevicesNotFoundError') {
+            userMsg = 'No camera found on your device. Please use the upload option instead.';
+          } else if (err2.name === 'NotReadableError' || err2.name === 'TrackStartError') {
+            userMsg = 'Camera is currently in use by another application. Please close other camera apps and retry.';
           }
-        } catch (fErr) {
-          console.error('Camera access failed:', fErr);
-          alert('Unable to access device camera. Please grant camera permission or use the "Upload ID" tab.');
-          togglePortalIdMethod('upload');
+
+          showToast(userMsg, 'error', 5000);
+          if (alertBox) {
+            alertBox.style.display = 'block';
+            alertBox.innerHTML = `<span style="display:flex;align-items:center;gap:8px;">${window.rcIcon ? window.rcIcon('alert-triangle', 'w-4 h-4 text-red-600') : ''}<span><strong>Camera Error:</strong> ${escapeHtml(userMsg)}</span></span>`;
+          }
+          closeIdCaptureCamera(side);
+          return;
         }
       }
-    }
 
-    function stopPortalCamera() {
-      if (portalCameraStream) {
-        portalCameraStream.getTracks().forEach(t => {
-          try { t.stop(); } catch(e) {}
-        });
-        portalCameraStream = null;
+      if (videoEl && idCameraStream) {
+        videoEl.srcObject = idCameraStream;
+        try {
+          await videoEl.play();
+        } catch (playErr) {
+          console.warn('Camera video play error:', playErr);
+        }
       }
-      const videoEl = document.getElementById('camera_feed');
-      if (videoEl) videoEl.srcObject = null;
+      if (window.lucide && typeof window.lucide.createIcons === 'function') {
+        window.lucide.createIcons();
+      }
     }
 
-    function capturePortalCamera() {
-      const videoEl = document.getElementById('camera_feed');
-      const canvasEl = document.getElementById('snapshot');
-      const hiddenInput = document.getElementById('captured_id_base64');
-      const viewport = document.getElementById('portalCameraViewport');
-      const card = document.getElementById('portalCapturedCard');
-      const img = document.getElementById('portalCapturedImg');
-      const btnCap = document.getElementById('btnCaptureId');
-      const btnRet = document.getElementById('btnRetakeId');
+    function captureIdPhotoFromCamera(side) {
+      if (!side || typeof side !== 'string') side = currentCameraSide || 'front';
+      const cap = side === 'back' ? 'Back' : 'Front';
+
+      const videoEl = document.getElementById('id' + cap + 'CameraVideo') || document.getElementById('idCameraVideo') || document.getElementById('camera_feed');
+      const canvasEl = document.getElementById('id' + cap + 'CameraCanvas') || document.getElementById('idCameraCanvas') || document.getElementById('snapshot');
+      const previewImg = document.getElementById('id' + cap + 'CameraCapturedPreview') || document.getElementById('idCameraCapturedPreview');
+      const cardGuide = document.getElementById('id' + cap + 'CameraCardGuide') || document.getElementById('idCameraCardGuide');
+      const liveControls = document.getElementById('id' + cap + 'CameraLiveControls') || document.getElementById('idCameraLiveControls');
+      const reviewControls = document.getElementById('id' + cap + 'CameraReviewControls') || document.getElementById('idCameraReviewControls');
 
       if (!videoEl || !canvasEl) return;
+
       const w = videoEl.videoWidth || 1280;
       const h = videoEl.videoHeight || 720;
       canvasEl.width = w;
       canvasEl.height = h;
+
       const ctx = canvasEl.getContext('2d');
       ctx.drawImage(videoEl, 0, 0, w, h);
 
-      const dataUrl = canvasEl.toDataURL('image/jpeg', 0.92);
-      if (hiddenInput) hiddenInput.value = dataUrl;
-      if (img) img.src = dataUrl;
-
-      if (viewport) viewport.classList.add('hidden');
-      if (card) card.classList.remove('hidden');
-      if (btnCap) btnCap.classList.add('hidden');
-      if (btnRet) btnRet.classList.remove('hidden');
-
-      stopPortalCamera();
-      selectedIdFile = null;
-      const fInput = document.getElementById('idFileInput');
-      if (fInput) fInput.value = '';
-      const pCard = document.getElementById('idImagePreviewCard');
-      if (pCard) pCard.style.display = 'none';
-
-      if (window.lucide) lucide.createIcons();
+      const dataUrl = canvasEl.toDataURL('image/jpeg', 0.95);
+      if (previewImg) {
+        previewImg.src = dataUrl;
+        previewImg.style.display = 'block';
+      }
+      if (videoEl) {
+        videoEl.style.display = 'none';
+        try { videoEl.pause(); } catch (e) {}
+      }
+      if (cardGuide) cardGuide.style.display = 'none';
+      if (liveControls) liveControls.style.display = 'none';
+      if (reviewControls) reviewControls.style.display = 'flex';
+      if (window.lucide && typeof window.lucide.createIcons === 'function') {
+        window.lucide.createIcons();
+      }
     }
 
-    function retakePortalCamera() {
-      const hiddenInput = document.getElementById('captured_id_base64');
-      if (hiddenInput) hiddenInput.value = '';
-      startPortalCamera();
+    function retakeIdPhotoCamera(side) {
+      if (!side || typeof side !== 'string') side = currentCameraSide || 'front';
+      const cap = side === 'back' ? 'Back' : 'Front';
+
+      const videoEl = document.getElementById('id' + cap + 'CameraVideo') || document.getElementById('idCameraVideo') || document.getElementById('camera_feed');
+      const previewImg = document.getElementById('id' + cap + 'CameraCapturedPreview') || document.getElementById('idCameraCapturedPreview');
+      const cardGuide = document.getElementById('id' + cap + 'CameraCardGuide') || document.getElementById('idCameraCardGuide');
+      const liveControls = document.getElementById('id' + cap + 'CameraLiveControls') || document.getElementById('idCameraLiveControls');
+      const reviewControls = document.getElementById('id' + cap + 'CameraReviewControls') || document.getElementById('idCameraReviewControls');
+
+      if (previewImg) {
+        previewImg.src = '';
+        previewImg.style.display = 'none';
+      }
+      if (videoEl) {
+        videoEl.style.display = 'block';
+        try { videoEl.play(); } catch (e) {}
+      }
+      if (cardGuide) cardGuide.style.display = 'flex';
+      if (liveControls) liveControls.style.display = 'flex';
+      if (reviewControls) reviewControls.style.display = 'none';
+      if (window.lucide && typeof window.lucide.createIcons === 'function') {
+        window.lucide.createIcons();
+      }
     }
+
+    function confirmUseCapturedIdPhoto(side) {
+      if (!side || typeof side !== 'string') side = currentCameraSide || 'front';
+      const cap = side === 'back' ? 'Back' : 'Front';
+
+      const canvasEl = document.getElementById('id' + cap + 'CameraCanvas') || document.getElementById('idCameraCanvas') || document.getElementById('snapshot');
+      if (!canvasEl) return;
+
+      canvasEl.toBlob((blob) => {
+        if (!blob) {
+          showToast('Failed to generate image from camera capture.', 'error');
+          return;
+        }
+
+        const timestamp = Date.now();
+        const capturedFile = new File([blob], `id_${side}_capture_${timestamp}.jpg`, { type: 'image/jpeg' });
+        const dataUrl = canvasEl.toDataURL('image/jpeg', 0.95);
+
+        // Populate hidden base64 input
+        const hiddenBase64 = document.getElementById('captured_' + side + '_id_base64');
+        if (hiddenBase64) {
+          try { hiddenBase64.value = dataUrl; } catch (e) {}
+        }
+        if (side === 'front') {
+          const legB64 = document.getElementById('captured_id_base64');
+          if (legB64) {
+            try { legB64.value = dataUrl; } catch (e) {}
+          }
+        }
+
+        // Place captured file into corresponding file input via DataTransfer
+        const fileInput = document.getElementById('id' + cap + 'FileInput') || document.getElementById('idFileInput');
+        if (fileInput) {
+          try {
+            const dt = new DataTransfer();
+            dt.items.add(capturedFile);
+            fileInput.files = dt.files;
+          } catch (e) {
+            console.warn('DataTransfer notice:', e);
+          }
+        }
+        if (side === 'front') {
+          const legInput = document.getElementById('idFileInput');
+          if (legInput && legInput !== fileInput) {
+            try {
+              const dt2 = new DataTransfer();
+              dt2.items.add(capturedFile);
+              legInput.files = dt2.files;
+            } catch (e) {}
+          }
+        }
+
+        // Stop camera stream & hide camera interface
+        stopIdCamera();
+        const cameraContainer = document.getElementById('id' + cap + 'CameraCaptureContainer') || document.getElementById('idCameraCaptureContainer');
+        if (cameraContainer) {
+          cameraContainer.classList.add('hidden');
+          cameraContainer.style.setProperty('display', 'none', 'important');
+        }
+
+        // Automatically pass into ID attachment handler
+        handleIdFile(capturedFile, side);
+
+        showToast(`Photo of ${side === 'front' ? 'Front' : 'Back'} ID captured and attached!`, 'success');
+      }, 'image/jpeg', 0.95);
+    }
+
+    function closeIdCaptureCamera(side) {
+      if (!side || typeof side !== 'string') side = currentCameraSide || 'front';
+      const cap = side === 'back' ? 'Back' : 'Front';
+
+      stopIdCamera();
+
+      const cameraContainer = document.getElementById('id' + cap + 'CameraCaptureContainer') || document.getElementById('idCameraCaptureContainer');
+      if (cameraContainer) {
+        cameraContainer.classList.add('hidden');
+        cameraContainer.style.setProperty('display', 'none', 'important');
+      }
+
+      const previewCard = document.getElementById('id' + cap + 'ImagePreviewCard') || document.getElementById('idImagePreviewCard');
+      const dropZone = document.getElementById('id' + cap + 'DropZone') || document.getElementById('idDropZone');
+
+      const isAttached = side === 'front' ? selectedFrontIdFile : selectedBackIdFile;
+      if (isAttached) {
+        if (previewCard) {
+          previewCard.classList.remove('hidden');
+          previewCard.style.setProperty('display', 'block', 'important');
+        }
+        if (dropZone) {
+          dropZone.classList.add('hidden');
+          dropZone.style.setProperty('display', 'none', 'important');
+        }
+      } else {
+        if (previewCard) {
+          previewCard.classList.add('hidden');
+          previewCard.style.setProperty('display', 'none', 'important');
+        }
+        if (dropZone) {
+          dropZone.classList.remove('hidden');
+          dropZone.style.setProperty('display', 'flex', 'important');
+        }
+      }
+    }
+
+    function stopIdCamera() {
+      if (idCameraStream) {
+        try {
+          idCameraStream.getTracks().forEach(track => {
+            try { track.stop(); } catch (e) {}
+          });
+        } catch (e) {}
+        idCameraStream = null;
+      }
+      ['idFrontCameraVideo', 'idBackCameraVideo', 'idCameraVideo', 'camera_feed'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.srcObject = null;
+      });
+    }
+
+    // Compatibility aliases
+    window.openIdCaptureCamera = openIdCaptureCamera;
+    window.closeIdCaptureCamera = closeIdCaptureCamera;
+    window.captureIdPhotoFromCamera = captureIdPhotoFromCamera;
+    window.retakeIdPhotoCamera = retakeIdPhotoCamera;
+    window.confirmUseCapturedIdPhoto = confirmUseCapturedIdPhoto;
+    window.stopIdCamera = stopIdCamera;
+    window.startPortalCamera = openIdCaptureCamera;
+    window.stopPortalCamera = stopIdCamera;
+    window.capturePortalCamera = captureIdPhotoFromCamera;
+    window.retakePortalCamera = retakeIdPhotoCamera;
+    window.togglePortalIdMethod = function(method) {
+      if (method === 'camera') openIdCaptureCamera('front');
+      else closeIdCaptureCamera('front');
+    };
 
     function openTermsModal(e) {
       if (e) {
@@ -4393,65 +4766,124 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
       }
     }
 
-    function handleVerificationFileSelect(e) {
+    function handleVerificationFileSelect(e, side = 'front') {
       const file = e.target.files && e.target.files[0];
       if (file) {
-        handleIdFile(file);
+        handleIdFile(file, side);
       }
     }
 
-    function removeAttachedPhoto(event) {
+    function removeAttachedPhoto(event, side = 'front') {
       if (event) {
         if (typeof event.stopPropagation === 'function') event.stopPropagation();
         if (typeof event.preventDefault === 'function') event.preventDefault();
         if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
       }
 
-      selectedIdFile = null;
-      preprocessedIdBlob = null;
-      preprocessedIdDataUrl = '';
-      heldOcrRawText = '';
+      stopIdCamera();
+      const cap = side === 'back' ? 'Back' : 'Front';
 
-      // 1. Clear the <input type="file"> value
-      const fileInput = document.getElementById('idFileInput');
-      if (fileInput) fileInput.value = '';
+      if (side === 'front') {
+        selectedFrontIdFile = null;
+        selectedIdFile = null;
+        preprocessedIdBlob = null;
+        preprocessedIdDataUrl = '';
+        heldOcrRawText = '';
 
-      const previewImg = document.getElementById('idVisualPreviewImg');
-      if (previewImg) previewImg.src = '';
+        const hiddenBase64 = document.getElementById('captured_front_id_base64');
+        if (hiddenBase64) hiddenBase64.value = '';
+        const legB64 = document.getElementById('captured_id_base64');
+        if (legB64) legB64.value = '';
 
-      const nameEl = document.getElementById('idPreviewFileName');
-      const sizeEl = document.getElementById('idPreviewFileSize');
-      if (nameEl) nameEl.textContent = '';
-      if (sizeEl) sizeEl.textContent = '';
+        const fileInput = document.getElementById('idFrontFileInput');
+        if (fileInput) fileInput.value = '';
+        const legInput = document.getElementById('idFileInput');
+        if (legInput) legInput.value = '';
 
-      // 2. Add the 'hidden' class to the image preview card
-      const previewCard = document.getElementById('idImagePreviewCard');
-      if (previewCard) {
-        previewCard.classList.add('hidden');
-        previewCard.style.setProperty('display', 'none', 'important');
-      }
+        const previewImg = document.getElementById('idFrontVisualPreviewImg');
+        if (previewImg) previewImg.src = '';
 
-      // 3. Remove the 'hidden' class from the dotted drag-and-drop zone
-      const dropZone = document.getElementById('idDropZone');
-      if (dropZone) {
-        dropZone.classList.remove('hidden');
-        dropZone.style.setProperty('display', 'flex', 'important');
+        const nameEl = document.getElementById('idFrontPreviewFileName');
+        const sizeEl = document.getElementById('idFrontPreviewFileSize');
+        if (nameEl) nameEl.textContent = '';
+        if (sizeEl) sizeEl.textContent = '';
+
+        const previewCard = document.getElementById('idFrontImagePreviewCard');
+        if (previewCard) {
+          previewCard.classList.add('hidden');
+          previewCard.style.setProperty('display', 'none', 'important');
+        }
+
+        const cameraContainer = document.getElementById('idFrontCameraCaptureContainer');
+        if (cameraContainer) {
+          cameraContainer.classList.add('hidden');
+          cameraContainer.style.setProperty('display', 'none', 'important');
+        }
+
+        const dropZone = document.getElementById('idFrontDropZone');
+        if (dropZone) {
+          dropZone.classList.remove('hidden');
+          dropZone.style.setProperty('display', 'flex', 'important');
+        }
+      } else {
+        selectedBackIdFile = null;
+
+        const hiddenBase64 = document.getElementById('captured_back_id_base64');
+        if (hiddenBase64) hiddenBase64.value = '';
+
+        const fileInput = document.getElementById('idBackFileInput');
+        if (fileInput) fileInput.value = '';
+
+        const previewImg = document.getElementById('idBackVisualPreviewImg');
+        if (previewImg) previewImg.src = '';
+
+        const nameEl = document.getElementById('idBackPreviewFileName');
+        const sizeEl = document.getElementById('idBackPreviewFileSize');
+        if (nameEl) nameEl.textContent = '';
+        if (sizeEl) sizeEl.textContent = '';
+
+        const previewCard = document.getElementById('idBackImagePreviewCard');
+        if (previewCard) {
+          previewCard.classList.add('hidden');
+          previewCard.style.setProperty('display', 'none', 'important');
+        }
+
+        const cameraContainer = document.getElementById('idBackCameraCaptureContainer');
+        if (cameraContainer) {
+          cameraContainer.classList.add('hidden');
+          cameraContainer.style.setProperty('display', 'none', 'important');
+        }
+
+        const dropZone = document.getElementById('idBackDropZone');
+        if (dropZone) {
+          dropZone.classList.remove('hidden');
+          dropZone.style.setProperty('display', 'flex', 'important');
+        }
       }
     }
     window.removeAttachedPhoto = removeAttachedPhoto;
 
-    function removeVerificationIdFile(event) {
-      removeAttachedPhoto(event);
+    function removeVerificationIdFile(event, side = 'front') {
+      removeAttachedPhoto(event, side);
     }
     window.removeVerificationIdFile = removeVerificationIdFile;
 
-    function removeIdFile(event) {
-      removeAttachedPhoto(event);
+    function removeIdFile(event, side = 'front') {
+      removeAttachedPhoto(event, side);
     }
     window.removeIdFile = removeIdFile;
 
     function closeVerifyAccountModal() {
       cancelIdUpdateIfPending();
+
+      stopIdCamera();
+      ['idFrontCameraCaptureContainer', 'idBackCameraCaptureContainer', 'idCameraCaptureContainer'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) {
+          el.classList.add('hidden');
+          el.style.setProperty('display', 'none', 'important');
+        }
+      });
 
       const modal = document.getElementById('verifyAccountModal');
       if (modal) {
@@ -4487,6 +4919,13 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
       const v1 = document.getElementById('verifyStep1View');
       const v2 = document.getElementById('verifyStep2View');
 
+      stopIdCamera();
+      const cameraContainer = document.getElementById('idCameraCaptureContainer');
+      if (cameraContainer) {
+        cameraContainer.classList.add('hidden');
+        cameraContainer.style.setProperty('display', 'none', 'important');
+      }
+
       if (stepNum === 2) {
         // Transition directly to Step 2 (Live Face Scan)
         currentVerificationStep = 2;
@@ -4512,26 +4951,48 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
           window.lucide.createIcons();
         }
 
-        // Seamless "Back" navigation: Preserve selectedIdFile, preview card, and idType
-        const previewCard = document.getElementById('idImagePreviewCard');
-        const dropZone = document.getElementById('idDropZone');
-        if (selectedIdFile) {
-          if (previewCard) {
-            previewCard.classList.remove('hidden');
-            previewCard.style.setProperty('display', 'block', 'important');
+        // Seamless "Back" navigation: Preserve Front & Back files, preview cards, and idType
+        const frontCard = document.getElementById('idFrontImagePreviewCard');
+        const frontDrop = document.getElementById('idFrontDropZone');
+        if (selectedFrontIdFile) {
+          if (frontCard) {
+            frontCard.classList.remove('hidden');
+            frontCard.style.setProperty('display', 'block', 'important');
           }
-          if (dropZone) {
-            dropZone.classList.add('hidden');
-            dropZone.style.setProperty('display', 'none', 'important');
+          if (frontDrop) {
+            frontDrop.classList.add('hidden');
+            frontDrop.style.setProperty('display', 'none', 'important');
           }
         } else {
-          if (previewCard) {
-            previewCard.classList.add('hidden');
-            previewCard.style.setProperty('display', 'none', 'important');
+          if (frontCard) {
+            frontCard.classList.add('hidden');
+            frontCard.style.setProperty('display', 'none', 'important');
           }
-          if (dropZone) {
-            dropZone.classList.remove('hidden');
-            dropZone.style.setProperty('display', 'flex', 'important');
+          if (frontDrop) {
+            frontDrop.classList.remove('hidden');
+            frontDrop.style.setProperty('display', 'flex', 'important');
+          }
+        }
+
+        const backCard = document.getElementById('idBackImagePreviewCard');
+        const backDrop = document.getElementById('idBackDropZone');
+        if (selectedBackIdFile) {
+          if (backCard) {
+            backCard.classList.remove('hidden');
+            backCard.style.setProperty('display', 'block', 'important');
+          }
+          if (backDrop) {
+            backDrop.classList.add('hidden');
+            backDrop.style.setProperty('display', 'none', 'important');
+          }
+        } else {
+          if (backCard) {
+            backCard.classList.add('hidden');
+            backCard.style.setProperty('display', 'none', 'important');
+          }
+          if (backDrop) {
+            backDrop.classList.remove('hidden');
+            backDrop.style.setProperty('display', 'flex', 'important');
           }
         }
       }
@@ -4973,7 +5434,7 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
       updateLivenessStatusBadge('clock', 'Comparing with registered Face ID...', 'perfect-capturing');
 
       // 4. Prepare payload with auto-captured Base64 string + registered Face ID
-      const idTypeEl = document.getElementById('idTypeSelect');
+      const idTypeEl = document.getElementById('verifyDocType') || document.getElementById('idTypeSelect');
       const idType = idTypeEl ? idTypeEl.value : (registeredIdType || '');
 
       const formData = new FormData();
@@ -4981,6 +5442,19 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
       formData.append('live_face_data', liveFaceBase64);
       if (selectedIdFile) {
         formData.append('id_photo', selectedIdFile);
+      }
+      if (selectedBackIdFile) {
+        formData.append('id_photo_back', selectedBackIdFile);
+      }
+      const hiddenFrontBase64 = document.getElementById('captured_front_id_base64') || document.getElementById('captured_id_base64');
+      if (hiddenFrontBase64 && hiddenFrontBase64.value) {
+        formData.append('captured_id_base64', hiddenFrontBase64.value);
+        formData.append('captured_front_id_base64', hiddenFrontBase64.value);
+      }
+      const hiddenBackBase64 = document.getElementById('captured_back_id_base64');
+      if (hiddenBackBase64 && hiddenBackBase64.value) {
+        formData.append('captured_back_id_base64', hiddenBackBase64.value);
+        formData.append('captured_id_back_base64', hiddenBackBase64.value);
       }
       if (idType) {
         formData.append('id_type', idType);
@@ -5123,6 +5597,7 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
 
     // Stop webcam hardware if the user navigates away or unloads the page
     window.addEventListener('beforeunload', () => {
+      stopIdCamera();
       stopLivenessCamera();
     });
 
@@ -5349,7 +5824,7 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
     }
 
     async function submitFullVerification() {
-      const idTypeEl = document.getElementById('idTypeSelect');
+      const idTypeEl = document.getElementById('verifyDocType') || document.getElementById('idTypeSelect');
       const idType = idTypeEl ? idTypeEl.value : '';
       const alertBox = document.getElementById('verifyModalAlert');
       if (alertBox) alertBox.style.display = 'none';
@@ -5360,8 +5835,24 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
         return;
       }
 
-      if (!selectedIdFile) {
-        showToast('Please upload an ID image in Step 1.', 'error');
+      const frontFileInput = document.getElementById('idFrontFileInput') || document.getElementById('idFileInput');
+      const frontFile = selectedFrontIdFile || selectedIdFile || (frontFileInput && frontFileInput.files && frontFileInput.files[0]);
+      const hiddenFrontBase64 = document.getElementById('captured_front_id_base64') || document.getElementById('captured_id_base64');
+      const frontBase64 = hiddenFrontBase64 ? hiddenFrontBase64.value.trim() : '';
+
+      const backFileInput = document.getElementById('idBackFileInput');
+      const backFile = selectedBackIdFile || (backFileInput && backFileInput.files && backFileInput.files[0]);
+      const hiddenBackBase64 = document.getElementById('captured_back_id_base64');
+      const backBase64 = hiddenBackBase64 ? hiddenBackBase64.value.trim() : '';
+
+      if (!frontFile && !frontBase64 && !window.hasStagedPendingId) {
+        showToast('Please upload or capture the Front side of your ID in Step 1.', 'error');
+        goToVerificationStep(1);
+        return;
+      }
+
+      if (!backFile && !backBase64 && !window.hasStagedPendingId) {
+        showToast('Please upload or capture the Back side of your ID in Step 1.', 'error');
         goToVerificationStep(1);
         return;
       }
@@ -5386,15 +5877,18 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
       if (btnBack) btnBack.disabled = true;
 
       // Extract raw text from the uploaded ID using client-side Tesseract.js OCR
-      let ocrRawText = '';
-      if (window.Tesseract && typeof Tesseract.recognize === 'function') {
+      let ocrRawText = heldOcrRawText || '';
+      if (!ocrRawText && window.Tesseract && typeof Tesseract.recognize === 'function') {
         try {
-          const targetImage = preprocessedIdBlob || selectedIdFile;
-          const ocrPromise = Tesseract.recognize(targetImage, 'eng');
-          const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('OCR Timeout')), 10000));
-          const ocrResult = await Promise.race([ocrPromise, timeoutPromise]);
-          if (ocrResult && ocrResult.data && ocrResult.data.text) {
-            ocrRawText = ocrResult.data.text;
+          const targetImage = preprocessedIdBlob || frontFile || selectedIdFile;
+          if (targetImage) {
+            const ocrPromise = Tesseract.recognize(targetImage, 'eng');
+            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('OCR Timeout')), 10000));
+            const ocrResult = await Promise.race([ocrPromise, timeoutPromise]);
+            if (ocrResult && ocrResult.data && ocrResult.data.text) {
+              ocrRawText = ocrResult.data.text;
+              heldOcrRawText = ocrRawText;
+            }
           }
         } catch (ocrErr) {
           console.warn('Client OCR extraction notice:', ocrErr);
@@ -5408,7 +5902,20 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
       const formData = new FormData();
       formData.append('action', 'verify_account');
       formData.append('id_type', idType);
-      formData.append('id_photo', selectedIdFile);
+      if (frontFile) {
+        formData.append('id_photo', frontFile);
+      }
+      if (frontBase64) {
+        formData.append('captured_id_base64', frontBase64);
+        formData.append('captured_front_id_base64', frontBase64);
+      }
+      if (backFile) {
+        formData.append('id_photo_back', backFile);
+      }
+      if (backBase64) {
+        formData.append('captured_back_id_base64', backBase64);
+        formData.append('captured_id_back_base64', backBase64);
+      }
       if (ocrRawText) {
         formData.append('ocr_raw_text', ocrRawText);
       }
@@ -5469,38 +5976,47 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
       }
     }
 
-    function handleIdFile(file) {
+    function handleIdFile(file, side = 'front') {
+      if (!side || typeof side !== 'string') side = 'front';
+      const cap = side === 'back' ? 'Back' : 'Front';
+
       if (file.size > 10 * 1024 * 1024) {
-        showToast('ID file exceeds 10MB limit', 'error');
+        showToast((side === 'front' ? 'Front' : 'Back') + ' ID file exceeds 10MB limit', 'error');
         return;
       }
-      selectedIdFile = file;
-      preprocessedIdBlob = null;
-      preprocessedIdDataUrl = '';
-      heldOcrRawText = '';
 
-      // Immediately pre-process image in the background (Grayscale + Contrast + Binarization) for high-accuracy OCR
-      preprocessIdImageForOCR(file, function(blob, dataUrl) {
-        if (window.Tesseract && typeof Tesseract.recognize === 'function') {
-          Tesseract.recognize(blob || file, 'eng').then(res => {
-            if (res && res.data && res.data.text) {
-              heldOcrRawText = res.data.text;
-            }
-          }).catch(err => {
-            console.warn('Background OCR notice:', err);
-          });
-        }
-      });
+      if (side === 'front') {
+        selectedFrontIdFile = file;
+        selectedIdFile = file; // compatibility
+        preprocessedIdBlob = null;
+        preprocessedIdDataUrl = '';
+        heldOcrRawText = '';
 
-      const nameEl = document.getElementById('idPreviewFileName');
-      const sizeEl = document.getElementById('idPreviewFileSize');
+        // Immediately pre-process front image in the background (Grayscale + Contrast + Binarization) for high-accuracy OCR
+        preprocessIdImageForOCR(file, function(blob, dataUrl) {
+          if (window.Tesseract && typeof Tesseract.recognize === 'function') {
+            Tesseract.recognize(blob || file, 'eng').then(res => {
+              if (res && res.data && res.data.text) {
+                heldOcrRawText = res.data.text;
+              }
+            }).catch(err => {
+              console.warn('Background OCR notice:', err);
+            });
+          }
+        });
+      } else {
+        selectedBackIdFile = file;
+      }
+
+      const nameEl = document.getElementById('id' + cap + 'PreviewFileName') || (side === 'front' ? document.getElementById('idPreviewFileName') : null);
+      const sizeEl = document.getElementById('id' + cap + 'PreviewFileSize') || (side === 'front' ? document.getElementById('idPreviewFileSize') : null);
       if (nameEl) nameEl.textContent = file.name;
       if (sizeEl) sizeEl.textContent = (file.size / 1024 / 1024).toFixed(2) + ' MB';
 
-      // Visual Image Preview: Single Document Upload UI (hide dropzone entirely, only show preview card)
-      const previewImg = document.getElementById('idVisualPreviewImg');
-      const previewCard = document.getElementById('idImagePreviewCard');
-      const dropZone = document.getElementById('idDropZone');
+      // Visual Image Preview: update preview card and hide dropzone for corresponding side
+      const previewImg = document.getElementById('id' + cap + 'VisualPreviewImg') || (side === 'front' ? document.getElementById('idVisualPreviewImg') : null);
+      const previewCard = document.getElementById('id' + cap + 'ImagePreviewCard') || (side === 'front' ? document.getElementById('idImagePreviewCard') : null);
+      const dropZone = document.getElementById('id' + cap + 'DropZone') || (side === 'front' ? document.getElementById('idDropZone') : null);
 
       const showSinglePreviewCard = (src) => {
         if (previewImg && src) previewImg.src = src;
@@ -5524,7 +6040,7 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
         showSinglePreviewCard('');
       }
 
-      showToast('ID attached: ' + file.name, 'info');
+      showToast(`${side === 'front' ? 'Front' : 'Back'} ID attached: ${file.name}`, 'info');
     }
 
     function switchPaymentTab(tab) {
@@ -5539,14 +6055,18 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
         uploadContent.classList.remove('hidden');
         trackerContent.classList.add('hidden');
 
-        btnUpload.className = 'flex-1 py-3.5 px-6 font-black text-sm md:text-base tracking-wide flex items-center justify-center gap-2 transition-all bg-[#B89B72] text-white rounded-tl-xl border-b-2 border-b-[#B89B72] z-10 cursor-pointer';
-        btnTracker.className = 'flex-1 py-3.5 px-6 font-bold text-sm md:text-base tracking-wide flex items-center justify-center gap-2 transition-all bg-[#F5F0E6] text-[#3E2723] rounded-tr-xl border-l border-b-2 border-[#8C6D43] hover:bg-[#E8D8B0] cursor-pointer';
+        btnUpload.className = 'maintenance-folder-tab active';
+        btnTracker.className = 'maintenance-folder-tab';
+        btnUpload.setAttribute('aria-selected', 'true');
+        btnTracker.setAttribute('aria-selected', 'false');
       } else {
         uploadContent.classList.add('hidden');
         trackerContent.classList.remove('hidden');
 
-        btnTracker.className = 'flex-1 py-3.5 px-6 font-black text-sm md:text-base tracking-wide flex items-center justify-center gap-2 transition-all bg-[#B89B72] text-white rounded-tr-xl border-b-2 border-b-[#B89B72] z-10 cursor-pointer';
-        btnUpload.className = 'flex-1 py-3.5 px-6 font-bold text-sm md:text-base tracking-wide flex items-center justify-center gap-2 transition-all bg-[#F5F0E6] text-[#3E2723] rounded-tl-xl border-r border-b-2 border-[#8C6D43] hover:bg-[#E8D8B0] cursor-pointer';
+        btnTracker.className = 'maintenance-folder-tab active';
+        btnUpload.className = 'maintenance-folder-tab';
+        btnTracker.setAttribute('aria-selected', 'true');
+        btnUpload.setAttribute('aria-selected', 'false');
       }
     }
 
@@ -5734,15 +6254,15 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
       if (tabName === 'submit') {
         submitSection.classList.remove('hidden');
         trackSection.classList.add('hidden');
-        submitBtn.className = 'flex-1 py-3.5 px-6 font-black text-sm md:text-base tracking-wide flex items-center justify-center gap-2 transition-all bg-[#B89B72] text-white rounded-tl-xl border-b-2 border-b-[#B89B72] z-10 cursor-pointer active';
-        trackBtn.className = 'flex-1 py-3.5 px-6 font-bold text-sm md:text-base tracking-wide flex items-center justify-center gap-2 transition-all bg-[#F5F0E6] text-[#3E2723] rounded-tr-xl border-l border-b-2 border-[#8C6D43] hover:bg-[#E8D8B0] cursor-pointer';
+        submitBtn.className = 'maintenance-folder-tab active';
+        trackBtn.className = 'maintenance-folder-tab';
         submitBtn.setAttribute('aria-selected', 'true');
         trackBtn.setAttribute('aria-selected', 'false');
       } else {
         trackSection.classList.remove('hidden');
         submitSection.classList.add('hidden');
-        trackBtn.className = 'flex-1 py-3.5 px-6 font-black text-sm md:text-base tracking-wide flex items-center justify-center gap-2 transition-all bg-[#B89B72] text-white rounded-tr-xl border-b-2 border-b-[#B89B72] z-10 cursor-pointer active';
-        submitBtn.className = 'flex-1 py-3.5 px-6 font-bold text-sm md:text-base tracking-wide flex items-center justify-center gap-2 transition-all bg-[#F5F0E6] text-[#3E2723] rounded-tl-xl border-r border-b-2 border-[#8C6D43] hover:bg-[#E8D8B0] cursor-pointer';
+        trackBtn.className = 'maintenance-folder-tab active';
+        submitBtn.className = 'maintenance-folder-tab';
         trackBtn.setAttribute('aria-selected', 'true');
         submitBtn.setAttribute('aria-selected', 'false');
         if (typeof loadTenantTickets === 'function') {
@@ -6026,49 +6546,56 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
 
       // Sidebar toggle & shared nav controls are handled by assets/js/sidebar.js and includes/sidebar.php
 
-      // 3. Drop Zone & File Selection for ID Verification
+      // 3. Drop Zone & File Selection for ID Verification (Front & Back)
       try {
-        const idDropZone = document.getElementById('idDropZone');
-        const idFileInput = document.getElementById('idFileInput');
-        const btnRemoveAttachedPhoto = document.getElementById('btnRemoveAttachedPhoto') || document.getElementById('btnRemoveIdFile');
+        const setupDropZone = (dropZoneId, fileInputId, removeBtnId, side) => {
+          const dropZone = document.getElementById(dropZoneId);
+          const fileInput = document.getElementById(fileInputId);
+          const removeBtn = document.getElementById(removeBtnId);
 
-        if (btnRemoveAttachedPhoto) {
-          btnRemoveAttachedPhoto.addEventListener('click', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            removeAttachedPhoto(e);
-          });
-        }
+          if (removeBtn) {
+            removeBtn.addEventListener('click', (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              removeAttachedPhoto(e, side);
+            });
+          }
 
-        if (idDropZone && idFileInput) {
-          idDropZone.addEventListener('click', (e) => {
-            idFileInput.click();
-          });
+          if (dropZone && fileInput) {
+            dropZone.addEventListener('click', () => {
+              fileInput.click();
+            });
 
-          ['dragenter', 'dragover'].forEach(n => idDropZone.addEventListener(n, (e) => {
-            e.preventDefault();
-            idDropZone.classList.add('drag-over');
-          }));
+            ['dragenter', 'dragover'].forEach(n => dropZone.addEventListener(n, (e) => {
+              e.preventDefault();
+              dropZone.classList.add('drag-over');
+            }));
 
-          ['dragleave', 'drop'].forEach(n => idDropZone.addEventListener(n, (e) => {
-            e.preventDefault();
-            idDropZone.classList.remove('drag-over');
-          }));
+            ['dragleave', 'drop'].forEach(n => dropZone.addEventListener(n, (e) => {
+              e.preventDefault();
+              dropZone.classList.remove('drag-over');
+            }));
 
-          idDropZone.addEventListener('drop', (e) => {
-            e.preventDefault();
-            idDropZone.classList.remove('drag-over');
-            if (e.dataTransfer && e.dataTransfer.files.length > 0) {
-              const file = e.dataTransfer.files[0];
-              try {
-                const dt = new DataTransfer();
-                dt.items.add(file);
-                idFileInput.files = dt.files;
-              } catch (err) {}
-              handleIdFile(file);
-            }
-          });
-        }
+            dropZone.addEventListener('drop', (e) => {
+              e.preventDefault();
+              dropZone.classList.remove('drag-over');
+              if (e.dataTransfer && e.dataTransfer.files.length > 0) {
+                const file = e.dataTransfer.files[0];
+                try {
+                  const dt = new DataTransfer();
+                  dt.items.add(file);
+                  fileInput.files = dt.files;
+                } catch (err) {}
+                handleIdFile(file, side);
+              }
+            });
+          }
+        };
+
+        setupDropZone('idFrontDropZone', 'idFrontFileInput', 'btnRemoveFrontAttachedPhoto', 'front');
+        setupDropZone('idBackDropZone', 'idBackFileInput', 'btnRemoveBackAttachedPhoto', 'back');
+        // Legacy fallback
+        setupDropZone('idDropZone', 'idFileInput', 'btnRemoveAttachedPhoto', 'front');
       } catch (e) {
         console.warn('ID dropzone listener notice:', e);
       }
@@ -6087,9 +6614,17 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
 
             const docTypeSelect = document.getElementById('verifyDocType');
             const docType = docTypeSelect ? docTypeSelect.value : '';
-            const fileInput = document.getElementById('idFileInput');
-            const file = (selectedIdFile || (fileInput && fileInput.files && fileInput.files[0]));
             const termsCheck = document.getElementById('checkTermsAgreement');
+
+            const frontFileInput = document.getElementById('idFrontFileInput') || document.getElementById('idFileInput');
+            const frontFile = (selectedFrontIdFile || selectedIdFile || (frontFileInput && frontFileInput.files && frontFileInput.files[0]));
+            const hiddenFrontBase64 = document.getElementById('captured_front_id_base64') || document.getElementById('captured_id_base64');
+            const frontBase64 = hiddenFrontBase64 ? hiddenFrontBase64.value.trim() : '';
+
+            const backFileInput = document.getElementById('idBackFileInput');
+            const backFile = (selectedBackIdFile || (backFileInput && backFileInput.files && backFileInput.files[0]));
+            const hiddenBackBase64 = document.getElementById('captured_back_id_base64');
+            const backBase64 = hiddenBackBase64 ? hiddenBackBase64.value.trim() : '';
 
             if (!docType) {
               const msg = 'Please select a valid Document Type from the dropdown.';
@@ -6101,8 +6636,18 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
               return;
             }
 
-            if (!file) {
-              const msg = 'Please upload or attach a photo of your ID document.';
+            if (!frontFile && !frontBase64) {
+              const msg = 'Please attach or capture the Front side of your ID.';
+              showToast(msg, 'error');
+              if (alertBox) {
+                alertBox.style.display = 'block';
+                alertBox.innerHTML = `<span style="display:flex;align-items:center;gap:8px;">${window.rcIcon('alert-triangle', 'w-4 h-4 text-red-600')}<span>${escapeHtml(msg)}</span></span>`;
+              }
+              return;
+            }
+
+            if (!backFile && !backBase64) {
+              const msg = 'Please attach or capture the Back side of your ID.';
               showToast(msg, 'error');
               if (alertBox) {
                 alertBox.style.display = 'block';
@@ -6121,7 +6666,9 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
               return;
             }
 
-            selectedIdFile = file;
+            selectedFrontIdFile = frontFile || null;
+            selectedIdFile = frontFile || null;
+            selectedBackIdFile = backFile || null;
 
             const submitBtn = document.getElementById('btnSubmitVerification');
             const origHtml = submitBtn ? submitBtn.innerHTML : 'Submit for Verification';
@@ -6134,13 +6681,15 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
             let ocrText = heldOcrRawText || '';
             if (!ocrText && window.Tesseract && typeof Tesseract.recognize === 'function') {
               try {
-                const targetImage = preprocessedIdBlob || file;
-                const ocrPromise = Tesseract.recognize(targetImage, 'eng');
-                const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('OCR Timeout')), 5000));
-                const ocrResult = await Promise.race([ocrPromise, timeoutPromise]);
-                if (ocrResult && ocrResult.data && ocrResult.data.text) {
-                  ocrText = ocrResult.data.text;
-                  heldOcrRawText = ocrText;
+                const targetImage = preprocessedIdBlob || frontFile;
+                if (targetImage) {
+                  const ocrPromise = Tesseract.recognize(targetImage, 'eng');
+                  const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('OCR Timeout')), 5000));
+                  const ocrResult = await Promise.race([ocrPromise, timeoutPromise]);
+                  if (ocrResult && ocrResult.data && ocrResult.data.text) {
+                    ocrText = ocrResult.data.text;
+                    heldOcrRawText = ocrText;
+                  }
                 }
               } catch (ocrErr) {
                 console.warn('Quick client OCR check notice:', ocrErr);
@@ -6150,7 +6699,20 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
             const formData = new FormData();
             formData.append('action', 'validate_and_stage_id');
             formData.append('id_type', docType);
-            formData.append('id_photo', file);
+            if (frontFile) {
+              formData.append('id_photo', frontFile);
+            }
+            if (frontBase64) {
+              formData.append('captured_id_base64', frontBase64);
+              formData.append('captured_front_id_base64', frontBase64);
+            }
+            if (backFile) {
+              formData.append('id_photo_back', backFile);
+            }
+            if (backBase64) {
+              formData.append('captured_back_id_base64', backBase64);
+              formData.append('captured_id_back_base64', backBase64);
+            }
             if (ocrText) {
               formData.append('ocr_raw_text', ocrText);
             }

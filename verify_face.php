@@ -81,18 +81,25 @@ $handleFailure = function(string $defaultMsg, float $confidence = 0.0, array $ex
     if ($isVerifiedUser) {
         // Safe-Fail Mechanism: Automatically discard temporary ID file
         $pendingId = $accountUser['pending_id_path'] ?? ($_SESSION['pending_id_path'] ?? null);
-        if (!empty($pendingId)) {
+        if (!empty($pendingId) && !str_starts_with((string)$pendingId, 'http')) {
             $pPath = $uploadDir . '/' . basename($pendingId);
             if (file_exists($pPath)) {
                 @unlink($pPath);
+            }
+        }
+        $pendingBackId = $accountUser['pending_id_back_path'] ?? ($_SESSION['pending_id_back_path'] ?? null);
+        if (!empty($pendingBackId) && !str_starts_with((string)$pendingBackId, 'http')) {
+            $pbPath = $uploadDir . '/' . basename($pendingBackId);
+            if (file_exists($pbPath)) {
+                @unlink($pbPath);
             }
         }
         if (!empty($liveFacePath) && file_exists($liveFacePath)) {
             @unlink($liveFacePath);
         }
         // Leave main database records untouched so tenant remains fully verified and active using original ID
-        $pdo->prepare("UPDATE users SET pending_id_path = NULL, pending_id_type = NULL WHERE id = :id")->execute([':id' => $userId]);
-        unset($_SESSION['pending_id_path'], $_SESSION['pending_id_type'], $_SESSION['is_updating_verified_id'], $_SESSION['staged_id_photo'], $_SESSION['staged_id_type']);
+        $pdo->prepare("UPDATE users SET pending_id_path = NULL, pending_id_back_path = NULL, pending_id_type = NULL WHERE id = :id")->execute([':id' => $userId]);
+        unset($_SESSION['pending_id_path'], $_SESSION['pending_id_back_path'], $_SESSION['pending_id_type'], $_SESSION['is_updating_verified_id'], $_SESSION['staged_id_photo'], $_SESSION['staged_id_photo_back'], $_SESSION['staged_id_type']);
 
         sendFaceJsonResponse(422, array_merge([
             'status' => 'error',
@@ -114,14 +121,21 @@ $handleFailure = function(string $defaultMsg, float $confidence = 0.0, array $ex
 // Handle ID Update Cancellation: Discard temporary file, reset holding columns, keep original ID verified
 if ($action === 'cancel_id_update') {
     $pendingId = $accountUser['pending_id_path'] ?? ($_SESSION['pending_id_path'] ?? null);
-    if (!empty($pendingId)) {
+    if (!empty($pendingId) && !str_starts_with((string)$pendingId, 'http')) {
         $pPath = $uploadDir . '/' . basename($pendingId);
         if (file_exists($pPath)) {
             @unlink($pPath);
         }
     }
-    $pdo->prepare("UPDATE users SET pending_id_path = NULL, pending_id_type = NULL WHERE id = :id")->execute([':id' => $userId]);
-    unset($_SESSION['pending_id_path'], $_SESSION['pending_id_type'], $_SESSION['is_updating_verified_id'], $_SESSION['staged_id_photo'], $_SESSION['staged_id_type']);
+    $pendingBackId = $accountUser['pending_id_back_path'] ?? ($_SESSION['pending_id_back_path'] ?? null);
+    if (!empty($pendingBackId) && !str_starts_with((string)$pendingBackId, 'http')) {
+        $pbPath = $uploadDir . '/' . basename($pendingBackId);
+        if (file_exists($pbPath)) {
+            @unlink($pbPath);
+        }
+    }
+    $pdo->prepare("UPDATE users SET pending_id_path = NULL, pending_id_back_path = NULL, pending_id_type = NULL WHERE id = :id")->execute([':id' => $userId]);
+    unset($_SESSION['pending_id_path'], $_SESSION['pending_id_back_path'], $_SESSION['pending_id_type'], $_SESSION['is_updating_verified_id'], $_SESSION['staged_id_photo'], $_SESSION['staged_id_photo_back'], $_SESSION['staged_id_type']);
 
     sendFaceJsonResponse(200, [
         'status' => 'success',
@@ -180,15 +194,33 @@ if ($action === 'complete_liveness') {
 // Handle ID Pre-upload from Step 1 (Stage ID image on server before face scan)
 if (!empty($_POST['upload_id_only']) || $action === 'validate_and_stage_id') {
     $idType = trim((string)($_POST['id_type'] ?? ($accountUser['id_type'] ?? '')));
-    if (isset($_FILES['id_photo']) && $_FILES['id_photo']['error'] === UPLOAD_ERR_OK) {
-        $idFile = $_FILES['id_photo'];
-        $idExt = strtolower(pathinfo((string)$idFile['name'], PATHINFO_EXTENSION));
-        if (!in_array($idExt, ['jpg', 'jpeg', 'png', 'webp'], true)) {
-            $idExt = 'jpg';
+    $hasPhotoFile = isset($_FILES['id_photo']) && $_FILES['id_photo']['error'] === UPLOAD_ERR_OK;
+    $rawBase64Cam = trim((string)($_POST['captured_id_base64'] ?? ($jsonPayload['captured_id_base64'] ?? '')));
+
+    if ($hasPhotoFile || !empty($rawBase64Cam)) {
+        $idExt = 'jpg';
+        if ($hasPhotoFile) {
+            $idFile = $_FILES['id_photo'];
+            $idExt = strtolower(pathinfo((string)$idFile['name'], PATHINFO_EXTENSION));
+            if (!in_array($idExt, ['jpg', 'jpeg', 'png', 'webp'], true)) {
+                $idExt = 'jpg';
+            }
         }
         $idFilename = sprintf('id_user%d_%s_%s.%s', $userId, $timestampStr, $randStr, $idExt);
         $dest = $uploadDir . '/' . $idFilename;
-        if (move_uploaded_file($idFile['tmp_name'], $dest)) {
+        $saved = false;
+
+        if ($hasPhotoFile) {
+            $saved = move_uploaded_file($_FILES['id_photo']['tmp_name'], $dest);
+        } elseif (!empty($rawBase64Cam)) {
+            $cleanB64 = preg_replace('/^data:image\/\w+;base64,/', '', $rawBase64Cam);
+            $decoded = base64_decode($cleanB64, true);
+            if ($decoded !== false && strlen($decoded) > 100) {
+                $saved = (file_put_contents($dest, $decoded) !== false);
+            }
+        }
+
+        if ($saved) {
             $rawOcrText = trim((string)($_POST['ocr_raw_text'] ?? ''));
             if (empty($rawOcrText)) {
                 $ocrRes = VerificationService::extractIdDataWithOCR($dest, null, $accountUser, $idType);
@@ -327,18 +359,37 @@ if (!$liveFacePath || !file_exists($liveFacePath)) {
 // 3. Retrieve Previously Uploaded ID Image
 $idFilePath = null;
 $idFilename = null;
+$idBackFilename = null;
 $idType = trim((string)($_POST['id_type'] ?? ($accountUser['id_type'] ?? '')));
 
-// Case A: ID image supplied in the current request
-if (isset($_FILES['id_photo']) && $_FILES['id_photo']['error'] === UPLOAD_ERR_OK) {
-    $idFile = $_FILES['id_photo'];
-    $idExt = strtolower(pathinfo((string)$idFile['name'], PATHINFO_EXTENSION));
-    if (!in_array($idExt, ['jpg', 'jpeg', 'png', 'webp'], true)) {
-        $idExt = 'jpg';
+// Case A: ID image supplied in the current request (multipart file or camera capture base64)
+$hasPhotoFile = isset($_FILES['id_photo']) && $_FILES['id_photo']['error'] === UPLOAD_ERR_OK;
+$rawBase64Cam = trim((string)($_POST['captured_id_base64'] ?? ($_POST['captured_front_id_base64'] ?? ($jsonPayload['captured_id_base64'] ?? ($jsonPayload['captured_front_id_base64'] ?? '')))));
+
+if ($hasPhotoFile || !empty($rawBase64Cam)) {
+    $idExt = 'jpg';
+    if ($hasPhotoFile) {
+        $idFile = $_FILES['id_photo'];
+        $idExt = strtolower(pathinfo((string)$idFile['name'], PATHINFO_EXTENSION));
+        if (!in_array($idExt, ['jpg', 'jpeg', 'png', 'webp'], true)) {
+            $idExt = 'jpg';
+        }
     }
     $idFilename = sprintf('id_user%d_%s_%s.%s', $userId, $timestampStr, $randStr, $idExt);
     $dest = $uploadDir . '/' . $idFilename;
-    if (move_uploaded_file($idFile['tmp_name'], $dest)) {
+    $saved = false;
+
+    if ($hasPhotoFile) {
+        $saved = move_uploaded_file($_FILES['id_photo']['tmp_name'], $dest);
+    } elseif (!empty($rawBase64Cam)) {
+        $cleanB64 = preg_replace('/^data:image\/\w+;base64,/', '', $rawBase64Cam);
+        $decoded = base64_decode($cleanB64, true);
+        if ($decoded !== false && strlen($decoded) > 100) {
+            $saved = (file_put_contents($dest, $decoded) !== false);
+        }
+    }
+
+    if ($saved) {
         $idFilePath = $dest;
         $publicIdUrl = uploadToSupabaseStorage($dest, $idFilename, 'id_verifications');
         $savedIdStoragePath = $publicIdUrl !== false ? $publicIdUrl : $idFilename;
@@ -353,6 +404,48 @@ if (isset($_FILES['id_photo']) && $_FILES['id_photo']['error'] === UPLOAD_ERR_OK
         } else {
             $saveIdStmt = $pdo->prepare("UPDATE users SET id_photo_filename = :fn, id_type = :id_type, pending_id_path = :fn, pending_id_type = :id_type WHERE id = :id");
             $saveIdStmt->execute([':fn' => $savedIdStoragePath, ':id_type' => $idType, ':id' => $userId]);
+        }
+    }
+}
+
+// Case A.2: Back ID image supplied in the current request (multipart file or camera capture base64)
+$hasBackPhotoFile = isset($_FILES['id_photo_back']) && $_FILES['id_photo_back']['error'] === UPLOAD_ERR_OK;
+$rawBackBase64Cam = trim((string)($_POST['captured_back_id_base64'] ?? ($_POST['captured_id_back_base64'] ?? ($jsonPayload['captured_back_id_base64'] ?? ($jsonPayload['captured_id_back_base64'] ?? '')))));
+
+if ($hasBackPhotoFile || !empty($rawBackBase64Cam)) {
+    $backExt = 'jpg';
+    if ($hasBackPhotoFile) {
+        $backFile = $_FILES['id_photo_back'];
+        $backExt = strtolower(pathinfo((string)$backFile['name'], PATHINFO_EXTENSION));
+        if (!in_array($backExt, ['jpg', 'jpeg', 'png', 'webp'], true)) {
+            $backExt = 'jpg';
+        }
+    }
+    $backFilename = sprintf('id_back_user%d_%s_%s.%s', $userId, $timestampStr, $randStr, $backExt);
+    $destBack = $uploadDir . '/' . $backFilename;
+    $savedBack = false;
+
+    if ($hasBackPhotoFile) {
+        $savedBack = move_uploaded_file($_FILES['id_photo_back']['tmp_name'], $destBack);
+    } elseif (!empty($rawBackBase64Cam)) {
+        $cleanBackB64 = preg_replace('/^data:image\/\w+;base64,/', '', $rawBackBase64Cam);
+        $decodedBack = base64_decode($cleanBackB64, true);
+        if ($decodedBack !== false && strlen($decodedBack) > 100) {
+            $savedBack = (file_put_contents($destBack, $decodedBack) !== false);
+        }
+    }
+
+    if ($savedBack) {
+        $publicBackUrl = uploadToSupabaseStorage($destBack, $backFilename, 'id_verifications');
+        $idBackFilename = $publicBackUrl !== false ? $publicBackUrl : $backFilename;
+
+        if ($isVerifiedUser) {
+            $pdo->prepare("UPDATE users SET pending_id_back_path = :fn WHERE id = :id")->execute([':fn' => $idBackFilename, ':id' => $userId]);
+            $_SESSION['pending_id_back_path'] = $idBackFilename;
+            $_SESSION['staged_id_photo_back'] = $idBackFilename;
+        } else {
+            $pdo->prepare("UPDATE users SET id_photo_back_filename = :fn, pending_id_back_path = :fn WHERE id = :id")->execute([':fn' => $idBackFilename, ':id' => $userId]);
+            $_SESSION['staged_id_photo_back'] = $idBackFilename;
         }
     }
 }
@@ -550,6 +643,7 @@ if ($isConfidenceMatch) {
     // If Successful: Replace the main ID columns with the new data and clear temporary holding fields.
     // The tenant seamlessly remains is_verified = TRUE under the new ID.
     $idFilenameToSave = $idFilename ?: ($accountUser['pending_id_path'] ?? ($accountUser['id_photo_filename'] ?? null));
+    $idBackFilenameToSave = $idBackFilename ?? ($accountUser['pending_id_back_path'] ?? ($accountUser['id_photo_back_filename'] ?? ($_SESSION['pending_id_back_path'] ?? ($_SESSION['staged_id_photo_back'] ?? null))));
     $idTypeToSave = !empty($idType) ? $idType : ($accountUser['pending_id_type'] ?? ($accountUser['id_type'] ?? null));
     $notes = sprintf('Face++ Verified: confidence %.2f%% (baseline >= 70.00%%, threshold 1e-4: %.2f%%). Auto-capture liveness verified.', $confidence, $threshold1e4);
 
@@ -559,8 +653,10 @@ if ($isConfidenceMatch) {
             verification_status = 'verified',
             id_type = :id_type,
             id_photo_filename = :id_photo,
+            id_photo_back_filename = :id_photo_back,
             live_photo_filename = :live_face,
             pending_id_path = NULL,
+            pending_id_back_path = NULL,
             pending_id_type = NULL,
             terms_accepted = TRUE,
             privacy_acknowledged = TRUE,
@@ -571,6 +667,7 @@ if ($isConfidenceMatch) {
     $updateStmt->execute([
         ':id_type' => $idTypeToSave,
         ':id_photo' => $idFilenameToSave,
+        ':id_photo_back' => $idBackFilenameToSave,
         ':live_face' => basename($liveFacePath),
         ':notes' => $notes,
         ':id' => $userId
@@ -581,10 +678,11 @@ if ($isConfidenceMatch) {
         $_SESSION['user']['verification_status'] = 'verified';
         if ($idTypeToSave) $_SESSION['user']['id_type'] = $idTypeToSave;
         if ($idFilenameToSave) $_SESSION['user']['id_photo_filename'] = $idFilenameToSave;
+        if ($idBackFilenameToSave) $_SESSION['user']['id_photo_back_filename'] = $idBackFilenameToSave;
     }
     $_SESSION['is_verified'] = 1;
     $_SESSION['verification_status'] = 'verified';
-    unset($_SESSION['pending_id_path'], $_SESSION['pending_id_type'], $_SESSION['is_updating_verified_id'], $_SESSION['staged_id_photo'], $_SESSION['staged_id_type']);
+    unset($_SESSION['pending_id_path'], $_SESSION['pending_id_back_path'], $_SESSION['pending_id_type'], $_SESSION['is_updating_verified_id'], $_SESSION['staged_id_photo'], $_SESSION['staged_id_photo_back'], $_SESSION['staged_id_type']);
 
     sendFaceJsonResponse(200, [
         'status' => 'success',

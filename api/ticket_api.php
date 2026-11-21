@@ -58,6 +58,33 @@ try {
                 exit;
             }
 
+            // Task: Lock Maintenance Status Once Marked as Done
+            // Once a ticket has been marked as Done (or resolved/closed), its status is permanent and immutable.
+            $currentStatusNorm = strtolower(trim((string)($ticketRow['status'] ?? '')));
+            $isAlreadyDone = in_array($currentStatusNorm, ['done', 'resolved', 'closed'], true);
+
+            if ($isAlreadyDone) {
+                // If attempting to update status directly, reject with 403 Forbidden
+                if ($action === 'update_status') {
+                    http_response_code(403);
+                    echo json_encode([
+                        'status' => 'error',
+                        'message' => 'This maintenance ticket is marked as Done and its status cannot be changed.'
+                    ]);
+                    exit;
+                }
+
+                // If updating ticket with a non-done status or attempting to revert status, reject with 403 Forbidden
+                if (!empty($newStatus) && !in_array(strtolower($newStatus), ['done', 'resolved', 'closed'], true)) {
+                    http_response_code(403);
+                    echo json_encode([
+                        'status' => 'error',
+                        'message' => 'This maintenance ticket is marked as Done and its status cannot be modified or reverted.'
+                    ]);
+                    exit;
+                }
+            }
+
             // Normalize status to strictly: Pending, On-Going, or Done
             $statusMap = [
                 'pending' => 'Pending',
@@ -77,6 +104,10 @@ try {
             } else {
                 $curKey = strtolower((string)$ticketRow['status']);
                 $statusToSave = $statusMap[$curKey] ?? ($ticketRow['status'] ?: 'Pending');
+            }
+
+            if ($isAlreadyDone) {
+                $statusToSave = 'Done';
             }
 
             $costToSave = $actualCost !== null ? $actualCost : (float)($ticketRow['actual_cost'] ?? 0);

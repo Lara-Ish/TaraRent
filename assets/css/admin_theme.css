@@ -1536,6 +1536,10 @@ body.admin-warm-theme .maintenance-folder-tab {
   transition: background-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
 }
 
+body.admin-warm-theme .maintenance-folder-tab + .maintenance-folder-tab {
+  margin-left: -1.5px;
+}
+
 body.admin-warm-theme .maintenance-folder-tab:hover:not(.active) {
   background: #FAF1DF;
   color: #56380E;
@@ -1643,20 +1647,21 @@ body.admin-warm-theme .kanban-filter-caret {
 }
 
 body.admin-warm-theme .maintenance-unified-box {
-  background: rgba(196, 174, 138, 0.78);
-  border: 1px solid rgba(86, 56, 14, 0.16);
-  border-radius: 10px;
-  padding: 18px;
-  min-height: 465px;
-  max-height: 580px;
-  overflow-y: auto;
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  min-height: auto !important;
+  max-height: none !important;
+  overflow: visible !important;
   width: 100%;
   box-sizing: border-box;
 }
 
 body.admin-warm-theme .maintenance-unified-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 16px;
   align-items: stretch;
   width: 100%;
@@ -1668,18 +1673,18 @@ body.admin-warm-theme .maintenance-unified-grid:empty {
 }
 
 body.admin-warm-theme .kanban-ticket-card {
-  background: linear-gradient(180deg, #F5DD9F 0%, #ECD08E 100%);
-  border: 1px solid rgba(86, 56, 14, 0.2);
-  border-radius: 10px;
-  padding: 14px 15px;
-  box-shadow: 0 5px 12px rgba(48, 35, 19, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.48);
+  background: #FCF9F4;
+  border: 1.5px solid rgba(86, 56, 14, 0.22);
+  border-radius: 12px;
+  padding: 16px 18px;
+  box-shadow: 0 4px 12px rgba(48, 35, 19, 0.08);
   cursor: pointer;
   transition: transform 0.16s ease, box-shadow 0.16s ease;
 }
 
 body.admin-warm-theme .kanban-ticket-card:hover {
   transform: translateY(-2px);
-  box-shadow: 0 9px 18px rgba(48, 35, 19, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.55);
+  box-shadow: 0 8px 20px rgba(48, 35, 19, 0.14);
 }
 
 body.admin-warm-theme .kanban-card-top {
@@ -1763,7 +1768,7 @@ body.admin-warm-theme .kanban-card-meta {
 body.admin-warm-theme .maintenance-completed-card {
   background: #FCF9F4;
   border: 1px solid rgba(86, 56, 14, 0.18);
-  border-radius: 10px;
+  border-radius: 14px;
   overflow: hidden;
   box-shadow: 0 6px 16px rgba(48, 35, 19, 0.08);
 }
@@ -1790,8 +1795,8 @@ body.admin-warm-theme .maintenance-completed-card {
     margin-left: 0;
   }
   body.admin-warm-theme .maintenance-unified-box {
-    min-height: 300px;
-    padding: 14px;
+    min-height: auto;
+    padding: 0 !important;
   }
   body.admin-warm-theme .maintenance-unified-grid {
     grid-template-columns: 1fr;
@@ -2103,4 +2108,73 @@ body.admin-warm-theme .report-action-btn--reject {
   position: fixed !important;
   inset: 0 !important;
 }
+
+/* ============================================================================
+   11. Payment Verification & Audit Styles
+   ============================================================================ */
+body.admin-warm-theme #paymentsFolderShell {
+  width: 100%;
+}
+
+body.admin-warm-theme #paymentsFolderShell .maintenance-completed-card,
+body.admin-warm-theme .maintenance-completed-card {
+  background: #FCF9F4;
+  border: 1.5px solid rgba(86, 56, 14, 0.2);
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 4px 12px rgba(48, 35, 19, 0.08);
+}
+
+body.admin-warm-theme .maintenance-completed-card table thead tr {
+  background: #EFE3CC !important;
+  color: #422B0B !important;
+  font-weight: 800 !important;
+}
+
+body.admin-warm-theme .maintenance-completed-card table thead th {
+  color: #422B0B !important;
+  font-weight: 800 !important;
+  padding: 14px 16px !important;
+}
+
+body.admin-warm-theme .clickable-payment-row {
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+body.admin-warm-theme .clickable-payment-row:hover {
+  background: rgba(245, 237, 222, 0.55) !important;
+}
+
+body.admin-warm-theme .btn-verify-approve {
+  background: #15803D;
+  color: #FFFFFF;
+  border: 1px solid #166534;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(21, 128, 61, 0.2);
+  cursor: pointer;
+  transition: background-color 0.15s ease, transform 0.1s ease;
+}
+
+body.admin-warm-theme .btn-verify-approve:hover {
+  background: #166534;
+  transform: translateY(-1px);
+}
+
+body.admin-warm-theme .btn-verify-reject {
+  background: #DC2626;
+  color: #FFFFFF;
+  border: 1px solid #B91C1C;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(220, 38, 38, 0.2);
+  cursor: pointer;
+  transition: background-color 0.15s ease, transform 0.1s ease;
+}
+
+body.admin-warm-theme .btn-verify-reject:hover {
+  background: #B91C1C;
+  transform: translateY(-1px);
+}
+
+
 

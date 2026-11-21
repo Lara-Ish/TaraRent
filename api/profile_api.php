@@ -41,7 +41,7 @@ try {
         $stmt = $pdo->prepare("
             SELECT u.id, u.unit_id, u.username, u.name, u.email, u.phone, 
                    u.profile_picture,
-                   u.verification_status, u.id_type, u.id_photo_filename, 
+                   u.verification_status, u.id_type, u.id_photo_filename, u.id_photo_back_filename,
                    u.live_photo_filename, u.verification_notes,
                    u.id_submitted_at, u.id_verified_at,
                    u.birthday, u.emergency_contact, u.emergency_contact_name,
@@ -248,15 +248,23 @@ try {
             $uploadDir = __DIR__ . '/../uploads/id_verifications';
 
             $pendingId = $currentUserRecord['pending_id_path'] ?? ($_SESSION['pending_id_path'] ?? null);
-            if (!empty($pendingId)) {
+            if (!empty($pendingId) && !str_starts_with((string)$pendingId, 'http')) {
                 $pPath = $uploadDir . '/' . basename($pendingId);
-                if (file_exists($pPath)) {
+                if (file_exists($pPath) && is_file($pPath)) {
                     @unlink($pPath);
                 }
             }
 
-            $pdo->prepare("UPDATE users SET pending_id_path = NULL, pending_id_type = NULL WHERE id = :id")->execute([':id' => $userId]);
-            unset($_SESSION['pending_id_path'], $_SESSION['pending_id_type'], $_SESSION['is_updating_verified_id'], $_SESSION['staged_id_photo'], $_SESSION['staged_id_type']);
+            $pendingBackId = $currentUserRecord['pending_id_back_path'] ?? ($_SESSION['pending_id_back_path'] ?? null);
+            if (!empty($pendingBackId) && !str_starts_with((string)$pendingBackId, 'http')) {
+                $pbPath = $uploadDir . '/' . basename($pendingBackId);
+                if (file_exists($pbPath) && is_file($pbPath)) {
+                    @unlink($pbPath);
+                }
+            }
+
+            $pdo->prepare("UPDATE users SET pending_id_path = NULL, pending_id_back_path = NULL, pending_id_type = NULL WHERE id = :id")->execute([':id' => $userId]);
+            unset($_SESSION['pending_id_path'], $_SESSION['pending_id_back_path'], $_SESSION['pending_id_type'], $_SESSION['is_updating_verified_id'], $_SESSION['staged_id_photo'], $_SESSION['staged_id_photo_back'], $_SESSION['staged_id_type']);
 
             http_response_code(200);
             echo json_encode([
@@ -268,7 +276,7 @@ try {
             exit;
         }
 
-        // ACTION: Validate & Stage ID Document with Strict ID Type Cross-Checking
+        // ACTION: Validate & Stage ID Document (Front & Back Sides Required) with Strict ID Type Cross-Checking
         if ($action === 'validate_and_stage_id') {
             $userStmt = $pdo->prepare("SELECT * FROM users WHERE id = :id LIMIT 1");
             $userStmt->execute([':id' => $userId]);
@@ -286,39 +294,118 @@ try {
                 exit;
             }
 
-            // 1. Validate ID Photo file
+            // 1A. Validate FRONT ID Photo file (supports multipart $_FILES upload and device camera capture payload)
+            if (!isset($_FILES['id_photo']) || $_FILES['id_photo']['error'] !== UPLOAD_ERR_OK) {
+                if (isset($_FILES['id_photo_front']) && $_FILES['id_photo_front']['error'] === UPLOAD_ERR_OK) {
+                    $_FILES['id_photo'] = $_FILES['id_photo_front'];
+                } else {
+                    $base64Front = trim((string)($input['captured_front_id_base64'] ?? ($input['captured_id_base64'] ?? ($input['id_photo_base64'] ?? ($_POST['captured_front_id_base64'] ?? ($_POST['captured_id_base64'] ?? ($_POST['id_photo_base64'] ?? '')))))));
+                    if (!empty($base64Front)) {
+                        $cleanBase64 = preg_replace('/^data:image\/\w+;base64,/', '', $base64Front);
+                        $decoded = base64_decode($cleanBase64, true);
+                        if ($decoded !== false && strlen($decoded) > 100) {
+                            $tmpFilePath = sys_get_temp_dir() . '/id_front_cam_' . bin2hex(random_bytes(6)) . '.jpg';
+                            if (file_put_contents($tmpFilePath, $decoded) !== false) {
+                                $_FILES['id_photo'] = [
+                                    'name' => 'captured_front_id.jpg',
+                                    'type' => 'image/jpeg',
+                                    'tmp_name' => $tmpFilePath,
+                                    'error' => UPLOAD_ERR_OK,
+                                    'size' => strlen($decoded),
+                                    'is_camera_capture' => true
+                                ];
+                            }
+                        }
+                    }
+                }
+            }
+
             if (!isset($_FILES['id_photo']) || $_FILES['id_photo']['error'] !== UPLOAD_ERR_OK) {
                 http_response_code(422);
                 echo json_encode([
                     'status' => 'error',
-                    'code' => 'MISSING_ID_FILE',
-                    'message' => 'Please select or upload a valid photo of your ID.'
+                    'code' => 'MISSING_FRONT_ID',
+                    'message' => 'Please upload or capture the Front side of your ID.'
                 ]);
                 exit;
             }
 
-            $idFile = $_FILES['id_photo'];
-            $maxBytes = 10 * 1024 * 1024; // 10MB limit
+            // 1B. Validate BACK ID Photo file (supports multipart $_FILES upload and device camera capture payload)
+            if (!isset($_FILES['id_photo_back']) || $_FILES['id_photo_back']['error'] !== UPLOAD_ERR_OK) {
+                $base64Back = trim((string)($input['captured_back_id_base64'] ?? ($input['captured_id_back_base64'] ?? ($input['id_photo_back_base64'] ?? ($_POST['captured_back_id_base64'] ?? ($_POST['captured_id_back_base64'] ?? ($_POST['id_photo_back_base64'] ?? '')))))));
+                if (!empty($base64Back)) {
+                    $cleanBase64Back = preg_replace('/^data:image\/\w+;base64,/', '', $base64Back);
+                    $decodedBack = base64_decode($cleanBase64Back, true);
+                    if ($decodedBack !== false && strlen($decodedBack) > 100) {
+                        $tmpBackFilePath = sys_get_temp_dir() . '/id_back_cam_' . bin2hex(random_bytes(6)) . '.jpg';
+                        if (file_put_contents($tmpBackFilePath, $decodedBack) !== false) {
+                            $_FILES['id_photo_back'] = [
+                                'name' => 'captured_back_id.jpg',
+                                'type' => 'image/jpeg',
+                                'tmp_name' => $tmpBackFilePath,
+                                'error' => UPLOAD_ERR_OK,
+                                'size' => strlen($decodedBack),
+                                'is_camera_capture' => true
+                            ];
+                        }
+                    }
+                }
+            }
 
-            if ($idFile['size'] > $maxBytes) {
+            if (!isset($_FILES['id_photo_back']) || $_FILES['id_photo_back']['error'] !== UPLOAD_ERR_OK) {
+                http_response_code(422);
+                echo json_encode([
+                    'status' => 'error',
+                    'code' => 'MISSING_BACK_ID',
+                    'message' => 'Please upload or capture the Back side of your ID.'
+                ]);
+                exit;
+            }
+
+            $frontFile = $_FILES['id_photo'];
+            $backFile = $_FILES['id_photo_back'];
+            $maxBytes = 10 * 1024 * 1024; // 10MB limit
+            $allowedExts = ['jpg', 'jpeg', 'png', 'webp'];
+
+            if ($frontFile['size'] > $maxBytes) {
                 http_response_code(422);
                 echo json_encode([
                     'status' => 'error',
                     'code' => 'FILE_TOO_LARGE',
-                    'message' => 'The uploaded ID file exceeds the 10MB size limit.'
+                    'message' => 'The uploaded Front ID photo exceeds the 10MB size limit.'
                 ]);
                 exit;
             }
 
-            $idExt = strtolower(pathinfo((string)$idFile['name'], PATHINFO_EXTENSION));
-            $allowedExts = ['jpg', 'jpeg', 'png', 'webp'];
+            if ($backFile['size'] > $maxBytes) {
+                http_response_code(422);
+                echo json_encode([
+                    'status' => 'error',
+                    'code' => 'FILE_TOO_LARGE',
+                    'message' => 'The uploaded Back ID photo exceeds the 10MB size limit.'
+                ]);
+                exit;
+            }
 
-            if (!in_array($idExt, $allowedExts, true)) {
+            $frontExt = strtolower(pathinfo((string)$frontFile['name'], PATHINFO_EXTENSION));
+            $backExt = strtolower(pathinfo((string)$backFile['name'], PATHINFO_EXTENSION));
+
+            if (!in_array($frontExt, $allowedExts, true)) {
                 http_response_code(422);
                 echo json_encode([
                     'status' => 'error',
                     'code' => 'INVALID_FILE_TYPE',
-                    'message' => 'Invalid ID photo format. Please upload JPG, PNG, or WEBP.'
+                    'message' => 'Invalid Front ID format. Please upload JPG, PNG, or WEBP.'
+                ]);
+                exit;
+            }
+
+            if (!in_array($backExt, $allowedExts, true)) {
+                http_response_code(422);
+                echo json_encode([
+                    'status' => 'error',
+                    'code' => 'INVALID_FILE_TYPE',
+                    'message' => 'Invalid Back ID format. Please upload JPG, PNG, or WEBP.'
                 ]);
                 exit;
             }
@@ -329,28 +416,58 @@ try {
             }
 
             $timestampStr = date('Ymd_His');
-            $randStr = bin2hex(random_bytes(4));
-            $idFilename = sprintf('id_user%d_%s_%s.%s', $userId, $timestampStr, $randStr, $idExt);
-            $idDestination = $uploadDir . '/' . $idFilename;
+            $randStrFront = bin2hex(random_bytes(4));
+            $randStrBack = bin2hex(random_bytes(4));
 
-            if (!move_uploaded_file($idFile['tmp_name'], $idDestination)) {
+            $frontFilename = sprintf('id_front_user%d_%s_%s.%s', $userId, $timestampStr, $randStrFront, $frontExt);
+            $backFilename = sprintf('id_back_user%d_%s_%s.%s', $userId, $timestampStr, $randStrBack, $backExt);
+
+            $frontDestination = $uploadDir . '/' . $frontFilename;
+            $backDestination = $uploadDir . '/' . $backFilename;
+
+            $isCamCaptureFront = !empty($frontFile['is_camera_capture']);
+            $movedFront = $isCamCaptureFront ? @rename($frontFile['tmp_name'], $frontDestination) : move_uploaded_file($frontFile['tmp_name'], $frontDestination);
+            if (!$movedFront && file_exists($frontFile['tmp_name'])) {
+                $movedFront = @copy($frontFile['tmp_name'], $frontDestination);
+                @unlink($frontFile['tmp_name']);
+            }
+
+            if (!$movedFront) {
                 http_response_code(500);
                 echo json_encode([
                     'status' => 'error',
                     'code' => 'UPLOAD_FAILED',
-                    'message' => 'Failed to store uploaded ID file on the server.'
+                    'message' => 'Failed to store uploaded Front ID photo on the server.'
                 ]);
                 exit;
             }
 
-            // 2. Pre-process for OCR and extract text if needed
+            $isCamCaptureBack = !empty($backFile['is_camera_capture']);
+            $movedBack = $isCamCaptureBack ? @rename($backFile['tmp_name'], $backDestination) : move_uploaded_file($backFile['tmp_name'], $backDestination);
+            if (!$movedBack && file_exists($backFile['tmp_name'])) {
+                $movedBack = @copy($backFile['tmp_name'], $backDestination);
+                @unlink($backFile['tmp_name']);
+            }
+
+            if (!$movedBack) {
+                @unlink($frontDestination);
+                http_response_code(500);
+                echo json_encode([
+                    'status' => 'error',
+                    'code' => 'UPLOAD_FAILED',
+                    'message' => 'Failed to store uploaded Back ID photo on the server.'
+                ]);
+                exit;
+            }
+
+            // 2. Pre-process Front ID for OCR and extract text if needed
             $rawOcrText = trim((string)($input['ocr_raw_text'] ?? ($_POST['ocr_raw_text'] ?? '')));
 
             if (empty($rawOcrText)) {
-                $procFilename = 'proc_' . $idFilename;
+                $procFilename = 'proc_' . $frontFilename;
                 $procDestination = $uploadDir . '/' . $procFilename;
-                VerificationService::preprocessIdImage($idDestination, $procDestination);
-                $ocrImagePath = (file_exists($procDestination) && filesize($procDestination) > 0) ? $procDestination : $idDestination;
+                VerificationService::preprocessIdImage($frontDestination, $procDestination);
+                $ocrImagePath = (file_exists($procDestination) && filesize($procDestination) > 0) ? $procDestination : $frontDestination;
 
                 $tesseractBin = VerificationService::findTesseractBinary();
                 if ($tesseractBin !== null) {
@@ -370,7 +487,8 @@ try {
             if (!empty($rawOcrText)) {
                 $typeCheck = VerificationService::verifyIdTypeMatchesDocument($idType, $rawOcrText);
                 if (!$typeCheck['matched']) {
-                    @unlink($idDestination);
+                    @unlink($frontDestination);
+                    @unlink($backDestination);
                     $mismatchMessage = 'Verification Failed: The uploaded document does not match the selected ID type.';
                     http_response_code(422);
                     echo json_encode([
@@ -383,44 +501,63 @@ try {
                 }
             }
 
-            // 4. Staged successfully! Upload to Supabase Cloud Storage and save to database & session
-            $publicIdUrl = uploadToSupabaseStorage($idDestination, $idFilename, 'id_verifications');
-            $savedIdStoragePath = $publicIdUrl !== false ? $publicIdUrl : $idFilename;
+            // 4. Staged successfully! Upload both Front & Back to Supabase Cloud Storage
+            $publicFrontUrl = uploadToSupabaseStorage($frontDestination, $frontFilename, 'id_verifications');
+            $savedFrontPath = $publicFrontUrl !== false ? $publicFrontUrl : $frontFilename;
+
+            $publicBackUrl = uploadToSupabaseStorage($backDestination, $backFilename, 'id_verifications');
+            $savedBackPath = $publicBackUrl !== false ? $publicBackUrl : $backFilename;
 
             if ($isVerifiedUser) {
                 // Rule 1: Temporary Data Holding (Database/PHP)
-                // When a verified tenant uploads a new ID, do not immediately overwrite their existing ID record
-                // or change their is_verified status to 0. Store in dedicated temporary database columns and session.
+                // When a verified tenant uploads a new ID, store in dedicated temporary database columns and session.
                 $saveIdStmt = $pdo->prepare("
                     UPDATE users 
                     SET pending_id_path = :fn, 
+                        pending_id_back_path = :fn_back,
                         pending_id_type = :id_type
                     WHERE id = :id
                 ");
-                $saveIdStmt->execute([':fn' => $savedIdStoragePath, ':id_type' => $idType, ':id' => $userId]);
+                $saveIdStmt->execute([
+                    ':fn' => $savedFrontPath, 
+                    ':fn_back' => $savedBackPath,
+                    ':id_type' => $idType, 
+                    ':id' => $userId
+                ]);
 
-                $_SESSION['pending_id_path'] = $savedIdStoragePath;
+                $_SESSION['pending_id_path'] = $savedFrontPath;
+                $_SESSION['pending_id_back_path'] = $savedBackPath;
                 $_SESSION['pending_id_type'] = $idType;
                 $_SESSION['is_updating_verified_id'] = true;
-                $_SESSION['staged_id_photo'] = $savedIdStoragePath;
+                $_SESSION['staged_id_photo'] = $savedFrontPath;
+                $_SESSION['staged_id_photo_back'] = $savedBackPath;
                 $_SESSION['staged_id_type'] = $idType;
             } else {
                 $saveIdStmt = $pdo->prepare("
                     UPDATE users 
                     SET id_photo_filename = :fn, 
+                        id_photo_back_filename = :fn_back,
                         id_type = :id_type,
                         pending_id_path = :fn,
+                        pending_id_back_path = :fn_back,
                         pending_id_type = :id_type,
                         id_submitted_at = NOW()
                     WHERE id = :id
                 ");
-                $saveIdStmt->execute([':fn' => $savedIdStoragePath, ':id_type' => $idType, ':id' => $userId]);
+                $saveIdStmt->execute([
+                    ':fn' => $savedFrontPath, 
+                    ':fn_back' => $savedBackPath,
+                    ':id_type' => $idType, 
+                    ':id' => $userId
+                ]);
 
                 if (isset($_SESSION['user'])) {
-                    $_SESSION['user']['id_photo_filename'] = $savedIdStoragePath;
+                    $_SESSION['user']['id_photo_filename'] = $savedFrontPath;
+                    $_SESSION['user']['id_photo_back_filename'] = $savedBackPath;
                     $_SESSION['user']['id_type'] = $idType;
                 }
-                $_SESSION['staged_id_photo'] = $savedIdStoragePath;
+                $_SESSION['staged_id_photo'] = $savedFrontPath;
+                $_SESSION['staged_id_photo_back'] = $savedBackPath;
                 $_SESSION['staged_id_type'] = $idType;
             }
 
@@ -429,8 +566,9 @@ try {
                 'status' => 'success',
                 'is_verified' => $isVerifiedUser ? 1 : 0,
                 'is_updating' => $isVerifiedUser,
-                'message' => 'ID document validated and staged successfully.',
-                'id_photo_filename' => $idFilename,
+                'message' => 'Front and Back ID documents validated and staged successfully.',
+                'id_photo_filename' => $frontFilename,
+                'id_photo_back_filename' => $backFilename,
                 'id_type' => $idType
             ]);
             exit;

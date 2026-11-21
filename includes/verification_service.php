@@ -72,29 +72,12 @@ class VerificationService
             // 1. Convert to Grayscale
             imagefilter($img, IMG_FILTER_GRAYSCALE);
 
-            // 2. Enhance Contrast
-            imagefilter($img, IMG_FILTER_CONTRAST, $contrast);
+            // 2. Enhance Contrast moderately (avoiding harsh blowout)
+            imagefilter($img, IMG_FILTER_CONTRAST, -30);
 
-            // 3. Apply Binarization / Thresholding
-            if ($width * $height <= 2500000) {
-                $binImg = imagecreatetruecolor($width, $height);
-                $white = imagecolorallocate($binImg, 255, 255, 255);
-                $black = imagecolorallocate($binImg, 0, 0, 0);
-
-                for ($y = 0; $y < $height; $y++) {
-                    for ($x = 0; $x < $width; $x++) {
-                        $rgb = imagecolorat($img, $x, $y);
-                        $gray = $rgb & 0xFF;
-                        imagesetpixel($binImg, $x, $y, ($gray >= $threshold) ? $white : $black);
-                    }
-                }
-                imagejpeg($binImg, $outputPath, 95);
-                imagedestroy($binImg);
-            } else {
-                imagefilter($img, IMG_FILTER_CONTRAST, -60);
-                imagejpeg($img, $outputPath, 95);
-            }
-
+            // 3. Save high-quality grayscale image without destructive static 1-bit thresholding
+            // This ensures OCR engines with adaptive binarization (like Tesseract) receive rich contrast gradients
+            imagejpeg($img, $outputPath, 95);
             imagedestroy($img);
 
             if (file_exists($outputPath) && filesize($outputPath) > 0) {
@@ -114,8 +97,99 @@ class VerificationService
     public const STRICT_ID_OPTION_KEYWORDS = [
         'National ID' => [
             'Republika ng Pilipinas',
+            'Republic of the Philippines',
+            'Pambansang Pagkakakilanlan',
+            'Philippine Identification System',
+            'Philippine Identification Card',
             'PhilSys',
+            'PhilID',
             'National ID',
+            'Philippine Statistics Authority',
+            'PSA',
+        ],
+        'PhilSys' => [
+            'Republika ng Pilipinas',
+            'Republic of the Philippines',
+            'Pambansang Pagkakakilanlan',
+            'Philippine Identification System',
+            'Philippine Identification Card',
+            'PhilSys',
+            'PhilID',
+            'National ID',
+            'Philippine Statistics Authority',
+            'PSA',
+        ],
+        'PhilSys ID' => [
+            'Republika ng Pilipinas',
+            'Republic of the Philippines',
+            'Pambansang Pagkakakilanlan',
+            'Philippine Identification System',
+            'Philippine Identification Card',
+            'PhilSys',
+            'PhilID',
+            'National ID',
+            'Philippine Statistics Authority',
+            'PSA',
+        ],
+        'Philippine National ID' => [
+            'Republika ng Pilipinas',
+            'Republic of the Philippines',
+            'Pambansang Pagkakakilanlan',
+            'Philippine Identification System',
+            'Philippine Identification Card',
+            'PhilSys',
+            'PhilID',
+            'National ID',
+            'Philippine Statistics Authority',
+            'PSA',
+        ],
+        'Philippine National ID (PhilSys)' => [
+            'Republika ng Pilipinas',
+            'Republic of the Philippines',
+            'Pambansang Pagkakakilanlan',
+            'Philippine Identification System',
+            'Philippine Identification Card',
+            'PhilSys',
+            'PhilID',
+            'National ID',
+            'Philippine Statistics Authority',
+            'PSA',
+        ],
+        'National ID (PhilSys)' => [
+            'Republika ng Pilipinas',
+            'Republic of the Philippines',
+            'Pambansang Pagkakakilanlan',
+            'Philippine Identification System',
+            'Philippine Identification Card',
+            'PhilSys',
+            'PhilID',
+            'National ID',
+            'Philippine Statistics Authority',
+            'PSA',
+        ],
+        'PhilSys / National ID' => [
+            'Republika ng Pilipinas',
+            'Republic of the Philippines',
+            'Pambansang Pagkakakilanlan',
+            'Philippine Identification System',
+            'Philippine Identification Card',
+            'PhilSys',
+            'PhilID',
+            'National ID',
+            'Philippine Statistics Authority',
+            'PSA',
+        ],
+        'PhilID' => [
+            'Republika ng Pilipinas',
+            'Republic of the Philippines',
+            'Pambansang Pagkakakilanlan',
+            'Philippine Identification System',
+            'Philippine Identification Card',
+            'PhilSys',
+            'PhilID',
+            'National ID',
+            'Philippine Statistics Authority',
+            'PSA',
         ],
         "Driver's License" => [
             'Land Transportation Office',
@@ -169,16 +243,6 @@ class VerificationService
             'Republika ng Pilipinas',
             'Republic of the Philippines',
         ],
-        'National ID (PhilSys)' => [
-            'Republika ng Pilipinas',
-            'PhilSys',
-            'National ID',
-        ],
-        'PhilSys / National ID' => [
-            'Republika ng Pilipinas',
-            'PhilSys',
-            'National ID',
-        ],
         "Voter's ID / Certificate" => [
             'Commission on Elections',
             'COMELEC',
@@ -197,7 +261,7 @@ class VerificationService
     /**
      * Specific, hardcoded keyword signatures unique to each Philippine ID type.
      * The OCR must detect at least one of these designated keywords for the claimed ID type:
-     * - National ID: "Republika ng Pilipinas", "PhilSys", or "National ID"
+     * - National ID (PhilSys): "Republika ng Pilipinas", "Republic of the Philippines", "Pambansang Pagkakakilanlan", "Philippine Identification System", "PhilSys", "PhilID", or "National ID"
      * - Driver's License: "Land Transportation Office", "LTO", or "Driver's License"
      * - Passport: "Pasaporte", "Passport", or "Department of Foreign Affairs"
      * - UMID: "Unified Multi-Purpose ID", "UMID", or "Republic of the Philippines"
@@ -213,18 +277,99 @@ class VerificationService
     public const HARDCODED_ID_SIGNATURES = [
         'National ID' => [
             'Republika ng Pilipinas',
+            'Republic of the Philippines',
+            'Pambansang Pagkakakilanlan',
+            'Philippine Identification System',
+            'Philippine Identification Card',
             'PhilSys',
+            'PhilID',
             'National ID',
+            'Philippine Statistics Authority',
+            'PSA',
+        ],
+        'PhilSys' => [
+            'Republika ng Pilipinas',
+            'Republic of the Philippines',
+            'Pambansang Pagkakakilanlan',
+            'Philippine Identification System',
+            'Philippine Identification Card',
+            'PhilSys',
+            'PhilID',
+            'National ID',
+            'Philippine Statistics Authority',
+            'PSA',
+        ],
+        'PhilSys ID' => [
+            'Republika ng Pilipinas',
+            'Republic of the Philippines',
+            'Pambansang Pagkakakilanlan',
+            'Philippine Identification System',
+            'Philippine Identification Card',
+            'PhilSys',
+            'PhilID',
+            'National ID',
+            'Philippine Statistics Authority',
+            'PSA',
+        ],
+        'Philippine National ID' => [
+            'Republika ng Pilipinas',
+            'Republic of the Philippines',
+            'Pambansang Pagkakakilanlan',
+            'Philippine Identification System',
+            'Philippine Identification Card',
+            'PhilSys',
+            'PhilID',
+            'National ID',
+            'Philippine Statistics Authority',
+            'PSA',
+        ],
+        'Philippine National ID (PhilSys)' => [
+            'Republika ng Pilipinas',
+            'Republic of the Philippines',
+            'Pambansang Pagkakakilanlan',
+            'Philippine Identification System',
+            'Philippine Identification Card',
+            'PhilSys',
+            'PhilID',
+            'National ID',
+            'Philippine Statistics Authority',
+            'PSA',
         ],
         'National ID (PhilSys)' => [
             'Republika ng Pilipinas',
+            'Republic of the Philippines',
+            'Pambansang Pagkakakilanlan',
+            'Philippine Identification System',
+            'Philippine Identification Card',
             'PhilSys',
+            'PhilID',
             'National ID',
+            'Philippine Statistics Authority',
+            'PSA',
         ],
         'PhilSys / National ID' => [
             'Republika ng Pilipinas',
+            'Republic of the Philippines',
+            'Pambansang Pagkakakilanlan',
+            'Philippine Identification System',
+            'Philippine Identification Card',
             'PhilSys',
+            'PhilID',
             'National ID',
+            'Philippine Statistics Authority',
+            'PSA',
+        ],
+        'PhilID' => [
+            'Republika ng Pilipinas',
+            'Republic of the Philippines',
+            'Pambansang Pagkakakilanlan',
+            'Philippine Identification System',
+            'Philippine Identification Card',
+            'PhilSys',
+            'PhilID',
+            'National ID',
+            'Philippine Statistics Authority',
+            'PSA',
         ],
         "Driver's License" => [
             'Land Transportation Office',
@@ -316,15 +461,73 @@ class VerificationService
             'PhilSys',
             'National ID',
             'Philippine Identification System',
+            'Philippine Identification Card',
             'Pambansang Pagkakakilanlan',
             'PhilID',
+            'Philippine Statistics Authority',
+        ],
+        'PhilSys' => [
+            'PhilSys',
+            'National ID',
+            'Philippine Identification System',
+            'Philippine Identification Card',
+            'Pambansang Pagkakakilanlan',
+            'PhilID',
+            'Philippine Statistics Authority',
+        ],
+        'PhilSys ID' => [
+            'PhilSys',
+            'National ID',
+            'Philippine Identification System',
+            'Philippine Identification Card',
+            'Pambansang Pagkakakilanlan',
+            'PhilID',
+            'Philippine Statistics Authority',
+        ],
+        'Philippine National ID' => [
+            'PhilSys',
+            'National ID',
+            'Philippine Identification System',
+            'Philippine Identification Card',
+            'Pambansang Pagkakakilanlan',
+            'PhilID',
+            'Philippine Statistics Authority',
+        ],
+        'Philippine National ID (PhilSys)' => [
+            'PhilSys',
+            'National ID',
+            'Philippine Identification System',
+            'Philippine Identification Card',
+            'Pambansang Pagkakakilanlan',
+            'PhilID',
+            'Philippine Statistics Authority',
+        ],
+        'National ID (PhilSys)' => [
+            'PhilSys',
+            'National ID',
+            'Philippine Identification System',
+            'Philippine Identification Card',
+            'Pambansang Pagkakakilanlan',
+            'PhilID',
+            'Philippine Statistics Authority',
         ],
         'PhilSys / National ID' => [
             'PhilSys',
             'National ID',
             'Philippine Identification System',
+            'Philippine Identification Card',
             'Pambansang Pagkakakilanlan',
             'PhilID',
+            'Philippine Statistics Authority',
+        ],
+        'PhilID' => [
+            'PhilSys',
+            'National ID',
+            'Philippine Identification System',
+            'Philippine Identification Card',
+            'Pambansang Pagkakakilanlan',
+            'PhilID',
+            'Philippine Statistics Authority',
         ],
         'UMID' => [
             'Unified Multi-Purpose ID',
@@ -387,22 +590,152 @@ class VerificationService
             'REPUBLIC OF THE PHILIPPINES',
             'NATIONAL ID',
             'PHILSYS',
+            'PHIL SYS',
             'PHILID',
+            'PHIL ID',
             'PAMBANSANG PAGKAKAKILANLAN',
+            'PAMBANSANG',
+            'PAGKAKAKILANLAN',
             'PHILIPPINE IDENTIFICATION SYSTEM',
+            'PHILIPPINE IDENTIFICATION CARD',
+            'PHILIPPINE IDENTIFICATION',
             'STATISTICS AUTHORITY',
-            'PSA'
+            'PHILIPPINE STATISTICS AUTHORITY',
+            'PSA',
+            'PILIPINAS'
+        ],
+        'PhilSys' => [
+            'REPUBLIKA NG PILIPINAS',
+            'REPUBLIC OF THE PHILIPPINES',
+            'NATIONAL ID',
+            'PHILSYS',
+            'PHIL SYS',
+            'PHILID',
+            'PHIL ID',
+            'PAMBANSANG PAGKAKAKILANLAN',
+            'PAMBANSANG',
+            'PAGKAKAKILANLAN',
+            'PHILIPPINE IDENTIFICATION SYSTEM',
+            'PHILIPPINE IDENTIFICATION CARD',
+            'PHILIPPINE IDENTIFICATION',
+            'STATISTICS AUTHORITY',
+            'PHILIPPINE STATISTICS AUTHORITY',
+            'PSA',
+            'PILIPINAS'
+        ],
+        'PhilSys ID' => [
+            'REPUBLIKA NG PILIPINAS',
+            'REPUBLIC OF THE PHILIPPINES',
+            'NATIONAL ID',
+            'PHILSYS',
+            'PHIL SYS',
+            'PHILID',
+            'PHIL ID',
+            'PAMBANSANG PAGKAKAKILANLAN',
+            'PAMBANSANG',
+            'PAGKAKAKILANLAN',
+            'PHILIPPINE IDENTIFICATION SYSTEM',
+            'PHILIPPINE IDENTIFICATION CARD',
+            'PHILIPPINE IDENTIFICATION',
+            'STATISTICS AUTHORITY',
+            'PHILIPPINE STATISTICS AUTHORITY',
+            'PSA',
+            'PILIPINAS'
+        ],
+        'Philippine National ID' => [
+            'REPUBLIKA NG PILIPINAS',
+            'REPUBLIC OF THE PHILIPPINES',
+            'NATIONAL ID',
+            'PHILSYS',
+            'PHIL SYS',
+            'PHILID',
+            'PHIL ID',
+            'PAMBANSANG PAGKAKAKILANLAN',
+            'PAMBANSANG',
+            'PAGKAKAKILANLAN',
+            'PHILIPPINE IDENTIFICATION SYSTEM',
+            'PHILIPPINE IDENTIFICATION CARD',
+            'PHILIPPINE IDENTIFICATION',
+            'STATISTICS AUTHORITY',
+            'PHILIPPINE STATISTICS AUTHORITY',
+            'PSA',
+            'PILIPINAS'
+        ],
+        'Philippine National ID (PhilSys)' => [
+            'REPUBLIKA NG PILIPINAS',
+            'REPUBLIC OF THE PHILIPPINES',
+            'NATIONAL ID',
+            'PHILSYS',
+            'PHIL SYS',
+            'PHILID',
+            'PHIL ID',
+            'PAMBANSANG PAGKAKAKILANLAN',
+            'PAMBANSANG',
+            'PAGKAKAKILANLAN',
+            'PHILIPPINE IDENTIFICATION SYSTEM',
+            'PHILIPPINE IDENTIFICATION CARD',
+            'PHILIPPINE IDENTIFICATION',
+            'STATISTICS AUTHORITY',
+            'PHILIPPINE STATISTICS AUTHORITY',
+            'PSA',
+            'PILIPINAS'
         ],
         'National ID (PhilSys)' => [
             'REPUBLIKA NG PILIPINAS',
             'REPUBLIC OF THE PHILIPPINES',
             'NATIONAL ID',
             'PHILSYS',
+            'PHIL SYS',
             'PHILID',
+            'PHIL ID',
             'PAMBANSANG PAGKAKAKILANLAN',
+            'PAMBANSANG',
+            'PAGKAKAKILANLAN',
             'PHILIPPINE IDENTIFICATION SYSTEM',
+            'PHILIPPINE IDENTIFICATION CARD',
+            'PHILIPPINE IDENTIFICATION',
             'STATISTICS AUTHORITY',
-            'PSA'
+            'PHILIPPINE STATISTICS AUTHORITY',
+            'PSA',
+            'PILIPINAS'
+        ],
+        'PhilSys / National ID' => [
+            'REPUBLIKA NG PILIPINAS',
+            'REPUBLIC OF THE PHILIPPINES',
+            'NATIONAL ID',
+            'PHILSYS',
+            'PHIL SYS',
+            'PHILID',
+            'PHIL ID',
+            'PAMBANSANG PAGKAKAKILANLAN',
+            'PAMBANSANG',
+            'PAGKAKAKILANLAN',
+            'PHILIPPINE IDENTIFICATION SYSTEM',
+            'PHILIPPINE IDENTIFICATION CARD',
+            'PHILIPPINE IDENTIFICATION',
+            'STATISTICS AUTHORITY',
+            'PHILIPPINE STATISTICS AUTHORITY',
+            'PSA',
+            'PILIPINAS'
+        ],
+        'PhilID' => [
+            'REPUBLIKA NG PILIPINAS',
+            'REPUBLIC OF THE PHILIPPINES',
+            'NATIONAL ID',
+            'PHILSYS',
+            'PHIL SYS',
+            'PHILID',
+            'PHIL ID',
+            'PAMBANSANG PAGKAKAKILANLAN',
+            'PAMBANSANG',
+            'PAGKAKAKILANLAN',
+            'PHILIPPINE IDENTIFICATION SYSTEM',
+            'PHILIPPINE IDENTIFICATION CARD',
+            'PHILIPPINE IDENTIFICATION',
+            'STATISTICS AUTHORITY',
+            'PHILIPPINE STATISTICS AUTHORITY',
+            'PSA',
+            'PILIPINAS'
         ],
         "Driver's License" => [
             'LAND TRANSPORTATION OFFICE',
@@ -502,7 +835,7 @@ class VerificationService
     {
         $clean = trim($selectedIdType);
 
-        if (preg_match('/(?:National\s*ID|PhilSys|PhilID)/i', $clean)) {
+        if (preg_match('/(?:National\s*ID|PhilSys|PhilID|Philippine\s*National|Pambansang)/i', $clean)) {
             return 'National ID';
         }
         if (preg_match('/(?:Driver|\bDL\b)/i', $clean)) {
@@ -577,6 +910,8 @@ class VerificationService
         // Version with non-alphanumeric stripped: "DRIVER'S" -> "DRIVERS"
         $compactRaw = ' ' . trim(preg_replace('/[^A-Z0-9\s]+/', '', $upperRaw)) . ' ';
         $compactRaw = preg_replace('/\s+/', ' ', $compactRaw);
+        // Version with all spaces and non-alphanumeric stripped: handles camera OCR token splits e.g. "PHIL SYS" -> "PHILSYS", "PHIL ID" -> "PHILID"
+        $noSpaceRaw = preg_replace('/[^A-Z0-9]+/', '', $upperRaw);
 
         $detected = [];
         foreach ($keywords as $kw) {
@@ -614,7 +949,14 @@ class VerificationService
                 continue;
             }
 
-            // 4. Regex pattern matching for variations
+            // 4. Collapsed no-space comparison (handles camera OCR spaces: "PHIL SYS" -> "PHILSYS", "PHIL ID" -> "PHILID", "REPUBLIKANG PILIPINAS")
+            $noSpaceKw = preg_replace('/[^A-Z0-9]+/', '', $upperKw);
+            if (mb_strlen($noSpaceKw, 'UTF-8') >= 5 && str_contains($noSpaceRaw, $noSpaceKw)) {
+                $detected[] = $kw;
+                continue;
+            }
+
+            // 5. Regex pattern matching for variations
             $escapedKw = preg_quote($kw, '/');
             $patternKw = preg_replace('/[\\\'’]/', "['’\\s\\-]*", $escapedKw);
             $patternKw = preg_replace('/\\\s+/', '\\s+', $patternKw);
