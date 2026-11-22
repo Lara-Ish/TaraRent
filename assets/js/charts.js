@@ -1,6 +1,6 @@
 /**
- * RentConnect - Business Intelligence Visualizations
- * Chart.js Integration with Claymorphic Aesthetics
+ * TaraRent - Business Intelligence Visualizations
+ * Chart.js Integration with Warm Claymorphic Aesthetics
  */
 
 'use strict';
@@ -10,7 +10,7 @@ const RentConnectCharts = (() => {
   let unitCostChartInstance = null;
   let categoryChartInstance = null;
 
-  // Warm Cream, Golden Brown & Dark Brown Palette matching TaraRent Owner Theme
+  // Warm Cream, Golden Brown & Dark Brown Palette matching TaraRent Theme
   const colors = {
     gold: '#B58F53',
     goldLight: 'rgba(181, 143, 83, 0.45)',
@@ -46,6 +46,10 @@ const RentConnectCharts = (() => {
     }
   };
 
+  function hasChart() {
+    return typeof window.Chart !== 'undefined';
+  }
+
   /**
    * 1. Render Revenue & Collection Analytics Chart
    * Dual-Axis Chart: Billed vs Collected Rent (Bars) + Efficiency Rate % (Line)
@@ -66,10 +70,15 @@ const RentConnectCharts = (() => {
     }
     if (emptyEl) emptyEl.classList.remove('visible');
 
+    if (!hasChart()) {
+      console.warn('Chart.js library is not available.');
+      return;
+    }
+
     const labels = monthlyData.map(m => m.month_label || m.month_key);
-    const billedRent = monthlyData.map(m => m.billed_rent);
-    const collectedRent = monthlyData.map(m => m.collected_rent);
-    const efficiencyRate = monthlyData.map(m => m.collection_efficiency_percentage);
+    const billedRent = monthlyData.map(m => Number(m.billed_rent || 0));
+    const collectedRent = monthlyData.map(m => Number(m.collected_rent || 0));
+    const efficiencyRate = monthlyData.map(m => Number(m.collection_efficiency_percentage || 0));
 
     collectionChartInstance = new Chart(ctx, {
       data: {
@@ -136,9 +145,9 @@ const RentConnectCharts = (() => {
             callbacks: {
               label: function(context) {
                 if (context.dataset.yAxisID === 'yEfficiency') {
-                  return ` Efficiency: ${context.parsed.y.toFixed(1)}%`;
+                  return ` Efficiency: ${Number(context.parsed.y || 0).toFixed(1)}%`;
                 }
-                return ` ${context.dataset.label}: ₱${context.parsed.y.toLocaleString()}`;
+                return ` ${context.dataset.label}: ₱${Number(context.parsed.y || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
               }
             }
           }
@@ -146,6 +155,7 @@ const RentConnectCharts = (() => {
         scales: {
           x: {
             grid: { display: false },
+            border: { display: false },
             ticks: {
               color: colors.textMain,
               font: { weight: '600', size: 11 }
@@ -155,14 +165,14 @@ const RentConnectCharts = (() => {
             type: 'linear',
             position: 'left',
             beginAtZero: true,
+            border: { display: false },
             grid: {
-              color: colors.gridLines,
-              drawBorder: false
+              color: colors.gridLines
             },
             ticks: {
               color: colors.taupe,
               font: { weight: '600', size: 11 },
-              callback: val => `₱${val.toLocaleString()}`
+              callback: val => `₱${Number(val).toLocaleString()}`
             }
           },
           yEfficiency: {
@@ -170,6 +180,7 @@ const RentConnectCharts = (() => {
             position: 'right',
             min: 0,
             max: 100,
+            border: { display: false },
             grid: { display: false },
             ticks: {
               color: colors.darkBrown,
@@ -187,6 +198,7 @@ const RentConnectCharts = (() => {
    */
   function renderUnitCostChart(canvasId, unitData) {
     const ctx = document.getElementById(canvasId);
+    const emptyEl = document.getElementById('unitMaintenanceEmptyState');
     if (!ctx) return;
 
     if (unitCostChartInstance) {
@@ -195,8 +207,20 @@ const RentConnectCharts = (() => {
     }
 
     const safeData = Array.isArray(unitData) ? unitData : [];
-    const labels = safeData.map(u => u.unit_number);
-    const costs = safeData.map(u => u.total_cost);
+
+    if (safeData.length === 0) {
+      if (emptyEl) emptyEl.classList.add('visible');
+      return;
+    }
+    if (emptyEl) emptyEl.classList.remove('visible');
+
+    if (!hasChart()) {
+      console.warn('Chart.js library is not available.');
+      return;
+    }
+
+    const labels = safeData.map(u => u.unit_number || `Unit ${u.unit_id}`);
+    const costs = safeData.map(u => Number(u.total_cost || 0));
 
     const barColors = safeData.map(u =>
       u.cost_anomaly === 'critical_high_cost' ? colors.terracotta : colors.gold
@@ -227,9 +251,9 @@ const RentConnectCharts = (() => {
                 const item = safeData[context.dataIndex];
                 if (!item) return '';
                 return [
-                  ` Expense: ₱${item.total_cost.toLocaleString()}`,
-                  ` Tickets Logged: ${item.ticket_count}`,
-                  ` Avg / Ticket: ₱${item.avg_cost_per_ticket.toFixed(2)}`
+                  ` Expense: ₱${Number(item.total_cost || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`,
+                  ` Tickets Logged: ${item.ticket_count || 0}`,
+                  ` Avg / Ticket: ₱${Number(item.avg_cost_per_ticket || 0).toFixed(2)}`
                 ];
               }
             }
@@ -238,6 +262,7 @@ const RentConnectCharts = (() => {
         scales: {
           x: {
             grid: { display: false },
+            border: { display: false },
             ticks: {
               color: colors.textMain,
               font: { weight: '600' }
@@ -245,13 +270,15 @@ const RentConnectCharts = (() => {
           },
           y: {
             beginAtZero: true,
+            suggestedMax: 1000,
+            border: { display: false },
             grid: {
-              color: colors.gridLines,
-              drawBorder: false
+              color: colors.gridLines
             },
             ticks: {
               color: colors.taupe,
-              callback: val => `₱${val.toLocaleString()}`
+              precision: 0,
+              callback: val => `₱${Number(val).toLocaleString()}`
             }
           }
         }
@@ -264,6 +291,7 @@ const RentConnectCharts = (() => {
    */
   function renderCategoryChart(canvasId, categoryData) {
     const ctx = document.getElementById(canvasId);
+    const emptyEl = document.getElementById('categoryChartEmptyState');
     if (!ctx) return;
 
     if (categoryChartInstance) {
@@ -272,29 +300,44 @@ const RentConnectCharts = (() => {
     }
 
     const safeCats = Array.isArray(categoryData) ? categoryData : [];
-    const hasData = safeCats.length > 0 && safeCats.some(c => c.total_cost > 0);
-    const labels = hasData ? safeCats.map(c => c.category) : ['No Expenses Logged'];
-    const costs = hasData ? safeCats.map(c => c.total_cost) : [1];
-    const palette = hasData
-      ? [colors.darkBrown, colors.gold, colors.beige, colors.forest, colors.amberWarm, colors.terracotta]
-      : ['rgba(216, 189, 148, 0.45)'];
+
+    if (safeCats.length === 0) {
+      if (emptyEl) emptyEl.classList.add('visible');
+      return;
+    }
+    if (emptyEl) emptyEl.classList.remove('visible');
+
+    if (!hasChart()) {
+      console.warn('Chart.js library is not available.');
+      return;
+    }
+
+    const hasCostData = safeCats.some(c => Number(c.total_cost || 0) > 0);
+    const labels = hasCostData 
+      ? safeCats.map(c => c.category) 
+      : (safeCats.length > 0 ? safeCats.map(c => `${c.category} (${c.ticket_count} req)`) : ['No Expenses Logged']);
+    const values = hasCostData 
+      ? safeCats.map(c => Number(c.total_cost || 0)) 
+      : safeCats.map(c => Math.max(1, Number(c.ticket_count || 1)));
+
+    const palette = [colors.darkBrown, colors.gold, colors.beige, colors.forest, colors.amberWarm, colors.terracotta, colors.taupe];
 
     categoryChartInstance = new Chart(ctx, {
       type: 'doughnut',
       data: {
         labels: labels,
         datasets: [{
-          data: costs,
+          data: values,
           backgroundColor: palette.slice(0, labels.length),
           borderWidth: 3,
           borderColor: '#F7F3ED',
-          hoverOffset: hasData ? 8 : 0
+          hoverOffset: 8
         }]
       },
       options: {
         responsive: true,
         maintainAspectRatio: false,
-        cutout: '64%',
+        cutout: '62%',
         plugins: {
           legend: {
             position: window.innerWidth <= 560 ? 'bottom' : 'right',
@@ -308,12 +351,14 @@ const RentConnectCharts = (() => {
           },
           tooltip: {
             ...clayTooltipOptions,
-            enabled: hasData,
             callbacks: {
               label: (context) => {
                 const cat = safeCats[context.dataIndex];
                 if (!cat) return '';
-                return ` ${cat.category}: ₱${cat.total_cost.toLocaleString()} (${cat.cost_share_percentage}%)`;
+                if (hasCostData) {
+                  return ` ${cat.category}: ₱${Number(cat.total_cost || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})} (${cat.cost_share_percentage}%)`;
+                }
+                return ` ${cat.category}: ${cat.ticket_count} request${cat.ticket_count === 1 ? '' : 's'} (₱0.00 spent)`;
               }
             }
           }
@@ -326,7 +371,9 @@ const RentConnectCharts = (() => {
     initCharts: (analyticsData) => {
       if (analyticsData && analyticsData.charts) {
         renderCollectionChart('chartCollectionEfficiency', analyticsData.charts.monthly_collection_efficiency || []);
-        renderUnitCostChart('chartUnitMaintenance', analyticsData.charts.maintenance_by_unit || []);
+        if (document.getElementById('chartUnitMaintenance')) {
+          renderUnitCostChart('chartUnitMaintenance', analyticsData.charts.maintenance_by_unit || []);
+        }
         renderCategoryChart('chartCategoryBreakdown', analyticsData.charts.maintenance_by_category || []);
       }
     }

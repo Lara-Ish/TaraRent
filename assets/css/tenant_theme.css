@@ -2137,3 +2137,263 @@ body.tenant-portal-shell .report-status-pill--acknowledged {
   opacity: 0.75 !important;
   cursor: not-allowed !important;
 }
+
+/* ==========================================================================
+   TENANT DASHBOARD REDESIGN (Screenshot Reference Match)
+   ========================================================================== */
+
+/* Welcome Title */
+.tenant-dash-welcome-title {
+  font-family: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif !important;
+  font-size: clamp(2.2rem, 4.5vw, 3.25rem) !important;
+  font-weight: 900 !important;
+  color: #422B0B !important;
+  letter-spacing: -0.01em !important;
+  line-height: 1.15 !important;
+  margin: 0 0 16px 0 !important;
+}
+.tenant-dash-welcome-name {
+  text-decoration: underline !important;
+  text-decoration-thickness: 3px !important;
+  text-underline-offset: 6px !important;
+  text-decoration-color: #422B0B !important;
+}
+
+/* Verification Notification Box */
+.tenant-dash-verify-box {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 20px !important;
+  background: #FFFDF9 !important;
+  border: 1.5px solid #991B1B !important;
+  border-radius: 10px !important;
+  padding: 12px 20px !important;
+  margin-bottom: 24px !important;
+  box-shadow: 0 3px 10px rgba(153, 27, 27, 0.1) !important;
+  max-width: 100% !important;
+}
+.tenant-dash-verify-box .verify-msg {
+  display: flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+  font-size: 15px !important;
+  font-weight: 800 !important;
+  color: #842029 !important;
+  line-height: 1.3 !important;
+}
+.tenant-dash-verify-box .verify-icon {
+  font-size: 19px !important;
+  line-height: 1 !important;
+  color: #991B1B !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  flex-shrink: 0 !important;
+}
+.tenant-dash-verify-box .verify-btn {
+  background: #DC2626 !important;
+  color: #ffffff !important;
+  border: 1px solid #B91C1C !important;
+  border-radius: 8px !important;
+  padding: 8px 18px !important;
+  font-size: 13.5px !important;
+  font-weight: 800 !important;
+  cursor: pointer !important;
+  transition: all 0.2s ease !important;
+  white-space: nowrap !important;
+  box-shadow: 0 2px 8px rgba(220, 38, 38, 0.3) !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+}
+.tenant-dash-verify-box .verify-btn:hover {
+  background: #B91C1C !important;
+  border-color: #991B1B !important;
+  transform: translateY(-1px) !important;
+  box-shadow: 0 4px 12px rgba(185, 28, 28, 0.4) !important;
+}
+.tenant-dash-verify-box .verify-btn:active {
+  transform: translateY(0) !important;
+}
+
+/* Summary Cards (Top Row) */
+.tenant-dash-summary-card {
+  background: linear-gradient(180deg, #FBF8F1 0%, #F5ECDB 45%, #E5CFAC 100%) !important;
+  border: 1.5px solid #422B0B !important;
+  border-radius: 18px !important;
+  padding: 22px 24px !important;
+  box-shadow: 0 8px 20px rgba(66, 43, 11, 0.12) !important;
+  display: flex !important;
+  flex-direction: column !important;
+  justify-content: space-between !important;
+  min-height: 175px !important;
+  transition: transform 0.2s ease, box-shadow 0.2s ease !important;
+}
+.tenant-dash-summary-card:hover {
+  transform: translateY(-2px) !important;
+  box-shadow: 0 12px 24px rgba(66, 43, 11, 0.16) !important;
+}
+.tenant-dash-card-title {
+  font-size: 13px !important;
+  font-weight: 900 !important;
+  color: #422B0B !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.05em !important;
+  margin-bottom: 8px !important;
+}
+.tenant-dash-outlined-val {
+  font-size: clamp(2rem, 3.5vw, 2.75rem) !important;
+  font-weight: 900 !important;
+  color: #FFFDF8 !important;
+  -webkit-text-stroke: 1.5px #5E3F12 !important;
+  text-shadow: 0 2px 4px rgba(66, 43, 11, 0.15) !important;
+  line-height: 1.1 !important;
+  letter-spacing: 0.04em !important;
+  margin: 6px 0 !important;
+  text-transform: uppercase !important;
+}
+.tenant-dash-card-bottom {
+  font-size: 12px !important;
+  font-weight: 700 !important;
+  color: #422B0B !important;
+  line-height: 1.4 !important;
+}
+.tenant-dash-card-link {
+  color: #422B0B !important;
+  text-decoration: underline !important;
+  text-underline-offset: 2px !important;
+  font-weight: 800 !important;
+  cursor: pointer !important;
+  background: none !important;
+  border: none !important;
+  padding: 0 !important;
+  display: inline-block !important;
+  font-size: 12px !important;
+  text-align: left !important;
+}
+.tenant-dash-card-link:hover {
+  color: #261605 !important;
+}
+
+/* Lower Section Parent Containers */
+.tenant-dash-main-container {
+  background: linear-gradient(180deg, #FBF8F1 0%, #F5ECDB 45%, #E5CFAC 100%) !important;
+  border: 1.5px solid #422B0B !important;
+  border-radius: 18px !important;
+  padding: 24px 26px !important;
+  box-shadow: 0 8px 20px rgba(66, 43, 11, 0.12) !important;
+  display: flex !important;
+  flex-direction: column !important;
+  justify-content: space-between !important;
+  min-height: 400px !important;
+}
+.tenant-dash-section-title {
+  font-size: clamp(1.25rem, 2vw, 1.5rem) !important;
+  font-weight: 900 !important;
+  color: #422B0B !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.04em !important;
+  margin: 0 0 18px 0 !important;
+}
+
+/* Recent Logs Rows */
+.tenant-dash-log-row {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 16px !important;
+  padding: 10px 8px !important;
+  border-bottom: 1px dashed rgba(66, 43, 11, 0.25) !important;
+  cursor: pointer !important;
+  transition: background-color 0.15s ease !important;
+}
+.tenant-dash-log-row:last-child {
+  border-bottom: none !important;
+}
+.tenant-dash-log-row:hover {
+  background: rgba(66, 43, 11, 0.06) !important;
+  border-radius: 8px !important;
+}
+.tenant-dash-log-date {
+  font-size: 13px !important;
+  font-weight: 800 !important;
+  color: #422B0B !important;
+  min-width: 140px !important;
+  flex-shrink: 0 !important;
+}
+.tenant-dash-log-desc {
+  font-size: 13px !important;
+  font-weight: 600 !important;
+  color: #422B0B !important;
+  flex: 1 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+.tenant-dash-log-badge {
+  font-size: 11px !important;
+  font-weight: 800 !important;
+  padding: 2px 8px !important;
+  border-radius: 9999px !important;
+  border: 1px solid currentColor !important;
+  text-transform: capitalize !important;
+  flex-shrink: 0 !important;
+}
+.tenant-dash-viewall-btn {
+  font-size: 13.5px !important;
+  font-weight: 900 !important;
+  color: #422B0B !important;
+  background: none !important;
+  border: none !important;
+  padding: 0 !important;
+  cursor: pointer !important;
+  text-decoration: underline !important;
+  text-underline-offset: 3px !important;
+  text-align: left !important;
+  display: inline-block !important;
+}
+.tenant-dash-viewall-btn:hover {
+  color: #261605 !important;
+}
+
+/* Payment Summary Elements */
+.tenant-dash-pay-item {
+  display: flex !important;
+  justify-content: space-between !important;
+  align-items: center !important;
+  padding: 10px 0 !important;
+  border-bottom: 1px dashed rgba(66, 43, 11, 0.2) !important;
+  font-size: 13px !important;
+}
+.tenant-dash-pay-label {
+  font-weight: 700 !important;
+  color: #5C4324 !important;
+}
+.tenant-dash-pay-val {
+  font-weight: 800 !important;
+  color: #422B0B !important;
+}
+.tenant-dash-pay-btn {
+  width: 100% !important;
+  background: #422B0B !important;
+  color: #FFFDF8 !important;
+  border: 1.5px solid #2B1804 !important;
+  border-radius: 12px !important;
+  padding: 12px !important;
+  font-size: 13.5px !important;
+  font-weight: 800 !important;
+  cursor: pointer !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 8px !important;
+  box-shadow: 0 4px 10px rgba(66, 43, 11, 0.25) !important;
+  transition: all 0.2s ease !important;
+  margin-top: 16px !important;
+}
+.tenant-dash-pay-btn:hover {
+  background: #2E1B04 !important;
+  transform: translateY(-1px) !important;
+  box-shadow: 0 6px 14px rgba(66, 43, 11, 0.35) !important;
+}
+

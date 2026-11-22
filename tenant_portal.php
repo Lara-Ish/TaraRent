@@ -470,30 +470,57 @@ $reportsStmt = $pdo->prepare("
 $reportsStmt->execute([(int)$user['id']]);
 $myReports = $reportsStmt->fetchAll();
 
-// Fetch payments for this tenant
-$paymentsStmt = $pdo->prepare("SELECT * FROM payments WHERE tenant_id = :tid ORDER BY id DESC");
-$paymentsStmt->execute([':tid' => $user['id']]);
-$myPayments = $paymentsStmt->fetchAll();
-$currentPayment = !empty($myPayments) ? $myPayments[0] : null;
+// Fetch all payments for this tenant (ordered newest billing cycle first)
+$currentTenantId = (int)$user['id'];
+$payQueryStmt = $pdo->prepare("
+    SELECT * FROM payments 
+    WHERE tenant_id = :tid 
+    ORDER BY billing_cycle DESC NULLS LAST, id DESC
+");
+$payQueryStmt->execute([':tid' => $currentTenantId]);
+$allTenantPayments = $payQueryStmt->fetchAll();
+$myPayments = $allTenantPayments;
+$currentPayment = !empty($allTenantPayments) ? $allTenantPayments[0] : null;
 
-// Categorize payments into obligations and check rent status for unpaid balances
+// Categorize payments, calculate outstanding rent balance, earliest due date, and unpaid ledger items
 $depositBill = null;
 $rentBill = null;
+$tenantRentBalance = 0.00;
+$unpaidBills = [];
+$earliestDueDate = null;
+$hasPendingPayment = false;
 $hasUnpaidBalance = false;
 
-if (empty($myPayments)) {
+if (empty($allTenantPayments)) {
     $hasUnpaidBalance = true;
+    $tenantRentBalance = (float)($unit['monthly_rent'] ?? 3000.00);
 } else {
-    foreach ($myPayments as $p) {
-        if ($p['payment_type'] === 'Advance Deposit' && !$depositBill) {
+    foreach ($allTenantPayments as $p) {
+        $pType = $p['payment_type'] ?? 'Rent';
+        if ($pType === 'Advance Deposit' && !$depositBill) {
             $depositBill = $p;
-        } elseif ($p['payment_type'] === 'Rent' && !$rentBill) {
+        } elseif ($pType === 'Rent' && !$rentBill) {
             $rentBill = $p;
         }
+
         $pStatus = strtolower((string)($p['status'] ?? ''));
+        if ($pStatus === 'pending') {
+            $hasPendingPayment = true;
+        }
         $amtDue = (float)($p['amount_due'] ?? 0.0);
         $amtPaid = (float)($p['amount_paid'] ?? 0.0);
-        if (in_array($pStatus, ['unpaid', 'overdue', 'rejected', 'pending_setup'], true) || ($amtDue - $amtPaid) > 0.01) {
+        $remaining = max(0.0, $amtDue - $amtPaid);
+
+        if (in_array($pStatus, ['unpaid', 'overdue', 'rejected', 'pending_setup', 'pending'], true) || $remaining > 0.01) {
+            if ($remaining > 0.01) {
+                $tenantRentBalance += $remaining;
+            }
+            $unpaidBills[] = $p;
+            if (!empty($p['due_date'])) {
+                if ($earliestDueDate === null || strtotime($p['due_date']) < strtotime($earliestDueDate)) {
+                    $earliestDueDate = $p['due_date'];
+                }
+            }
             $hasUnpaidBalance = true;
         }
     }
@@ -504,6 +531,41 @@ if (empty($myPayments)) {
         $hasUnpaidBalance = true;
     }
 }
+
+// Determine active rent status display
+if ($hasPendingPayment) {
+    $rentStatusDisplay = 'PENDING';
+} elseif ($tenantRentBalance > 0.01) {
+    if (!empty($earliestDueDate) && strtotime($earliestDueDate) < time()) {
+        $rentStatusDisplay = 'OVERDUE';
+    } else {
+        $rentStatusDisplay = 'UNPAID';
+    }
+} elseif (!empty($allTenantPayments) && $tenantRentBalance <= 0.01) {
+    $rentStatusDisplay = 'PAID';
+} else {
+    $rentStatusDisplay = 'UNPAID';
+}
+
+$rentBalanceDisplay = number_format($tenantRentBalance, 2);
+
+if (!empty($earliestDueDate)) {
+    $nextDueDateDisplay = date('M d, Y', strtotime($earliestDueDate));
+    $shortDueDateDisplay = date('F j', strtotime($earliestDueDate));
+} elseif (!empty($rentBill['due_date'])) {
+    $nextDueDateDisplay = date('M d, Y', strtotime($rentBill['due_date']));
+    $shortDueDateDisplay = date('F j', strtotime($rentBill['due_date']));
+} elseif (!empty($allTenantPayments[0]['due_date'])) {
+    $nextDueDateDisplay = date('M d, Y', strtotime($allTenantPayments[0]['due_date']));
+    $shortDueDateDisplay = date('F j', strtotime($allTenantPayments[0]['due_date']));
+} else {
+    $nextDueDateDisplay = date('M 05, Y', strtotime('+1 month'));
+    $shortDueDateDisplay = date('F 5', strtotime('+1 month'));
+}
+
+// Dynamic maintenance counts for tickets submitted by this tenant
+$activeTicketsCount = count(array_filter($myTickets, fn($t) => in_array($t['status'], ['Pending', 'On-Going', 'open', 'in_progress'])));
+$resolvedTicketsCount = count(array_filter($myTickets, fn($t) => in_array($t['status'], ['Done', 'resolved', 'closed'])));
 
 // Global Routing Security & Middleware:
 // All tenant accounts are allowed full unrestricted GET navigation across all sidebar sections to view UI and records.
@@ -549,7 +611,7 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
 
   <!-- Claymorphism Design System, Aligned Layout Shell & Shared Sidebar Controller -->
   <link rel="stylesheet" href="assets/css/claymorphism.css?v=20261112">
-  <link rel="stylesheet" href="assets/css/tenant_theme.css?v=20261121d">
+  <link rel="stylesheet" href="assets/css/tenant_theme.css?v=20261121f">
   <script src="assets/js/sidebar.js?v=20261112b"></script>
 
   <!-- Dedicated OCR Library (Tesseract.js) -->
@@ -1180,236 +1242,152 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
 
       <!-- CATEGORY 1: DASHBOARD OVERVIEW -->
       <section id="tenantOverview" class="app-view-section active-section">
-        <!-- Dashboard Verification Notification Banner -->
-        <div id="dashboardVerificationAlert" class="dashboard-verification-alert" style="display: none; margin: 0 0 24px 0; opacity: 1; transition: opacity 0.5s ease, transform 0.5s ease;"></div>
+        <!-- Dashboard Verification Notification Banner for dynamic JS alerts -->
+        <div id="dashboardVerificationAlert" class="dashboard-verification-alert" style="display: none; margin: 0 0 16px 0; opacity: 1; transition: opacity 0.5s ease, transform 0.5s ease;"></div>
 
-        <div class="dashboard-header-bar flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
-          <div class="dashboard-title-group">
-            <h1 class="text-2xl md:text-3xl font-black text-[#3E2723] tracking-wide mb-1">Welcome Home, <?= htmlspecialchars(explode(' ', $user['name'])[0]) ?>!</h1>
-            <p class="text-sm md:text-base font-semibold text-[#7A6245] m-0">Here is your residency overview for <?= htmlspecialchars($unit['unit_number']) ?>.</p>
-          </div>
-          <div class="px-4 py-2 rounded-xl text-xs md:text-sm font-black <?= ($currentPayment && $currentPayment['status'] === 'pending_setup') ? 'bg-amber-100 text-amber-900 border border-amber-300' : 'bg-[#4A3728] text-white border border-[#382618]' ?> shadow-sm">
-            <?php if ($currentPayment && $currentPayment['status'] === 'pending_setup'): ?>
-              <span class="inline-flex items-center gap-1.5"><i data-lucide="clock" class="w-4 h-4" aria-hidden="true"></i> Rent Setup in Progress</span>
-            <?php else: ?>
-              Monthly Rent: ₱<?= number_format((float)$unit['monthly_rent'], 2) ?>
-            <?php endif; ?>
-          </div>
-        </div>
+        <!-- Prominent Welcome Section -->
+        <?php
+          $tenantFullName = trim((string)($user['name'] ?? 'Resident'));
+          $tenantNameParts = preg_split('/\s+/', $tenantFullName);
+          $tenantFirstName = !empty($tenantNameParts[0]) ? $tenantNameParts[0] : 'Resident';
+        ?>
+        <h1 class="tenant-dash-welcome-title">
+          Welcome home, <span class="tenant-dash-welcome-name"><?= htmlspecialchars($tenantFirstName) ?></span>!
+        </h1>
 
-        <!-- Read-Only Access Notice Banner for Unverified / Pending Tenant Accounts -->
+        <!-- Account Verification Notice (Only visible when unverified or pending review) -->
         <?php if (!$isTenantVerified): ?>
         <?php
           $rawVStatus = strtolower(trim((string)($user['verification_status'] ?? 'unverified')));
           $isPendingVerification = in_array($rawVStatus, ['pending', 'pending_verification', 'pending_liveness'], true);
-          $isRejectedVerification = ($rawVStatus === 'rejected');
         ?>
-        <div class="unverified-readonly-banner <?= $isPendingVerification ? 'is-pending verification-dashboard-pending' : 'verification-dashboard-warning' ?>" 
-             id="readonlyVerificationBanner"
-             style="<?= $isPendingVerification ? 'background: linear-gradient(135deg, #fffbeb, #fef3c7); border: 1.5px solid #f59e0b; color: #92400e; box-shadow: 0 4px 12px rgba(180, 83, 9, 0.15);' : 'background: #FCFBF9; border: 1.5px solid #b91c1c; color: #b91c1c; box-shadow: 3px 4px 10px rgba(42, 24, 6, 0.22);' ?>">
-          <div style="display: flex; align-items: center; gap: 14px; flex: 1; min-width: 240px;">
-            <div class="unverified-readonly-icon" 
-                 id="readonlyVerificationIconBox"
-                 style="<?= $isPendingVerification ? 'color: #b45309; background: #fef3c7; border: 1px solid rgba(180, 83, 9, 0.35);' : 'color: #b91c1c; background: linear-gradient(135deg, #fee2e2, #fecaca); border: 1px solid #fca5a5;' ?>">
-              <i data-lucide="<?= $isPendingVerification ? 'clock' : 'alert-triangle' ?>" class="w-5 h-5" aria-hidden="true"></i>
-            </div>
-            <div>
-              <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 4px;">
-                <h4 class="unverified-banner-title" 
-                    id="readonlyVerificationTitle"
-                    style="<?= $isPendingVerification ? 'color: #92400e;' : 'color: #b91c1c;' ?>">
-                  <?= $isPendingVerification ? 'Verification Pending Review' : 'Account Verification Required — Read-Only Access' ?>
-                </h4>
-                <?php if ($isPendingVerification): ?>
-                  <span class="clay-badge unverified-banner-badge is-pending" id="readonlyVerificationBadge" style="display: inline-flex; align-items: center; gap: 4px; background: #fef3c7; color: #92400e; border: 1px solid rgba(180, 83, 9, 0.3);">
-                    <i data-lucide="clock" class="w-3.5 h-3.5" aria-hidden="true"></i> Pending Review
-                  </span>
-                <?php elseif ($isRejectedVerification): ?>
-                  <span class="clay-badge unverified-banner-badge" id="readonlyVerificationBadge" style="display: inline-flex; align-items: center; gap: 4px; background: #fee2e2; color: #991b1b; border: 1px solid #f87171;">
-                    <i data-lucide="x" class="w-3.5 h-3.5" aria-hidden="true"></i> Needs Re-Verification
-                  </span>
-                <?php else: ?>
-                  <span class="clay-badge unverified-banner-badge" id="readonlyVerificationBadge">Read-Only Mode</span>
-                <?php endif; ?>
-              </div>
-              <p class="unverified-banner-desc" 
-                 id="readonlyVerificationDesc"
-                 style="<?= $isPendingVerification ? 'color: #78350f;' : 'color: #b91c1c;' ?>">
-                <?= $isPendingVerification 
-                  ? 'Your identity document has been submitted and is currently pending review by the property owner. You will receive full access once approved.' 
-                  : 'Your account is not yet verified. You can view your account information and history, but maintenance requests, payments, and reports are locked until identity verification is complete.' ?>
-              </p>
-              <?php if ($isPendingVerification && !empty($user['id_type'])): ?>
-                <p class="unverified-banner-note" id="readonlyVerificationNote" style="color: #92400e;">
-                  Uploaded ID: <strong><?= htmlspecialchars($user['id_type']) ?></strong> is awaiting owner approval.
-                </p>
-              <?php endif; ?>
-            </div>
+        <div class="tenant-dash-verify-box" id="dashboardVerifyNoticeBox">
+          <div class="verify-msg">
+            <span class="verify-icon">⚠</span>
+            <span><?= $isPendingVerification ? 'Your identity document is pending owner review.' : 'Please verify your account first.' ?></span>
           </div>
           <?php if (!$isPendingVerification): ?>
-          <button type="button" class="unverified-readonly-cta" id="btnVerifyAccountCta" onclick="openVerifyAccountModal()">
-            <span>Verify Account →</span>
-          </button>
+          <button type="button" class="verify-btn" id="btnVerifyAccountCta" onclick="openVerifyAccountModal()">Verify Account →</button>
+          <?php else: ?>
+          <span class="clay-badge" id="readonlyVerificationBadge" style="background: #fef3c7; color: #92400e; border: 1px solid rgba(180, 83, 9, 0.3); font-size: 11px; padding: 2px 8px; border-radius: 4px;">Pending Review</span>
           <?php endif; ?>
         </div>
         <?php endif; ?>
 
-        <!-- KPI Grid (30% Secondary Medium Clay Border, 60% Dominant White/Tan Body, 10% Accent Dark Roast Values & Icons) -->
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-5 mb-8">
-          <!-- Active Rent Status -->
-          <div class="bg-white/95 border-2 border-[#B89B72] rounded-2xl p-5 sm:p-6 shadow-md hover:shadow-lg transition-all flex flex-col justify-between min-h-[160px]">
-            <div class="flex items-center justify-between gap-3 mb-2">
-              <span class="text-xs font-black text-[#7A6245] uppercase tracking-wider">Current Rent Status</span>
-              <div class="w-10 h-10 rounded-xl bg-[#4A3728]/10 text-[#4A3728] border border-[#8C6D43]/30 flex items-center justify-center flex-shrink-0">
-                <i data-lucide="banknote" class="w-5 h-5" aria-hidden="true"></i>
+        <!-- Dashboard Summary Cards (Horizontal Row) -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+          <!-- 1. Current Rent Status -->
+          <div class="tenant-dash-summary-card">
+            <div class="tenant-dash-card-title">CURRENT RENT STATUS</div>
+            <div class="tenant-dash-outlined-val"><?= htmlspecialchars($rentStatusDisplay) ?></div>
+            <div class="tenant-dash-card-bottom">
+              <div>Due: <?= htmlspecialchars($shortDueDateDisplay) ?></div>
+              <div>
+                <button type="button" class="tenant-dash-card-link" onclick="switchTenantSection('tenantPayments', document.getElementById('navTenantPayments'))">Upload Now</button>
               </div>
-            </div>
-            <?php
-              $rentStatusRaw = $currentPayment['status'] ?? 'paid';
-              $rentStatusSlug = preg_replace('/[^a-z0-9_-]/', '', strtolower((string)$rentStatusRaw));
-            ?>
-            <div class="text-2xl sm:text-3xl font-black text-[#3E2723] my-2">
-              <?php if ($currentPayment && $currentPayment['status'] === 'pending_setup'): ?>
-                <span class="text-amber-800 text-xl sm:text-2xl">Pending Setup</span>
-              <?php else: ?>
-                <?= $currentPayment ? strtoupper(htmlspecialchars((string)$currentPayment['status'])) : 'PAID' ?>
-              <?php endif; ?>
-            </div>
-            <div class="text-xs sm:text-sm font-semibold text-[#7A6245]">
-              <?php if ($currentPayment && $currentPayment['status'] === 'pending_setup'): ?>
-                <span class="text-amber-800 font-semibold">Your rent details are being configured by the Owner.</span>
-              <?php else: ?>
-                <span>₱<?= number_format((float)($currentPayment['amount_due'] ?? $unit['monthly_rent']), 2) ?> <?= !empty($currentPayment['due_date']) ? 'Due on ' . date('M j', strtotime($currentPayment['due_date'])) : 'Due on 5th' ?></span>
-              <?php endif; ?>
             </div>
           </div>
 
-          <!-- Active Maintenance Tickets -->
-          <div class="bg-white/95 border-2 border-[#B89B72] rounded-2xl p-5 sm:p-6 shadow-md hover:shadow-lg transition-all flex flex-col justify-between min-h-[160px]">
-            <div class="flex items-center justify-between gap-3 mb-2">
-              <span class="text-xs font-black text-[#7A6245] uppercase tracking-wider">Active Maintenance</span>
-              <div class="w-10 h-10 rounded-xl bg-[#4A3728]/10 text-[#4A3728] border border-[#8C6D43]/30 flex items-center justify-center flex-shrink-0">
-                <i data-lucide="wrench" class="w-5 h-5" aria-hidden="true"></i>
-              </div>
-            </div>
-            <div class="text-2xl sm:text-3xl font-black text-[#3E2723] my-2">
-              <?= count(array_filter($myTickets, fn($t) => in_array($t['status'], ['Pending', 'On-Going', 'open', 'in_progress']))) ?>
-            </div>
-            <div class="text-xs sm:text-sm font-semibold text-[#7A6245]">
-              <span>Dispatched to Landlord</span>
+          <!-- 2. Active Maintenance -->
+          <div class="tenant-dash-summary-card">
+            <div class="tenant-dash-card-title">ACTIVE MAINTENANCE</div>
+            <div class="tenant-dash-outlined-val">( <?= (int)$activeTicketsCount ?> )</div>
+            <div class="tenant-dash-card-bottom">
+              <button type="button" class="tenant-dash-card-link" onclick="switchTenantSection('tenantMaintenance', document.getElementById('navTenantMaintenance'))">Submit Report or Maintenance</button>
             </div>
           </div>
 
-          <!-- Total Resolved -->
-          <div class="bg-white/95 border-2 border-[#B89B72] rounded-2xl p-5 sm:p-6 shadow-md hover:shadow-lg transition-all flex flex-col justify-between min-h-[160px]">
-            <div class="flex items-center justify-between gap-3 mb-2">
-              <span class="text-xs font-black text-[#7A6245] uppercase tracking-wider">Resolved Repairs</span>
-              <div class="w-10 h-10 rounded-xl bg-[#4A3728]/10 text-[#4A3728] border border-[#8C6D43]/30 flex items-center justify-center flex-shrink-0">
-                <i data-lucide="check-circle-2" class="w-5 h-5" aria-hidden="true"></i>
+          <!-- 3. Resolved Repairs -->
+          <div class="tenant-dash-summary-card">
+            <div class="tenant-dash-card-title">RESOLVED REPAIRS</div>
+            <div class="tenant-dash-outlined-val">( <?= (int)$resolvedTicketsCount ?> )</div>
+            <div class="tenant-dash-card-bottom">
+              <div>Due: <?= htmlspecialchars($shortDueDateDisplay) ?></div>
+              <div>
+                <button type="button" class="tenant-dash-card-link" onclick="switchTenantSection('tenantMaintenance', document.getElementById('navTenantMaintenance'))">View History</button>
               </div>
-            </div>
-            <div class="text-2xl sm:text-3xl font-black text-[#3E2723] my-2">
-              <?= count(array_filter($myTickets, fn($t) => in_array($t['status'], ['Done', 'resolved', 'closed']))) ?>
-            </div>
-            <div class="text-xs sm:text-sm font-semibold text-[#7A6245]">
-              <button type="button" class="font-black text-[#4A3728] hover:text-[#382618] underline transition-colors cursor-pointer" onclick="switchTenantSection('tenantMaintenance', document.getElementById('navTenantMaintenance'))">
-                View history →
-              </button>
             </div>
           </div>
         </div>
 
-        <!-- Recent Activity Cards (30% Secondary Medium Clay Borders, 60% Dominant Tan Rows, 10% Accent Badges & CTAs) -->
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <div class="bg-white/95 border-2 border-[#B89B72] rounded-2xl p-6 shadow-md flex flex-col justify-start">
-            <div class="flex items-center justify-between gap-4 pb-4 border-b border-dashed border-[#8C6D43]/30 mb-4">
-              <div>
-                <h3 class="text-lg font-black text-[#3E2723] uppercase tracking-wide m-0">Recent Maintenance Logs</h3>
-                <p class="text-xs font-semibold text-[#7A6245] mt-1 mb-0">Recent repair requests for <?= htmlspecialchars($unit['unit_number']) ?></p>
-              </div>
-              <button type="button" class="px-3.5 py-1.5 rounded-lg text-xs font-bold bg-[#F5F0E6] text-[#3E2723] border border-[#8C6D43] hover:bg-[#E8D8B0] shadow-sm transition-colors cursor-pointer" onclick="switchTenantSection('tenantMaintenance', document.getElementById('navTenantMaintenance'))">
-                View All
-              </button>
-            </div>
-
-            <div class="flex-1 flex flex-col gap-2.5">
-              <?php if (empty($myTickets)): ?>
-                <div class="flex items-center justify-center p-8 rounded-xl bg-[#F5F0E6] border border-dashed border-[#8C6D43] text-[#7A6245] text-xs font-bold text-center">No maintenance requests logged yet.</div>
-              <?php else: ?>
-                <?php foreach (array_slice($myTickets, 0, 3) as $tk): 
-                  $tkStatus = $tk['status'] ?? 'Pending';
-                  $stLower = strtolower((string)$tkStatus);
-                  $statusBadgeClass = 'bg-amber-100 text-amber-900 border-amber-300';
-                  if (in_array($stLower, ['on-going', 'ongoing', 'assigned', 'in_progress'], true)) {
-                    $statusBadgeClass = 'bg-blue-100 text-blue-900 border-blue-300';
-                  } elseif (in_array($stLower, ['done', 'resolved', 'closed'], true)) {
-                    $statusBadgeClass = 'bg-green-100 text-green-900 border-green-300';
-                  }
-                ?>
-                <div class="flex items-center justify-between p-3.5 rounded-xl bg-[#F5F0E6] border border-[#8C6D43]/40 shadow-sm text-[#3E2723] hover:shadow-md transition-all cursor-pointer"
-                     onclick="openTenantTicketModal(<?= htmlspecialchars(json_encode($tk), ENT_QUOTES, 'UTF-8') ?>)"
-                     title="Click to view ticket details and owner response">
-                  <div>
-                    <div class="flex items-center gap-2 mb-1">
-                      <span class="bg-[#E8D8B0] text-[#3E2723] font-black text-[11px] px-2 py-0.5 rounded-md border border-[#8C6D43]/30">#MT-<?= str_pad((string)$tk['id'], 4, '0', STR_PAD_LEFT) ?></span>
-                      <h4 class="text-sm font-bold text-[#3E2723] m-0"><?= htmlspecialchars($tk['title']) ?></h4>
-                    </div>
-                    <div class="flex items-center gap-2 text-xs text-[#7A6245] font-semibold">
-                      <span><?= htmlspecialchars($tk['category'] ?? 'General') ?></span>
-                      <span>•</span>
-                      <span><?= date('M j, Y', strtotime($tk['created_at'])) ?></span>
-                    </div>
+        <!-- Two Main Content Sections Side-by-Side -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
+          <!-- Left: RECENT MAINTENANCE LOGS (~67% width) -->
+          <div class="lg:col-span-2 tenant-dash-main-container">
+            <div>
+              <h2 class="tenant-dash-section-title">RECENT MAINTENANCE LOGS</h2>
+              <div class="space-y-1">
+                <?php if (empty($myTickets)): ?>
+                  <div style="padding: 24px 16px; text-align: center; font-size: 13.5px; font-weight: 700; color: #5C4324; background: rgba(66, 43, 11, 0.05); border-radius: 10px; border: 1px dashed rgba(66, 43, 11, 0.25);">
+                    No maintenance requests logged yet.
                   </div>
-                  <span class="<?= $statusBadgeClass ?> border font-extrabold text-xs px-2.5 py-1 rounded-full shadow-sm"><?= htmlspecialchars($tkStatus) ?></span>
-                </div>
-                <?php endforeach; ?>
-              <?php endif; ?>
+                <?php else: ?>
+                  <?php foreach (array_slice($myTickets, 0, 5) as $tk): 
+                    $tkStatus = $tk['status'] ?? 'Pending';
+                    $stLower = strtolower((string)$tkStatus);
+                    $badgeBg = 'rgba(217, 119, 6, 0.15)';
+                    $badgeColor = '#92400e';
+                    $badgeBorder = '#d97706';
+                    if (in_array($stLower, ['on-going', 'ongoing', 'assigned', 'in_progress'], true)) {
+                      $badgeBg = 'rgba(37, 99, 235, 0.15)';
+                      $badgeColor = '#1d4ed8';
+                      $badgeBorder = '#3b82f6';
+                    } elseif (in_array($stLower, ['done', 'resolved', 'closed'], true)) {
+                      $badgeBg = 'rgba(22, 163, 74, 0.15)';
+                      $badgeColor = '#15803d';
+                      $badgeBorder = '#22c55e';
+                    }
+                  ?>
+                  <div class="tenant-dash-log-row" 
+                       onclick="openTenantTicketModal(<?= htmlspecialchars(json_encode($tk), ENT_QUOTES, 'UTF-8') ?>)"
+                       title="Click to view details for Ticket #MT-<?= str_pad((string)$tk['id'], 4, '0', STR_PAD_LEFT) ?>">
+                    <div class="tenant-dash-log-date"><?= date('d F, Y', strtotime($tk['created_at'])) ?></div>
+                    <div class="tenant-dash-log-desc" title="<?= htmlspecialchars($tk['title']) ?>"><?= htmlspecialchars($tk['title']) ?></div>
+                    <span class="tenant-dash-log-badge" style="background: <?= $badgeBg ?>; color: <?= $badgeColor ?>; border-color: <?= $badgeBorder ?>;"><?= htmlspecialchars($tkStatus) ?></span>
+                  </div>
+                  <?php endforeach; ?>
+                <?php endif; ?>
+              </div>
+            </div>
+            <div style="padding-top: 16px;">
+              <button type="button" class="tenant-dash-viewall-btn" onclick="switchTenantSection('tenantMaintenance', document.getElementById('navTenantMaintenance'))">View all...</button>
             </div>
           </div>
 
-          <div class="bg-white/95 border-2 border-[#B89B72] rounded-2xl p-6 shadow-md flex flex-col justify-start">
-            <div class="flex items-center justify-between gap-4 pb-4 border-b border-dashed border-[#8C6D43]/30 mb-4">
-              <div>
-                <h3 class="text-lg font-black text-[#3E2723] uppercase tracking-wide m-0">Payment Receipts</h3>
-                <p class="text-xs font-semibold text-[#7A6245] mt-1 mb-0">Verified receipts on file</p>
-              </div>
-              <button type="button" class="px-3.5 py-1.5 rounded-lg text-xs font-bold bg-[#4A3728] hover:bg-[#382618] text-white border border-[#382618] shadow-sm transition-colors cursor-pointer" onclick="switchTenantSection('tenantPayments', document.getElementById('navTenantPayments'))">
-                Upload New
-              </button>
-            </div>
-
-            <div class="flex-1 flex flex-col gap-2.5">
-              <?php if (empty($myPayments)): ?>
-                <div class="flex items-center justify-center p-8 rounded-xl bg-[#F5F0E6] border border-dashed border-[#8C6D43] text-[#7A6245] text-xs font-bold text-center">No payments recorded yet.</div>
-              <?php else: ?>
-                <?php foreach (array_slice($myPayments, 0, 3) as $pay): 
-                  $payStatus = strtolower((string)($pay['status'] ?? 'pending'));
-                  $payBadgeClass = 'bg-amber-100 text-amber-900 border-amber-300';
-                  if (in_array($payStatus, ['approved', 'paid', 'verified'], true)) {
-                    $payBadgeClass = 'bg-green-100 text-green-900 border-green-300';
-                  } elseif (in_array($payStatus, ['rejected', 'declined'], true)) {
-                    $payBadgeClass = 'bg-red-100 text-red-900 border-red-300';
-                  }
-                ?>
-                <div class="flex items-center justify-between p-3.5 rounded-xl bg-[#F5F0E6] border border-[#8C6D43]/40 shadow-sm text-[#3E2723]">
-                  <div>
-                    <div class="text-sm font-bold text-[#3E2723]"><?= !empty($pay['billing_cycle']) ? date('F Y', strtotime($pay['billing_cycle'])) : 'Pending Setup' ?></div>
-                    <div class="text-xs font-semibold text-[#7A6245] mt-0.5">
-                      <?php if ($pay['status'] === 'pending_setup'): ?>
-                        Rent setup pending with landlord
-                      <?php else: ?>
-                        ₱<?= number_format((float)$pay['amount_paid'], 2) ?> on <?= $pay['payment_date'] ?? 'Pending' ?>
-                      <?php endif; ?>
-                    </div>
-                  </div>
-                  <?php if ($pay['status'] === 'pending_setup'): ?>
-                    <span class="bg-amber-100 text-amber-900 border border-amber-300 font-bold text-[10px] px-2 py-0.5 rounded-full">PENDING SETUP</span>
-                  <?php else: ?>
-                    <span class="<?= $payBadgeClass ?> border font-extrabold text-xs px-2.5 py-1 rounded-full shadow-sm"><?= strtoupper($pay['status']) ?></span>
-                  <?php endif; ?>
+          <!-- Right: PAYMENT SUMMARY (~33% width) -->
+          <div class="lg:col-span-1 tenant-dash-main-container">
+            <div>
+              <h2 class="tenant-dash-section-title">PAYMENT SUMMARY</h2>
+              <div class="space-y-2 mt-4">
+                <div class="tenant-dash-pay-item">
+                  <span class="tenant-dash-pay-label">Assigned Unit</span>
+                  <span class="tenant-dash-pay-val"><?= htmlspecialchars($unit['unit_number'] ?? 'Unit 1') ?></span>
                 </div>
-                <?php endforeach; ?>
-              <?php endif; ?>
+                <div class="tenant-dash-pay-item">
+                  <span class="tenant-dash-pay-label">Monthly Rent</span>
+                  <span class="tenant-dash-pay-val">₱<?= number_format((float)($unit['monthly_rent'] ?? 0), 2) ?></span>
+                </div>
+                <div class="tenant-dash-pay-item">
+                  <span class="tenant-dash-pay-label">Outstanding Balance</span>
+                  <span class="tenant-dash-pay-val">₱<?= $rentBalanceDisplay ?></span>
+                </div>
+                <div class="tenant-dash-pay-item">
+                  <span class="tenant-dash-pay-label">Next Due Date</span>
+                  <span class="tenant-dash-pay-val"><?= htmlspecialchars($nextDueDateDisplay) ?></span>
+                </div>
+                <div class="tenant-dash-pay-item">
+                  <span class="tenant-dash-pay-label">Current Status</span>
+                  <span class="tenant-dash-pay-val" style="font-size: 11px; padding: 2px 8px; border-radius: 9999px; font-weight: 800; <?= $rentStatusDisplay === 'PAID' ? 'background: #dcfce7; color: #15803d; border: 1px solid #86efac;' : ($rentStatusDisplay === 'PENDING' ? 'background: #fef3c7; color: #92400e; border: 1px solid #fde68a;' : 'background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5;') ?>">
+                    <?= htmlspecialchars($rentStatusDisplay) ?>
+                  </span>
+                </div>
+              </div>
+            </div>
+            <div style="padding-top: 16px;">
+              <button type="button" class="tenant-dash-pay-btn" onclick="switchTenantSection('tenantPayments', document.getElementById('navTenantPayments'))">
+                <i data-lucide="upload-cloud" class="w-4 h-4" aria-hidden="true"></i>
+                <span>Upload Payment</span>
+              </button>
             </div>
           </div>
         </div>
@@ -1643,47 +1621,14 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
         // Real-Time Supabase PostgreSQL Payments & Ledger Data
         // ---------------------------------------------------------------------
         $currentTenantId = (int)$user['id'];
-
-        // 1. Fetch all payment records for this tenant (ordered newest first)
-        $payQueryStmt = $pdo->prepare("
-            SELECT * FROM payments 
-            WHERE tenant_id = :tid 
-            ORDER BY billing_cycle DESC NULLS LAST, id DESC
-        ");
-        $payQueryStmt->execute([':tid' => $currentTenantId]);
-        $allTenantPayments = $payQueryStmt->fetchAll();
-
-        // 2. Compute outstanding rent balance, earliest due date, and unpaid ledger items
-        $tenantRentBalance = 0.00;
-        $unpaidBills = [];
-        $earliestDueDate = null;
-        $depositBill = null;
-        $rentBill = null;
-
-        foreach ($allTenantPayments as $p) {
-            $pType = $p['payment_type'] ?? 'Rent';
-            if ($pType === 'Advance Deposit' && !$depositBill) {
-                $depositBill = $p;
-            } elseif ($pType === 'Rent' && !$rentBill) {
-                $rentBill = $p;
-            }
-
-            $pStatus = strtolower((string)($p['status'] ?? ''));
-            $amtDue = (float)($p['amount_due'] ?? 0.0);
-            $amtPaid = (float)($p['amount_paid'] ?? 0.0);
-            $remaining = max(0.0, $amtDue - $amtPaid);
-
-            if (in_array($pStatus, ['unpaid', 'overdue', 'rejected', 'pending_setup', 'pending'], true) || $remaining > 0.01) {
-                if ($remaining > 0.01) {
-                    $tenantRentBalance += $remaining;
-                }
-                $unpaidBills[] = $p;
-                if (!empty($p['due_date'])) {
-                    if ($earliestDueDate === null || strtotime($p['due_date']) < strtotime($earliestDueDate)) {
-                        $earliestDueDate = $p['due_date'];
-                    }
-                }
-            }
+        if (!isset($allTenantPayments)) {
+            $payQueryStmt = $pdo->prepare("
+                SELECT * FROM payments 
+                WHERE tenant_id = :tid 
+                ORDER BY billing_cycle DESC NULLS LAST, id DESC
+            ");
+            $payQueryStmt->execute([':tid' => $currentTenantId]);
+            $allTenantPayments = $payQueryStmt->fetchAll();
         }
 
         // If no unpaid bills exist in the ledger, create a standard upcoming cycle entry so the form is always usable
@@ -1698,18 +1643,6 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
                 'amount_paid' => 0.00,
                 'status' => 'unpaid'
             ];
-        }
-
-        $rentBalanceDisplay = number_format($tenantRentBalance, 2);
-
-        if (!empty($earliestDueDate)) {
-            $nextDueDateDisplay = date('M d, Y', strtotime($earliestDueDate));
-        } elseif (!empty($rentBill['due_date'])) {
-            $nextDueDateDisplay = date('M d, Y', strtotime($rentBill['due_date']));
-        } elseif (!empty($allTenantPayments[0]['due_date'])) {
-            $nextDueDateDisplay = date('M d, Y', strtotime($allTenantPayments[0]['due_date']));
-        } else {
-            $nextDueDateDisplay = date('M 05, Y', strtotime('+1 month'));
         }
 
         $unitHeaderTitle = strtoupper(!empty($unit['unit_number']) ? $unit['unit_number'] : 'Unit 1') . ' PAYMENT';
@@ -2492,251 +2425,155 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
 
       </section>
 
-      <!-- CATEGORY 5: RESIDENT PROFILE (VIEW WITH INTERNAL SUB-SIDEBAR) -->
+      <!-- CATEGORY 5: RESIDENT PROFILE (SETTINGS INTERFACE) -->
       <section id="tenantProfile" class="app-view-section">
-        <div class="dashboard-header-bar flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
-          <div class="dashboard-title-group">
-            <h1 class="text-2xl md:text-3xl font-black text-[#3E2723] tracking-wide mb-1">Resident Profile &amp; Settings</h1>
-            <p class="text-sm md:text-base font-semibold text-[#7A6245] m-0">Manage your account information, residency verification, and login security.</p>
-          </div>
-        </div>
+        <!-- Verification Notification Bar inside Account Information -->
+        <div id="accountInfoVerificationAlert" class="account-info-verification-alert" style="display: none; margin-bottom: 18px; opacity: 1; transition: opacity 0.5s ease, transform 0.5s ease;"></div>
 
-        <div class="profile-view-container">
-          <!-- Internal Sub-Sidebar with exactly two options (30% Secondary Medium Clay bg-[#B89B72]) -->
-          <div class="profile-sub-sidebar bg-[#B89B72]/15 border-2 border-[#B89B72] rounded-2xl p-3 flex flex-col gap-2">
-            <button type="button" class="profile-subnav-item active flex items-center gap-3 px-4 py-3 rounded-xl font-bold text-sm bg-[#B89B72] text-white border-2 border-[#8C6D43] transition-all cursor-pointer" id="tenantSubnavAccount" onclick="switchProfileSubTab('accountInfo', this)">
-              <span class="subnav-icon">👤</span>
-              <span>Account Information</span>
+        <!-- Main Header -->
+        <h1 class="tararent-settings-title">TENANT PROFILE SETTINGS</h1>
+
+        <div class="tararent-settings-shell">
+          <!-- Left Nav Container -->
+          <div class="tararent-settings-nav">
+            <button type="button" class="tararent-settings-nav-btn profile-subnav-item active" id="tenantSubnavAccount" onclick="switchProfileSubTab('accountInfo', this)">
+              <span class="tab-icon"><i data-lucide="user" class="w-4 h-4" aria-hidden="true"></i></span>
+              <span>ACCOUNT INFORMATION</span>
             </button>
-            <button type="button" class="profile-subnav-item flex items-center gap-3 px-4 py-3 rounded-xl font-bold text-sm text-[#3E2723] hover:bg-[#B89B72]/20 border-2 border-transparent transition-all cursor-pointer" id="tenantSubnavPassword" onclick="switchProfileSubTab('changePassword', this)">
-              <span class="subnav-icon">🔒</span>
-              <span>Change Password</span>
+            <button type="button" class="tararent-settings-nav-btn profile-subnav-item" id="tenantSubnavPassword" onclick="switchProfileSubTab('changePassword', this)">
+              <span class="tab-icon"><i data-lucide="lock" class="w-4 h-4" aria-hidden="true"></i></span>
+              <span>CHANGE PASSWORD</span>
             </button>
           </div>
 
-          <!-- Sub-Tab Content Area -->
-          <div class="profile-content-area">
-            
+          <!-- Right Content Main Card -->
+          <div class="tararent-settings-card">
+
             <!-- Sub-Tab 1: Account Information -->
             <div id="paneAccountInfo" class="profile-tab-pane active-pane">
-              <!-- Verification Notification Bar inside Account Information (6s duration, Soft Red Warning / Soft Green Success) -->
-              <div id="accountInfoVerificationAlert" class="account-info-verification-alert" style="display: none; margin-bottom: 22px; opacity: 1; transition: opacity 0.5s ease, transform 0.5s ease;"></div>
+              <div>
+                <!-- Top Row: Avatar + Name / Username -->
+                <div class="tararent-settings-header">
+                  <!-- Hidden profile picture form -->
+                  <form id="profilePictureForm" method="POST" action="api/profile_api.php" enctype="multipart/form-data" style="display: none;">
+                    <input type="hidden" name="action" value="upload_profile_picture">
+                    <input type="hidden" name="user_id" value="<?= (int)($user['id'] ?? 0) ?>">
+                    <input type="file" id="profile_picture" name="profile_picture" accept="image/*" onchange="previewProfilePicture(event)">
+                  </form>
 
-              <div class="bg-white/95 border-2 border-[#B89B72] rounded-2xl p-6 sm:p-8 shadow-md">
-                <div class="flex justify-between items-center mb-6 flex-wrap gap-3 pb-4 border-b border-dashed border-[#8C6D43]/30">
-                  <div>
-                    <h2 class="text-xl sm:text-2xl font-black text-[#3E2723] tracking-wide m-0">Account Information</h2>
-                    <p class="text-xs sm:text-sm font-semibold text-[#7A6245] mt-1 mb-0">Personal records and unit assignment details</p>
-                  </div>
-                  <div class="flex items-center gap-2.5 flex-wrap">
-                    <button type="button" class="px-4 py-2 rounded-xl text-xs sm:text-sm font-bold bg-[#F5F0E6] text-[#3E2723] border border-[#8C6D43] hover:bg-[#E8D8B0] shadow-sm transition-colors cursor-pointer" onclick="openEditAccountInfoModal()">
-                      ✏️ Edit Information
-                    </button>
-                    <?php if (($user['verification_status'] ?? 'unverified') !== 'verified'): ?>
-                      <?php if (($user['verification_status'] ?? '') === 'pending'): ?>
-                        <span class="bg-amber-100 text-amber-900 border border-amber-300 font-bold text-xs px-3.5 py-1.5 rounded-full shadow-sm flex items-center gap-1.5">
-                          <span>⏳</span> Pending Review
-                        </span>
-                      <?php else: ?>
-                        <span class="bg-red-100 text-red-900 border border-red-300 font-bold text-xs px-3.5 py-1.5 rounded-full shadow-sm flex items-center gap-1.5">
-                          <span>⚠️</span> Unverified Account
-                        </span>
-                      <?php endif; ?>
+                  <!-- Circular Avatar with "change profile" -->
+                  <div class="tararent-settings-avatar-wrap" onclick="triggerProfilePictureInput()" title="Click to change profile picture">
+                    <?php if (!empty($userAvatarUrl)): ?>
+                      <img id="avatarPreviewImg" src="<?= htmlspecialchars($userAvatarUrl) ?>" alt="Profile Photo">
+                      <span class="tararent-settings-change-link" style="position: absolute; bottom: 4px; background: rgba(255,255,255,0.85); width: 100%; padding: 2px 0;">change<br>profile</span>
+                    <?php else: ?>
+                      <div id="avatarFallbackInitial" style="display: none;"><?= htmlspecialchars($userInitial) ?></div>
+                      <img id="avatarPreviewImg" src="" alt="Profile Photo" style="display: none;">
+                      <span class="tararent-settings-change-link">change<br>profile</span>
                     <?php endif; ?>
                   </div>
-                </div>
 
-                <!-- Profile Picture Customization Card (60% Dominant Light Tan bg-[#F5F0E6], 30% Secondary border-[#B89B72]) -->
-                <form id="profilePictureForm" method="POST" action="api/profile_api.php" enctype="multipart/form-data" class="flex items-center gap-6 p-5 rounded-2xl bg-[#F5F0E6] border border-[#B89B72] mb-6 flex-wrap shadow-sm">
-                  <input type="hidden" name="action" value="upload_profile_picture">
-                  <input type="hidden" name="user_id" value="<?= (int)($user['id'] ?? 0) ?>">
-
-                  <label for="profile_picture" class="avatar-preview-wrapper relative w-24 h-24 flex-shrink-0 cursor-pointer block" title="Click photo to choose new picture">
-                    <img id="avatarPreviewImg" src="<?= !empty($userAvatarUrl) ? $userAvatarUrl : '' ?>" alt="Profile Preview" style="width: 96px; height: 96px; border-radius: 50%; object-fit: cover; border: 3px solid #8C6D43; box-shadow: 0 4px 14px rgba(74, 55, 40, 0.2); display: <?= !empty($userAvatarUrl) ? 'block' : 'none' ?>;">
-                    <div id="avatarFallbackInitial" style="width: 96px; height: 96px; border-radius: 50%; background: #B89B72; color: #ffffff; display: <?= !empty($userAvatarUrl) ? 'none' : 'flex' ?>; align-items: center; justify-content: center; font-size: 38px; font-weight: 800; border: 3px solid #8C6D43; box-shadow: 0 4px 14px rgba(74, 55, 40, 0.2);">
-                      <?= htmlspecialchars($userInitial) ?>
-                    </div>
-                    <span class="absolute bottom-0 right-0 w-7 h-7 rounded-full bg-[#4A3728] text-white flex items-center justify-center border-2 border-white shadow-sm text-xs">
-                      📷
-                    </span>
-                  </label>
-
-                  <div class="avatar-info-controls flex-1 min-w-[220px]">
-                    <h3 class="text-base font-black text-[#3E2723] m-0 mb-1">Profile Picture</h3>
-                    <p class="text-xs font-semibold text-[#7A6245] m-0 mb-3.5">
-                      Click the avatar or choose a photo (JPEG, PNG, WEBP, maximum 5MB). This avatar will be visible on your tenant dashboard and messages.
-                    </p>
-
-                    <input type="file" id="profile_picture" name="profile_picture" accept="image/*" class="hidden" style="display: none;" onchange="previewProfilePicture(event)">
-
-                    <div class="flex items-center gap-2.5 flex-wrap">
-                      <button type="button" class="px-4 py-2 rounded-xl text-xs sm:text-sm font-bold bg-[#4A3728] hover:bg-[#382618] text-white border border-[#382618] shadow-sm transition-colors cursor-pointer" id="btnChooseAvatar" onclick="triggerProfilePictureInput()">
-                        📷 Choose Photo
-                      </button>
-
-                      <div id="avatarPendingActions" style="display: none; align-items: center; gap: 8px;">
-                        <button type="button" class="px-4 py-2 rounded-xl text-xs sm:text-sm font-bold bg-green-600 hover:bg-green-700 text-white shadow-sm transition-colors cursor-pointer inline-flex items-center gap-1.5" id="btnSaveAvatar" onclick="submitProfilePictureUpload()">
-                          <i data-lucide="check" style="width: 15px; height: 15px;"></i> Save Changes
-                        </button>
-                        <button type="button" class="px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold bg-[#F5F0E6] text-[#3E2723] border border-[#8C6D43] hover:bg-[#E8D8B0] shadow-sm transition-colors cursor-pointer inline-flex items-center gap-1.5" id="btnCancelAvatar" onclick="cancelProfilePictureSelection()">
-                          Cancel
-                        </button>
-                      </div>
-
-                      <button type="button" class="px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold text-red-600 bg-red-50 hover:bg-red-100 border border-red-200 transition-colors cursor-pointer inline-flex items-center gap-1.5" id="btnRemoveAvatar" style="display: <?= !empty($userAvatarUrl) ? 'inline-flex' : 'none' ?>;" onclick="confirmRemoveProfilePicture()">
-                        <i data-lucide="trash-2" style="width: 15px; height: 15px;"></i> Remove Photo
-                      </button>
-                    </div>
-                  </div>
-                </form>
-
-                <div class="detail-grid grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
-                  <div class="p-3.5 rounded-xl bg-[#F5F0E6] border border-[#8C6D43]/30">
-                    <span class="block text-xs font-bold text-[#7A6245]">Full Name:</span>
-                    <span class="block text-sm sm:text-base font-extrabold text-[#3E2723] mt-0.5" id="profileFullName"><?= htmlspecialchars($user['name']) ?></span>
-                  </div>
-                  <div class="p-3.5 rounded-xl bg-[#F5F0E6] border border-[#8C6D43]/30">
-                    <span class="block text-xs font-bold text-[#7A6245]">Username:</span>
-                    <span class="block text-sm sm:text-base font-extrabold text-[#3E2723] mt-0.5"><?= htmlspecialchars($user['username']) ?></span>
-                  </div>
-                  <div class="p-3.5 rounded-xl bg-[#F5F0E6] border border-[#8C6D43]/30">
-                    <span class="block text-xs font-bold text-[#7A6245]">Assigned Unit:</span>
-                    <span class="block text-sm sm:text-base font-extrabold text-[#3E2723] mt-0.5"><?= htmlspecialchars($unit['unit_number']) ?></span>
-                  </div>
-                  <div class="p-3.5 rounded-xl bg-[#F5F0E6] border border-[#8C6D43]/30">
-                    <span class="block text-xs font-bold text-[#7A6245]">Monthly Rent:</span>
-                    <span class="block text-sm sm:text-base font-extrabold text-[#3E2723] mt-0.5">₱<?= number_format((float)$unit['monthly_rent'], 2) ?></span>
-                  </div>
-                  <div class="p-3.5 rounded-xl bg-[#F5F0E6] border border-[#8C6D43]/30">
-                    <span class="block text-xs font-bold text-[#7A6245]">Email Address:</span>
-                    <span class="block text-sm sm:text-base font-extrabold text-[#3E2723] mt-0.5"><?= htmlspecialchars($user['email'] ?? 'Not set') ?></span>
-                  </div>
-                  <div class="p-3.5 rounded-xl bg-[#F5F0E6] border border-[#8C6D43]/30">
-                    <span class="block text-xs font-bold text-[#7A6245]">Phone Number:</span>
-                    <span class="block text-sm sm:text-base font-extrabold text-[#3E2723] mt-0.5"><?= htmlspecialchars($user['phone'] ?? 'Not set') ?></span>
-                  </div>
-                  <div class="p-3.5 rounded-xl bg-[#F5F0E6] border border-[#8C6D43]/30">
-                    <span class="block text-xs font-bold text-[#7A6245]">Emergency Contact:</span>
-                    <span class="block text-sm sm:text-base font-extrabold text-[#3E2723] mt-0.5"><?= htmlspecialchars($user['emergency_contact_name'] ?? $user['emergency_contact'] ?? 'Not set') ?></span>
-                  </div>
-                  <div class="p-3.5 rounded-xl bg-[#F5F0E6] border border-[#8C6D43]/30">
-                    <span class="block text-xs font-bold text-[#7A6245]">Emergency Phone:</span>
-                    <span class="block text-sm sm:text-base font-extrabold text-[#3E2723] mt-0.5"><?= htmlspecialchars($user['emergency_contact_phone'] ?? 'Not set') ?></span>
-                  </div>
-                  <div class="p-3.5 rounded-xl bg-[#F5F0E6] border border-[#8C6D43]/30">
-                    <span class="block text-xs font-bold text-[#7A6245]">Date of Birth:</span>
-                    <span class="block text-sm sm:text-base font-extrabold text-[#3E2723] mt-0.5">
-                      <?= !empty($user['birthday']) ? date('F j, Y', strtotime($user['birthday'])) : 'Not set' ?>
-                    </span>
-                  </div>
-                  <div class="p-3.5 rounded-xl bg-[#F5F0E6] border border-[#8C6D43]/30">
-                    <span class="block text-xs font-bold text-[#7A6245]">Role:</span>
-                    <span class="block text-sm sm:text-base font-extrabold text-[#3E2723] mt-0.5 capitalize"><?= htmlspecialchars($user['role']) ?></span>
+                  <!-- Name and Handle -->
+                  <div class="tararent-settings-title-group">
+                    <h2 class="tararent-settings-user-name" id="profileFullName"><?= htmlspecialchars($user['name'] ?? 'Tenant') ?></h2>
+                    <div class="tararent-settings-user-handle">@<?= htmlspecialchars($user['username'] ?? 'tenant') ?></div>
                   </div>
                 </div>
 
-                <?php if (($user['verification_status'] ?? 'unverified') !== 'verified'): ?>
-                <!-- Verification Action / Status Container -->
-                <div id="accountVerificationSection" class="mt-6 pt-5 border-t border-dashed border-[#8C6D43]/30">
-                  <?php if (($user['verification_status'] ?? 'unverified') === 'unverified'): ?>
-                    <div class="p-5 rounded-2xl bg-rose-50 border border-rose-200">
-                      <div class="flex items-center justify-between flex-wrap gap-4">
-                        <div>
-                          <?php if (!empty($user['verification_notes'])): ?>
-                            <div class="flex items-center gap-2 mb-1">
-                              <span class="text-xl text-rose-600 font-bold">✕</span>
-                              <div class="text-sm font-extrabold text-rose-900">Identity Verification Failed — Account Remains Unverified</div>
-                            </div>
-                            <div class="text-xs text-rose-800 mb-1.5">
-                              <?= htmlspecialchars(str_replace('Rejected: ', '', $user['verification_notes'])) ?>
-                            </div>
-                            <div class="text-xs text-rose-900 font-semibold">
-                              Please re-verify your account with a clear government-issued ID to unlock resident features.
-                            </div>
-                          <?php else: ?>
-                            <div class="text-sm font-extrabold text-rose-900 mb-1">Identity Verification Required</div>
-                            <div class="text-xs text-rose-800">Verify your account with a government ID to unlock your rental dashboard capabilities.</div>
-                          <?php endif; ?>
-                        </div>
-                        <button type="button" class="px-5 py-2.5 rounded-xl font-black text-xs sm:text-sm bg-[#4A3728] hover:bg-[#382618] text-white shadow-md transition-colors cursor-pointer" onclick="goToAccountVerification()">
-                          <?= !empty($user['verification_notes']) ? 'Re-Verify Account' : 'Verify Account' ?>
-                        </button>
-                      </div>
-                    </div>
-                  <?php elseif (($user['verification_status'] ?? '') === 'pending'): ?>
-                    <div class="p-5 rounded-2xl bg-amber-50 border border-amber-200">
-                      <div class="flex items-center justify-between flex-wrap gap-4">
-                        <div>
-                          <div class="text-sm font-extrabold text-amber-900 mb-1">Verification Under Review</div>
-                          <div class="text-xs text-amber-800">Your submitted documents are currently being audited by management. Full functionality will be enabled upon approval.</div>
-                        </div>
-                        <span class="bg-amber-100 text-amber-900 border border-amber-300 font-bold text-xs px-3.5 py-1.5 rounded-full shadow-sm flex items-center gap-1.5">
-                          <span>⏳</span> In Review
-                        </span>
-                      </div>
-                    </div>
-                  <?php endif; ?>
+                <!-- Avatar Pending Save Actions -->
+                <div id="avatarPendingActions" style="display: none; align-items: center; gap: 8px; margin-bottom: 20px;">
+                  <button type="button" class="tararent-settings-save-btn" id="btnSaveAvatar" onclick="submitProfilePictureUpload()" style="padding: 6px 18px; font-size: 12.5px;">Save Photo</button>
+                  <button type="button" class="tararent-settings-save-btn" id="btnCancelAvatar" onclick="cancelProfilePictureSelection()" style="padding: 6px 14px; font-size: 12.5px; background: #EFE7DA;">Cancel</button>
                 </div>
-                <?php endif; ?>
-                <?php if (($user['verification_status'] ?? 'unverified') === 'verified'): ?>
-                <!-- Verified Tenant ID Card & Update Trigger -->
-                <div id="verifiedAccountSection" class="mt-6 pt-5 border-t border-dashed border-[#8C6D43]/30">
-                  <div class="p-5 rounded-2xl bg-green-50 border border-green-200">
-                    <div class="flex items-center justify-between flex-wrap gap-4">
-                      <div>
-                        <div class="flex items-center gap-2 mb-1">
-                          <span class="w-5 h-5 rounded-full bg-green-600 text-white flex items-center justify-center text-xs font-bold">✓</span>
-                          <div class="text-sm font-extrabold text-green-900">Identity Verified Resident</div>
-                        </div>
-                        <div class="text-xs text-green-800">
-                          Verified with <?= htmlspecialchars($user['id_type'] ?? 'Government ID') ?>
-                          <?= !empty($user['id_verified_at']) ? ' on ' . date('F j, Y', strtotime($user['id_verified_at'])) : '' ?>.
-                        </div>
-                      </div>
-                      <button type="button" class="px-4 py-2 rounded-xl text-xs sm:text-sm font-bold bg-white text-green-800 border border-green-600 hover:bg-green-50 shadow-sm transition-colors cursor-pointer inline-flex items-center gap-1.5" id="btnUpdateId" onclick="openVerifyAccountModal(true)">
-                        <i data-lucide="refresh-cw" class="w-4 h-4"></i>
-                        <span>Update ID Document</span>
-                      </button>
-                    </div>
+
+                <!-- Two-Column Information Grid -->
+                <div class="tararent-settings-info-grid">
+                  <div class="tararent-settings-info-item">
+                    <span class="tararent-settings-info-label">Full Name:</span>
+                    <span class="tararent-settings-info-val"><?= htmlspecialchars($user['name'] ?? 'Resident') ?></span>
+                  </div>
+                  <div class="tararent-settings-info-item">
+                    <span class="tararent-settings-info-label">username:</span>
+                    <span class="tararent-settings-info-val"><?= htmlspecialchars($user['username'] ?? 'resident') ?></span>
+                  </div>
+                  <div class="tararent-settings-info-item">
+                    <span class="tararent-settings-info-label">Residential Address:</span>
+                    <span class="tararent-settings-info-val"><?= htmlspecialchars(!empty($user['address']) ? $user['address'] : (!empty($unit['unit_number']) ? 'Unit ' . $unit['unit_number'] . ', TaraRent Residences' : 'TaraRent Residences')) ?></span>
+                  </div>
+                  <div class="tararent-settings-info-item">
+                    <span class="tararent-settings-info-label">phone no.:</span>
+                    <span class="tararent-settings-info-val"><?= htmlspecialchars($user['phone'] ?? '+63 912 345 6789') ?></span>
+                  </div>
+                  <div class="tararent-settings-info-item">
+                    <span class="tararent-settings-info-label">email address:</span>
+                    <span class="tararent-settings-info-val"><?= htmlspecialchars($user['email'] ?? 'Not set') ?></span>
                   </div>
                 </div>
-                <?php endif; ?>
+              </div>
+
+              <!-- Bottom Center: Valid Identification -->
+              <div class="tararent-settings-id-box">
+                <span class="tararent-settings-id-label">Valid Identification</span>
+                <button type="button" class="tararent-settings-id-link" onclick="openTenantIdModal()">view photo</button>
               </div>
             </div>
 
             <!-- Sub-Tab 2: Change Password -->
             <div id="paneChangePassword" class="profile-tab-pane">
-              <div class="bg-white/95 border-2 border-[#B89B72] rounded-2xl p-6 sm:p-8 shadow-md max-w-[600px]">
-                <div class="mb-6 pb-4 border-b border-dashed border-[#8C6D43]/30">
-                  <h2 class="text-xl sm:text-2xl font-black text-[#3E2723] tracking-wide m-0">Change Password</h2>
-                  <p class="text-xs sm:text-sm font-semibold text-[#7A6245] mt-1 mb-0">Keep your account secure by updating your password regularly</p>
+              <div class="tararent-settings-pwd-header">
+                <h2 class="tararent-settings-pwd-title">Change Password</h2>
+                <p class="tararent-settings-pwd-sub">Protect your account by using a strong, unique password.</p>
+              </div>
+
+              <form id="changePasswordForm">
+                <div class="tararent-settings-form-group">
+                  <label class="tararent-settings-form-label" for="profCurrentPass">Current Password<span class="req">*</span></label>
+                  <input type="password" id="profCurrentPass" class="tararent-settings-input" placeholder="" required autocomplete="current-password">
                 </div>
 
-                <form id="changePasswordForm" class="flex flex-col gap-4">
-                  <div class="flex flex-col gap-1.5">
-                    <label class="font-bold text-xs sm:text-sm text-[#3E2723]" for="profCurrentPass">Current Password <span class="text-red-600">*</span></label>
-                    <input type="password" id="profCurrentPass" class="w-full h-11 px-3.5 py-2.5 rounded-lg bg-[#F5F0E6] text-[#3E2723] font-semibold text-sm border border-[#B89B72] focus:outline-none focus:ring-2 focus:ring-[#4A3728] shadow-sm" placeholder="Enter existing password" required autocomplete="current-password">
-                  </div>
+                <div class="tararent-settings-form-group">
+                  <label class="tararent-settings-form-label" for="profNewPass">New Password<span class="req">*</span></label>
+                  <input type="password" id="profNewPass" class="tararent-settings-input" placeholder="" minlength="6" required autocomplete="new-password">
+                </div>
 
-                  <div class="flex flex-col gap-1.5">
-                    <label class="font-bold text-xs sm:text-sm text-[#3E2723]" for="profNewPass">New Password <span class="text-red-600">*</span></label>
-                    <input type="password" id="profNewPass" class="w-full h-11 px-3.5 py-2.5 rounded-lg bg-[#F5F0E6] text-[#3E2723] font-semibold text-sm border border-[#B89B72] focus:outline-none focus:ring-2 focus:ring-[#4A3728] shadow-sm" placeholder="At least 6 characters" minlength="6" required autocomplete="new-password">
-                  </div>
+                <div class="tararent-settings-form-group">
+                  <label class="tararent-settings-form-label" for="profConfirmPass">Confirm Password<span class="req">*</span></label>
+                  <input type="password" id="profConfirmPass" class="tararent-settings-input" placeholder="" minlength="6" required autocomplete="new-password">
+                </div>
 
-                  <div class="flex flex-col gap-1.5">
-                    <label class="font-bold text-xs sm:text-sm text-[#3E2723]" for="profConfirmPass">Confirm New Password <span class="text-red-600">*</span></label>
-                    <input type="password" id="profConfirmPass" class="w-full h-11 px-3.5 py-2.5 rounded-lg bg-[#F5F0E6] text-[#3E2723] font-semibold text-sm border border-[#B89B72] focus:outline-none focus:ring-2 focus:ring-[#4A3728] shadow-sm" placeholder="Confirm new password" minlength="6" required autocomplete="new-password">
-                  </div>
-
-                  <div class="mt-4">
-                    <button type="submit" class="min-w-[180px] py-3 px-6 rounded-xl bg-[#4A3728] hover:bg-[#382618] text-white font-black text-sm sm:text-base shadow-md border border-[#382618] transition-all cursor-pointer" id="btnSavePassword">
-                      Update Password
-                    </button>
-                  </div>
-                </form>
-              </div>
+                <div style="text-align: right; max-width: 540px; margin-top: 24px;">
+                  <button type="submit" class="tararent-settings-save-btn" id="btnSavePassword">
+                    save password
+                  </button>
+                </div>
+              </form>
             </div>
 
+          </div>
+        </div>
+
+        <!-- Tenant ID Viewing Modal -->
+        <div id="modalTenantProfileId" class="clay-modal" style="display: none;" onclick="if(event.target === this) this.style.display='none'">
+          <div class="clay-modal-content" style="max-width: 480px; background: #FAF3E7; border-radius: 20px; padding: 24px; border: 1.5px solid #8C6D43; box-shadow: 0 10px 30px rgba(0,0,0,0.25);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+              <h3 style="font-weight: 900; color: #1E160E; margin: 0; font-size: 17px; text-transform: uppercase;">Valid Identification Document</h3>
+              <button type="button" onclick="document.getElementById('modalTenantProfileId').style.display='none'" style="background: none; border: none; font-size: 20px; cursor: pointer; color: #1E160E; font-weight: bold; line-height: 1;">✕</button>
+            </div>
+            <div style="text-align: center; padding: 24px 16px; background: #DECBB3; border-radius: 14px;">
+              <?php if (!empty($user['id_photo_filename']) && file_exists(__DIR__ . '/uploads/id_verifications/' . $user['id_photo_filename'])): ?>
+                <img src="uploads/id_verifications/<?= htmlspecialchars($user['id_photo_filename']) ?>" alt="Tenant ID Photo" style="max-width: 100%; max-height: 320px; border-radius: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
+                <div style="margin-top: 12px; font-size: 13px; font-weight: 800; color: #1E160E; text-transform: uppercase;">
+                  ID Type: <?= htmlspecialchars($user['id_type'] ?? 'Government ID') ?>
+                </div>
+              <?php else: ?>
+                <div style="font-size: 42px; margin-bottom: 10px;">⚠️</div>
+                <div style="font-size: 16px; font-weight: 800; color: #1E160E;">No ID Document Uploaded Yet</div>
+                <p style="font-size: 13px; color: #4A3E31; margin: 6px 0 16px 0; font-weight: 600;">Please complete your account verification by uploading a valid government-issued ID.</p>
+                <button type="button" onclick="document.getElementById('modalTenantProfileId').style.display='none'; openVerifyAccountModal();" class="verify-btn" style="background: #DC2626; color: #fff; padding: 8px 18px; border-radius: 8px; font-weight: 800; border: none; cursor: pointer;">
+                  Verify Account Now →
+                </button>
+              <?php endif; ?>
+            </div>
           </div>
         </div>
       </section>
@@ -3774,6 +3611,11 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
       }
     });
 
+    function openTenantIdModal() {
+      const m = document.getElementById('modalTenantProfileId');
+      if (m) m.style.display = 'flex';
+    }
+
     function previewProfilePicture(e) {
       const file = e.target.files && e.target.files[0];
       if (!file) return;
@@ -4033,6 +3875,7 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
       'id' => (int)($t['id'] ?? 0),
       'title' => (string)($t['title'] ?? ''),
       'category' => (string)($t['category'] ?? ''),
+      'description' => (string)($t['description'] ?? ''),
       'status' => (string)($t['status'] ?? ''),
       'created_at' => (string)($t['created_at'] ?? ''),
       'raw' => $t,
@@ -4042,17 +3885,23 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
       'id' => (int)($r['id'] ?? 0),
       'subject' => (string)($r['subject'] ?? ''),
       'category' => (string)($r['category'] ?? ''),
+      'details' => (string)($r['details'] ?? ''),
       'status' => (string)($r['status'] ?? ''),
       'created_at' => (string)($r['created_at'] ?? ''),
       'raw' => $r,
     ], $myReports), JSON_UNESCAPED_UNICODE) ?>;
 
     const __tenantSearchPayments = <?= json_encode(array_map(fn($p) => [
+      'id' => (int)($p['id'] ?? 0),
       'billing_cycle' => (string)($p['billing_cycle'] ?? ''),
       'status' => (string)($p['status'] ?? ''),
+      'amount_due' => (float)($p['amount_due'] ?? 0),
       'amount_paid' => (float)($p['amount_paid'] ?? 0),
+      'reference_number' => (string)($p['reference_number'] ?? ''),
+      'payment_type' => (string)($p['payment_type'] ?? 'Rent'),
       'payment_date' => (string)($p['payment_date'] ?? ''),
-    ], $myPayments), JSON_UNESCAPED_UNICODE) ?>;
+      'raw' => $p,
+    ], $allTenantPayments), JSON_UNESCAPED_UNICODE) ?>;
 
     function escapeTenantSearchHtml(str) {
       return String(str ?? '').replace(/[&<>"']/g, (ch) => ({
@@ -4076,6 +3925,8 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
       }
     }
 
+    let activeTenantSearchResults = [];
+
     function initTenantGlobalSearch() {
       const input = document.getElementById('tenantGlobalSearchInput');
       const clearBtn = document.getElementById('tenantGlobalSearchClear');
@@ -4083,27 +3934,35 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
       if (!input || !dropdown) return;
 
       const staticSections = [
-        { title: 'Dashboard Overview', sub: 'Current rent, active maintenance & receipts', tag: 'Section', section: 'tenantOverview', navId: 'navTenantOverview' },
-        { title: 'Log Maintenance', sub: 'Report repair requests & track work orders', tag: 'Section', section: 'tenantMaintenance', navId: 'navTenantMaintenance' },
-        { title: 'Upload Payment', sub: 'Submit bank or GCash rent receipts', tag: 'Section', section: 'tenantPayments', navId: 'navTenantPayments' },
-        { title: 'Submit General Report', sub: 'Occupants, pets, unit modifications & inquiries', tag: 'Section', section: 'tenantReport', navId: 'navTenantReport' },
-        { title: 'Account Information', sub: 'Profile records & identity verification', tag: 'Settings', profileTab: 'accountInfo' },
-        { title: 'Change Password', sub: 'Update your resident login credentials', tag: 'Settings', profileTab: 'changePassword' },
+        { title: 'Dashboard Overview', sub: 'Current rent status, active maintenance & receipts', tag: 'Section', section: 'tenantOverview', navId: 'navTenantOverview', keys: 'home dashboard overview rent residency summary' },
+        { title: 'Log Maintenance', sub: 'Report repair requests & track work orders', tag: 'Section', section: 'tenantMaintenance', navId: 'navTenantMaintenance', keys: 'maintenance tickets repairs issues plumber electrician' },
+        { title: 'Upload Payment', sub: 'Submit bank or GCash rent receipts', tag: 'Section', section: 'tenantPayments', navId: 'navTenantPayments', keys: 'payment upload receipts gcash bank transfer ledger due' },
+        { title: 'Submit General Report', sub: 'Occupants, pets, unit modifications & inquiries', tag: 'Section', section: 'tenantReport', navId: 'navTenantReport', keys: 'report inquiry occupants pets customization concern' },
+        { title: 'Account Information', sub: 'Profile records & identity verification', tag: 'Settings', profileTab: 'accountInfo', keys: 'profile account info verification id liveness' },
+        { title: 'Change Password', sub: 'Update your resident login credentials', tag: 'Settings', profileTab: 'changePassword', keys: 'password security login credentials' },
       ];
 
       function renderResults(rawQuery) {
         const q = (rawQuery || '').trim().toLowerCase();
         if (clearBtn) clearBtn.classList.toggle('visible', q.length > 0);
         if (!q) {
+          activeTenantSearchResults = [];
           dropdown.innerHTML = '';
           dropdown.classList.remove('open');
           return;
         }
 
+        const tokens = q.split(/\s+/).filter(Boolean);
+        function matchesTokens(haystack) {
+          const h = String(haystack || '').toLowerCase();
+          return tokens.every(t => h.includes(t));
+        }
+
         const results = [];
 
         staticSections.forEach((sec) => {
-          if (sec.title.toLowerCase().includes(q) || sec.sub.toLowerCase().includes(q)) {
+          const hay = `${sec.title} ${sec.sub} ${sec.keys}`.toLowerCase();
+          if (matchesTokens(hay)) {
             results.push({
               title: sec.title,
               sub: sec.sub,
@@ -4121,15 +3980,11 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
 
         __tenantSearchTickets.forEach((tk) => {
           const ticketCode = '#MT-' + String(tk.id).padStart(4, '0');
-          if (
-            tk.title.toLowerCase().includes(q) ||
-            tk.category.toLowerCase().includes(q) ||
-            tk.status.toLowerCase().includes(q) ||
-            ticketCode.toLowerCase().includes(q)
-          ) {
+          const hay = `${ticketCode} MT-${tk.id} ${tk.id} ${tk.title} ${tk.category} ${tk.description} ${tk.status}`.toLowerCase();
+          if (matchesTokens(hay)) {
             results.push({
               title: `${ticketCode} · ${tk.title}`,
-              sub: `${tk.category || 'Maintenance'} • ${tk.status}`,
+              sub: `${tk.category || 'Maintenance'} • ${tk.status} • ${tk.created_at ? tk.created_at.split(' ')[0] : ''}`,
               tag: 'Ticket',
               onSelect: () => {
                 if (typeof openTenantTicketModal === 'function') {
@@ -4144,15 +3999,11 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
 
         (__tenantSearchReports || []).forEach((rep) => {
           const reportCode = '#GR-' + String(rep.id).padStart(4, '0');
-          if (
-            rep.subject.toLowerCase().includes(q) ||
-            rep.category.toLowerCase().includes(q) ||
-            rep.status.toLowerCase().includes(q) ||
-            reportCode.toLowerCase().includes(q)
-          ) {
+          const hay = `${reportCode} GR-${rep.id} ${rep.id} ${rep.subject} ${rep.category} ${rep.details} ${rep.status}`.toLowerCase();
+          if (matchesTokens(hay)) {
             results.push({
               title: `${reportCode} · ${rep.subject}`,
-              sub: `${rep.category || 'General Inquiry'} • ${rep.status}`,
+              sub: `${rep.category || 'General Report'} • ${rep.status} • ${rep.created_at ? rep.created_at.split(' ')[0] : ''}`,
               tag: 'Report',
               onSelect: () => {
                 if (typeof openTenantReportModal === 'function') {
@@ -4167,27 +4018,33 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
 
         __tenantSearchPayments.forEach((pay) => {
           const cycleLabel = pay.billing_cycle ? pay.billing_cycle : 'Pending Setup';
+          const pType = pay.payment_type || 'Rent';
           const statusLabel = String(pay.status || '').toUpperCase();
-          if (cycleLabel.toLowerCase().includes(q) || statusLabel.toLowerCase().includes(q)) {
+          const ref = pay.reference_number || '';
+          const amt = Number(pay.amount_paid || pay.amount_due || 0).toFixed(2);
+          const hay = `${pType} ${cycleLabel} ${ref} ${statusLabel} ${amt} payment receipt`.toLowerCase();
+          if (matchesTokens(hay)) {
             results.push({
-              title: `Rent · ${cycleLabel}`,
-              sub: pay.status === 'pending_setup' ? 'Rent setup pending' : `₱${Number(pay.amount_paid || 0).toFixed(2)} • ${statusLabel}`,
+              title: `${pType} · ${cycleLabel}`,
+              sub: pay.status === 'pending_setup' ? 'Rent setup pending' : `₱${amt} • ${statusLabel}${ref ? ' • Ref: ' + ref : ''}`,
               tag: 'Payment',
               onSelect: () => switchTenantSection('tenantPayments', document.getElementById('navTenantPayments')),
             });
           }
         });
 
+        activeTenantSearchResults = results;
         dropdown.innerHTML = '';
         if (results.length === 0) {
           const emptyEl = document.createElement('div');
-          emptyEl.style.padding = '12px 14px';
+          emptyEl.style.padding = '14px 16px';
           emptyEl.style.fontSize = '12.5px';
-          emptyEl.style.color = 'var(--text-muted)';
-          emptyEl.textContent = 'No matching tickets, payments, or sections found.';
+          emptyEl.style.color = '#5C4324';
+          emptyEl.style.textAlign = 'center';
+          emptyEl.innerHTML = `No matching tickets, reports, or payments found for "<strong>${escapeTenantSearchHtml(rawQuery)}</strong>".`;
           dropdown.appendChild(emptyEl);
         } else {
-          results.slice(0, 8).forEach((item) => {
+          results.slice(0, 10).forEach((item) => {
             const btn = document.createElement('button');
             btn.type = 'button';
             btn.className = 'global-search-item';
@@ -4212,6 +4069,17 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
       input.addEventListener('focus', () => {
         if (input.value.trim() !== '') renderResults(input.value);
       });
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+          clearGlobalTenantSearch();
+          input.blur();
+        } else if (e.key === 'Enter' && activeTenantSearchResults.length > 0) {
+          e.preventDefault();
+          activeTenantSearchResults[0].onSelect();
+          clearGlobalTenantSearch();
+          input.blur();
+        }
+      });
     }
 
     function setupSidebarAndSettingsListeners() {
@@ -4221,6 +4089,10 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
         }
 
         initTenantGlobalSearch();
+
+        if (window.lucide && typeof window.lucide.createIcons === 'function') {
+          window.lucide.createIcons();
+        }
 
         // Global outside click handler to dismiss settings dropdown & search results
         document.addEventListener('click', (e) => {

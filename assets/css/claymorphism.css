@@ -3482,3 +3482,883 @@ svg.lucide {
   width: 18px;
   height: 18px;
 }
+
+/* ==========================================================================
+   TARARENT SETTINGS / PROFILE INTERFACE (Screenshot Reference Match)
+   ========================================================================== */
+
+/* Main Header */
+.tararent-settings-title {
+  font-size: clamp(1.5rem, 3vw, 2rem) !important;
+  font-weight: 900 !important;
+  color: #4A3E31 !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.04em !important;
+  margin: 0 0 24px 0 !important;
+}
+
+/* Settings Two-Column Shell */
+.tararent-settings-shell {
+  display: grid !important;
+  grid-template-columns: 280px 1fr !important;
+  gap: 32px !important;
+  align-items: start !important;
+  width: 100% !important;
+  max-width: 1040px !important;
+}
+
+@media (max-width: 860px) {
+  .tararent-settings-shell {
+    grid-template-columns: 1fr !important;
+    gap: 20px !important;
+  }
+}
+
+/* Left Nav Container */
+.tararent-settings-nav {
+  background: #FAF3E7 !important;
+  border-radius: 20px !important;
+  padding: 20px 16px !important;
+  box-shadow: 0 4px 16px rgba(66, 43, 11, 0.06) !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 12px !important;
+  box-sizing: border-box !important;
+}
+
+/* Nav Item Button */
+.tararent-settings-nav-btn {
+  display: flex !important;
+  align-items: center !important;
+  gap: 12px !important;
+  padding: 14px 18px !important;
+  border-radius: 14px !important;
+  font-size: 13px !important;
+  font-weight: 800 !important;
+  color: #2B2116 !important;
+  background: transparent !important;
+  border: none !important;
+  cursor: pointer !important;
+  text-align: left !important;
+  width: 100% !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.04em !important;
+  transition: all 0.2s ease !important;
+  box-sizing: border-box !important;
+}
+
+.tararent-settings-nav-btn:hover:not(.active) {
+  background: rgba(217, 195, 163, 0.4) !important;
+}
+
+.tararent-settings-nav-btn.active {
+  background: #D9C3A3 !important;
+  color: #2B2116 !important;
+  box-shadow: inset 0 2px 4px rgba(255, 255, 255, 0.5), 0 3px 8px rgba(66, 43, 11, 0.12) !important;
+}
+
+.tararent-settings-nav-btn .tab-icon {
+  font-size: 16px !important;
+  line-height: 1 !important;
+  color: #2B2116 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 20px !important;
+  flex-shrink: 0 !important;
+}
+
+.tararent-settings-nav-btn .tab-icon svg {
+  fill: currentColor !important;
+  stroke: currentColor !important;
+  width: 16px !important;
+  height: 16px !important;
+}
+
+/* Right Content Main Card */
+.tararent-settings-card {
+  background: #DECBB3 !important;
+  border-radius: 16px !important;
+  padding: 38px 44px !important;
+  box-shadow: 0 6px 20px rgba(66, 43, 11, 0.08) !important;
+  min-height: 440px !important;
+  box-sizing: border-box !important;
+  color: #1E160E !important;
+  display: flex !important;
+  flex-direction: column !important;
+  justify-content: space-between !important;
+  position: relative !important;
+}
+
+.tararent-settings-card .profile-tab-pane {
+  display: none !important;
+}
+
+.tararent-settings-card .profile-tab-pane.active-pane {
+  display: block !important;
+  animation: paneFade 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.tararent-settings-card #paneAccountInfo.profile-tab-pane.active-pane {
+  display: flex !important;
+  flex-direction: column !important;
+  justify-content: space-between !important;
+  flex: 1 !important;
+}
+
+@media (max-width: 640px) {
+  .tararent-settings-card {
+    padding: 24px 20px !important;
+  }
+}
+
+/* Header Avatar + Name Block */
+.tararent-settings-header {
+  display: flex !important;
+  align-items: center !important;
+  gap: 24px !important;
+  margin-bottom: 32px !important;
+}
+
+.tararent-settings-avatar-wrap {
+  width: 96px !important;
+  height: 96px !important;
+  border-radius: 50% !important;
+  background: #DDE2E8 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  justify-content: center !important;
+  overflow: hidden !important;
+  position: relative !important;
+  cursor: pointer !important;
+  flex-shrink: 0 !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08) !important;
+  text-align: center !important;
+}
+
+.tararent-settings-avatar-wrap img {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: cover !important;
+  border-radius: 50% !important;
+}
+
+.tararent-settings-change-link {
+  font-size: 11.5px !important;
+  font-weight: 700 !important;
+  text-decoration: underline !important;
+  color: #1E160E !important;
+  line-height: 1.2 !important;
+  text-align: center !important;
+  cursor: pointer !important;
+}
+
+.tararent-settings-avatar-wrap:hover .tararent-settings-change-link {
+  color: #000000 !important;
+}
+
+.tararent-settings-title-group {
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+.tararent-settings-user-name {
+  font-size: 26px !important;
+  font-weight: 900 !important;
+  color: #1E160E !important;
+  line-height: 1.2 !important;
+  letter-spacing: -0.01em !important;
+  margin: 0 !important;
+}
+
+.tararent-settings-user-handle {
+  font-size: 17px !important;
+  font-weight: 500 !important;
+  color: #4A3E31 !important;
+  line-height: 1.3 !important;
+  margin-top: 2px !important;
+}
+
+/* Two-Column Info Grid */
+.tararent-settings-info-grid {
+  display: grid !important;
+  grid-template-columns: 1fr 1fr !important;
+  gap: 22px 36px !important;
+  margin-bottom: 36px !important;
+}
+
+@media (max-width: 600px) {
+  .tararent-settings-info-grid {
+    grid-template-columns: 1fr !important;
+    gap: 16px !important;
+  }
+}
+
+.tararent-settings-info-item {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: baseline !important;
+  gap: 6px !important;
+  font-size: 14.5px !important;
+  line-height: 1.4 !important;
+}
+
+.tararent-settings-info-label {
+  font-weight: 800 !important;
+  color: #1E160E !important;
+  white-space: nowrap !important;
+}
+
+.tararent-settings-info-val {
+  font-weight: 600 !important;
+  color: #3E3224 !important;
+  word-break: break-word !important;
+}
+
+/* Valid Identification Bottom Center */
+.tararent-settings-id-box {
+  text-align: center !important;
+  margin-top: 28px !important;
+}
+
+.tararent-settings-id-label {
+  font-size: 15px !important;
+  font-weight: 800 !important;
+  color: #1E160E !important;
+  margin-bottom: 4px !important;
+  display: block !important;
+}
+
+.tararent-settings-id-link {
+  font-size: 13.5px !important;
+  font-weight: 700 !important;
+  color: #1E160E !important;
+  text-decoration: underline !important;
+  cursor: pointer !important;
+  background: none !important;
+  border: none !important;
+  padding: 0 !important;
+  display: inline-block !important;
+}
+
+.tararent-settings-id-link:hover {
+  color: #000000 !important;
+}
+
+/* Change Password Form */
+.tararent-settings-pwd-header {
+  margin-bottom: 24px !important;
+}
+
+.tararent-settings-pwd-title {
+  font-size: 26px !important;
+  font-weight: 900 !important;
+  color: #1E160E !important;
+  margin: 0 0 6px 0 !important;
+  line-height: 1.2 !important;
+}
+
+.tararent-settings-pwd-sub {
+  font-size: 13.5px !important;
+  font-weight: 600 !important;
+  color: #4A3E31 !important;
+  margin: 0 !important;
+}
+
+.tararent-settings-form-group {
+  margin-bottom: 18px !important;
+  max-width: 540px !important;
+}
+
+.tararent-settings-form-label {
+  display: block !important;
+  font-size: 14.5px !important;
+  font-weight: 800 !important;
+  color: #1E160E !important;
+  margin-bottom: 6px !important;
+}
+
+.tararent-settings-form-label .req {
+  color: #991B1B !important;
+  font-weight: 900 !important;
+}
+
+.tararent-settings-input {
+  width: 100% !important;
+  background: #EFE6D7 !important;
+  border: 1px solid rgba(138, 115, 87, 0.35) !important;
+  border-radius: 12px !important;
+  padding: 12px 16px !important;
+  font-size: 14px !important;
+  font-weight: 600 !important;
+  color: #1E160E !important;
+  box-shadow: inset 0 2px 4px rgba(66, 43, 11, 0.05) !important;
+  outline: none !important;
+  transition: all 0.2s ease !important;
+  box-sizing: border-box !important;
+}
+
+.tararent-settings-input:focus {
+  background: #FFFDF9 !important;
+  border-color: #8C6D43 !important;
+  box-shadow: 0 0 0 3px rgba(140, 109, 67, 0.2) !important;
+}
+
+.tararent-settings-save-btn {
+  background: #CDB393 !important;
+  color: #1E160E !important;
+  border: none !important;
+  border-radius: 9999px !important;
+  padding: 9px 28px !important;
+  font-size: 13.5px !important;
+  font-weight: 800 !important;
+  cursor: pointer !important;
+  box-shadow: 0 2px 6px rgba(66, 43, 11, 0.15) !important;
+  transition: all 0.2s ease !important;
+  display: inline-block !important;
+  text-align: center !important;
+}
+
+.tararent-settings-save-btn:hover:not(:disabled) {
+  background: #BA9D7B !important;
+  transform: translateY(-1px) !important;
+}
+
+.tararent-settings-save-btn:disabled {
+  opacity: 0.7 !important;
+  cursor: not-allowed !important;
+}
+
+/* ==========================================================================
+   TARARENT TENANT INFORMATION DETAILS MODAL REDESIGN
+   ========================================================================== */
+
+.td-modal-dialog {
+  position: relative !important;
+  width: 95% !important;
+  max-width: 880px !important;
+  background: linear-gradient(180deg, #FDFBF7 0%, #FAF4EC 100%) !important;
+  border: 1.5px solid rgba(140, 109, 67, 0.28) !important;
+  border-radius: 24px !important;
+  padding: 32px 36px !important;
+  box-shadow: 0 25px 60px -10px rgba(43, 27, 14, 0.35), 0 10px 25px rgba(43, 27, 14, 0.12) !important;
+  max-height: 90vh !important;
+  overflow-y: auto !important;
+  box-sizing: border-box !important;
+  color: #1E160E !important;
+}
+
+.td-modal-dialog::-webkit-scrollbar {
+  width: 8px !important;
+}
+.td-modal-dialog::-webkit-scrollbar-track {
+  background: #FAF4EC !important;
+  border-radius: 9999px !important;
+}
+.td-modal-dialog::-webkit-scrollbar-thumb {
+  background: #D9C3A3 !important;
+  border-radius: 9999px !important;
+}
+.td-modal-dialog::-webkit-scrollbar-thumb:hover {
+  background: #BA9D7B !important;
+}
+
+@media (max-width: 640px) {
+  .td-modal-dialog {
+    padding: 22px 18px !important;
+    border-radius: 20px !important;
+  }
+}
+
+.td-modal-close-btn {
+  position: absolute !important;
+  top: 20px !important;
+  right: 20px !important;
+  width: 36px !important;
+  height: 36px !important;
+  border-radius: 50% !important;
+  background: #EFE5D5 !important;
+  border: 1px solid rgba(140, 109, 67, 0.25) !important;
+  color: #2B1B0E !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  cursor: pointer !important;
+  transition: all 0.2s ease !important;
+  z-index: 50 !important;
+}
+
+.td-modal-close-btn:hover {
+  background: #DFCDB9 !important;
+  transform: scale(1.06) !important;
+}
+
+/* Modal Header */
+.td-modal-header {
+  display: flex !important;
+  justify-content: space-between !important;
+  align-items: flex-start !important;
+  margin-bottom: 22px !important;
+  padding-right: 42px !important;
+  gap: 16px !important;
+}
+
+.td-modal-unit-title {
+  font-size: clamp(26px, 3.5vw, 34px) !important;
+  font-weight: 900 !important;
+  color: #1E160E !important;
+  line-height: 1.1 !important;
+  letter-spacing: -0.02em !important;
+  margin: 0 !important;
+  text-transform: uppercase !important;
+}
+
+.td-modal-unit-subtitle {
+  font-size: 15px !important;
+  font-weight: 700 !important;
+  color: #6E5330 !important;
+  margin: 6px 0 0 0 !important;
+}
+
+/* Pill Badges */
+.td-badge-pill {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  font-weight: 800 !important;
+  font-size: 12.5px !important;
+  padding: 5px 16px !important;
+  border-radius: 9999px !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.05em !important;
+  line-height: 1.2 !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06) !important;
+  white-space: nowrap !important;
+}
+
+.td-badge-pill.td-badge-success {
+  background: #DCFCE7 !important;
+  color: #14532D !important;
+  border: 1px solid #86EFAC !important;
+}
+
+.td-badge-pill.td-badge-danger {
+  background: #FEE2E2 !important;
+  color: #7F1D1D !important;
+  border: 1px solid #FCA5A5 !important;
+}
+
+.td-badge-pill.td-badge-warning {
+  background: #FEF3C7 !important;
+  color: #78350F !important;
+  border: 1px solid #FDE68A !important;
+}
+
+/* Section Headings */
+.td-section-label {
+  font-size: 12px !important;
+  font-weight: 800 !important;
+  color: #6E5330 !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.08em !important;
+  margin-bottom: 8px !important;
+}
+
+/* Cards */
+.td-clay-card {
+  background: #DECBB3 !important;
+  border: 1px solid rgba(138, 115, 87, 0.28) !important;
+  border-radius: 18px !important;
+  box-shadow: 0 6px 20px rgba(66, 43, 11, 0.08) !important;
+  color: #1E160E !important;
+  box-sizing: border-box !important;
+  position: relative !important;
+}
+
+/* Card 1: Personal Details Grid */
+.td-personal-top {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  margin-bottom: 18px !important;
+  gap: 16px !important;
+  flex-wrap: wrap !important;
+}
+
+.td-personal-identity {
+  display: flex !important;
+  align-items: center !important;
+  gap: 16px !important;
+}
+
+.td-avatar-box {
+  width: 64px !important;
+  height: 64px !important;
+  border-radius: 50% !important;
+  background: #FAF4EC !important;
+  border: 2px solid rgba(255, 255, 255, 0.8) !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  flex-shrink: 0 !important;
+  overflow: hidden !important;
+  box-shadow: 0 4px 10px rgba(66, 43, 11, 0.12) !important;
+}
+
+.td-avatar-initial {
+  font-size: 24px !important;
+  font-weight: 900 !important;
+  color: #1E160E !important;
+  line-height: 1 !important;
+}
+
+.td-tenant-name {
+  font-size: 24px !important;
+  font-weight: 900 !important;
+  color: #1E160E !important;
+  margin: 0 !important;
+  line-height: 1.15 !important;
+  text-transform: uppercase !important;
+  letter-spacing: -0.01em !important;
+}
+
+.td-tenant-role {
+  display: inline-block !important;
+  font-size: 13px !important;
+  font-weight: 700 !important;
+  color: #5C462D !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.04em !important;
+  margin-top: 3px !important;
+}
+
+.td-move-in-badge {
+  background: rgba(250, 244, 236, 0.7) !important;
+  border: 1px solid rgba(140, 109, 67, 0.25) !important;
+  border-radius: 12px !important;
+  padding: 8px 14px !important;
+  text-align: right !important;
+  backdrop-filter: blur(4px) !important;
+}
+
+.td-move-in-date {
+  font-size: 16.5px !important;
+  font-weight: 800 !important;
+  color: #1E160E !important;
+  line-height: 1.15 !important;
+}
+
+.td-move-in-label {
+  font-size: 11px !important;
+  color: #5C462D !important;
+  font-weight: 600 !important;
+  text-transform: lowercase !important;
+  margin-top: 2px !important;
+}
+
+.td-personal-columns {
+  display: grid !important;
+  grid-template-columns: 1.15fr auto 1.1fr !important;
+  align-items: stretch !important;
+  gap: 18px !important;
+}
+
+@media (max-width: 768px) {
+  .td-personal-columns {
+    grid-template-columns: 1fr !important;
+    gap: 16px !important;
+  }
+}
+
+.td-vertical-divider {
+  width: 1px !important;
+  background: rgba(92, 70, 45, 0.22) !important;
+  align-self: stretch !important;
+  margin: 0 4px !important;
+}
+
+@media (max-width: 768px) {
+  .td-vertical-divider {
+    width: 100% !important;
+    height: 1px !important;
+    margin: 4px 0 !important;
+  }
+}
+
+.td-info-list {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 8px !important;
+}
+
+.td-info-item {
+  display: flex !important;
+  align-items: baseline !important;
+  gap: 8px !important;
+  font-size: 13.5px !important;
+  line-height: 1.45 !important;
+}
+
+.td-info-label {
+  font-weight: 800 !important;
+  color: #4A3E31 !important;
+  white-space: nowrap !important;
+}
+
+.td-info-val {
+  font-weight: 600 !important;
+  color: #1E160E !important;
+  word-break: break-word !important;
+}
+
+.td-subcard-title {
+  font-size: 14.5px !important;
+  font-weight: 800 !important;
+  color: #1E160E !important;
+  margin: 0 0 10px 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+}
+
+/* Card 2 & 3 Grid */
+.td-bottom-grid {
+  display: grid !important;
+  grid-template-columns: 1fr 1fr !important;
+  gap: 24px !important;
+  margin-bottom: 24px !important;
+}
+
+@media (max-width: 768px) {
+  .td-bottom-grid {
+    grid-template-columns: 1fr !important;
+    gap: 20px !important;
+  }
+}
+
+/* Identification Section */
+.td-id-card-content {
+  display: flex !important;
+  flex-direction: column !important;
+  justify-content: space-between !important;
+  min-height: 175px !important;
+  padding: 22px 24px !important;
+}
+
+.td-id-status-row {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 12px !important;
+}
+
+.td-id-locked-box {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  justify-content: center !important;
+  text-align: center !important;
+  margin-top: 14px !important;
+  padding: 16px 18px !important;
+  background: rgba(250, 244, 236, 0.55) !important;
+  border-radius: 14px !important;
+  border: 1.5px dashed rgba(140, 109, 67, 0.4) !important;
+  color: #1E160E !important;
+}
+
+.td-verified-id-box {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 18px !important;
+  margin-top: 14px !important;
+  background: rgba(250, 244, 236, 0.5) !important;
+  border-radius: 14px !important;
+  padding: 14px 18px !important;
+  border: 1px solid rgba(140, 109, 67, 0.2) !important;
+}
+
+.td-id-type-title {
+  font-size: 17px !important;
+  font-weight: 800 !important;
+  color: #1E160E !important;
+  text-transform: uppercase !important;
+  line-height: 1.2 !important;
+}
+
+.td-btn-view-id {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  background: #FAF4EC !important;
+  border: 1px solid rgba(140, 109, 67, 0.35) !important;
+  border-radius: 9999px !important;
+  padding: 5px 15px !important;
+  font-size: 12.5px !important;
+  font-weight: 800 !important;
+  color: #1E160E !important;
+  cursor: pointer !important;
+  text-decoration: none !important;
+  transition: all 0.2s ease !important;
+  margin-top: 6px !important;
+}
+
+.td-btn-view-id:hover {
+  background: #F3E8D8 !important;
+  transform: translateY(-1px) !important;
+}
+
+/* Billing Section */
+.td-billing-content {
+  padding: 22px 24px !important;
+  min-height: 175px !important;
+  box-sizing: border-box !important;
+}
+
+.td-billing-status-group {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 10px !important;
+  margin-bottom: 14px !important;
+}
+
+.td-billing-status-row {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 14px !important;
+}
+
+.td-billing-divider {
+  border-bottom: 1px dashed rgba(92, 70, 45, 0.25) !important;
+  margin: 14px 0 !important;
+}
+
+.td-billing-metrics-grid {
+  display: grid !important;
+  grid-template-columns: 1fr 1fr !important;
+  gap: 14px 18px !important;
+}
+
+.td-metric-label {
+  font-size: 11px !important;
+  font-weight: 800 !important;
+  color: #4A3E31 !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.04em !important;
+  margin-bottom: 3px !important;
+}
+
+.td-metric-label.td-label-due {
+  color: #991B1B !important;
+}
+
+.td-metric-val {
+  font-size: 19px !important;
+  font-weight: 900 !important;
+  color: #1E160E !important;
+  line-height: 1.2 !important;
+}
+
+.td-metric-val-total {
+  font-size: 16px !important;
+  font-weight: 900 !important;
+  color: #1E160E !important;
+}
+
+.td-btn-view-receipt {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 6px !important;
+  background: #FAF4EC !important;
+  border: 1px solid rgba(140, 109, 67, 0.35) !important;
+  border-radius: 9999px !important;
+  padding: 7px 18px !important;
+  font-size: 11px !important;
+  font-weight: 900 !important;
+  letter-spacing: 0.05em !important;
+  text-transform: uppercase !important;
+  color: #1E160E !important;
+  cursor: pointer !important;
+  box-shadow: 0 2px 5px rgba(66, 43, 11, 0.08) !important;
+  transition: all 0.2s ease !important;
+}
+
+.td-btn-view-receipt:hover {
+  background: #F3E8D8 !important;
+  transform: translateY(-1px) !important;
+  box-shadow: 0 4px 8px rgba(66, 43, 11, 0.12) !important;
+}
+
+/* Modal Footer Actions */
+.td-modal-footer {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: flex-end !important;
+  gap: 12px !important;
+  padding-top: 18px !important;
+  border-top: 1px solid rgba(140, 109, 67, 0.18) !important;
+}
+
+.td-btn-close {
+  background: #EAE0D1 !important;
+  color: #2B1B0E !important;
+  border: none !important;
+  border-radius: 9999px !important;
+  padding: 10px 22px !important;
+  font-size: 13px !important;
+  font-weight: 700 !important;
+  cursor: pointer !important;
+  transition: all 0.2s ease !important;
+}
+
+.td-btn-close:hover {
+  background: #DFCDB9 !important;
+}
+
+.td-btn-moveout,
+#tdBtnDelete {
+  background: linear-gradient(180deg, #AA7B3E 0%, #6D4D22 55%, #473215 100%) !important;
+  color: #FFFDF8 !important;
+  border: 1px solid rgba(255, 240, 210, 0.32) !important;
+  border-radius: 9999px !important;
+  padding: 10px 22px !important;
+  font-size: 13px !important;
+  font-weight: 800 !important;
+  cursor: pointer !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 8px !important;
+  letter-spacing: 0.02em !important;
+  text-shadow: 0 1px 2px rgba(20, 12, 4, 0.5) !important;
+  box-shadow: 0 6px 16px rgba(34, 23, 9, 0.32), inset 0 1px 0 rgba(255, 240, 210, 0.28) !important;
+  transition: all 0.22s cubic-bezier(0.16, 1, 0.3, 1) !important;
+}
+
+.td-btn-moveout i,
+.td-btn-moveout svg,
+#tdBtnDelete i,
+#tdBtnDelete svg {
+  color: #FFFDF8 !important;
+  stroke: #FFFDF8 !important;
+}
+
+.td-btn-moveout:hover,
+#tdBtnDelete:hover {
+  background: linear-gradient(180deg, #B58444 0%, #785527 55%, #4F3818 100%) !important;
+  transform: translateY(-1.5px) !important;
+  filter: brightness(1.05) !important;
+  box-shadow: 0 8px 20px rgba(34, 23, 9, 0.38), inset 0 1px 0 rgba(255, 245, 225, 0.38) !important;
+}
+
+.td-btn-moveout:active,
+#tdBtnDelete:active {
+  background: linear-gradient(180deg, #996E37 0%, #61441E 55%, #3D2B12 100%) !important;
+  transform: translateY(0.5px) !important;
+  filter: brightness(0.98) !important;
+  box-shadow: 0 2px 6px rgba(34, 23, 9, 0.25), inset 0 1px 2px rgba(0, 0, 0, 0.25) !important;
+}
+

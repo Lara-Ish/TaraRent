@@ -1043,6 +1043,11 @@ body.admin-warm-theme .analytics-secondary-grid {
   margin-bottom: 0;
 }
 
+body.admin-warm-theme .analytics-secondary-grid:has(> :only-child),
+body.admin-warm-theme .analytics-secondary-grid.single-widget {
+  grid-template-columns: 1fr;
+}
+
 body.admin-warm-theme .analytics-secondary-grid > *,
 body.admin-warm-theme .dashboard-top-grid > *,
 body.admin-warm-theme .kpi-grid > * {

@@ -309,7 +309,8 @@ try {
   <!-- Icons, Charts & Shared Sidebar Controller -->
   <script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
   <script src="assets/js/lucide_init.js?v=20261112"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="assets/js/chart.umd.min.js"></script>
+  <script>window.Chart || document.write('<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"><\/script>')</script>
   <script src="assets/js/sidebar.js?v=20261112"></script>
 
   <!-- Tailwind CSS (with Preflight disabled to preserve claymorphic layout) -->
@@ -1260,6 +1261,14 @@ try {
                 <span class="overview-stat-val" id="overviewOpenTickets"><?= count($activeTickets) ?></span>
               </button>
 
+              <button type="button" class="overview-stat-row" onclick="switchSection('sectionReports', document.getElementById('navTenantReports'))">
+                <span class="overview-stat-left">
+                  <span class="overview-stat-icon"><i data-lucide="file-text"></i></span>
+                  <span class="overview-stat-label">Pending Reports</span>
+                </span>
+                <span class="overview-stat-val" id="overviewPendingReports"><?= count($pendingReports) ?></span>
+              </button>
+
               <button type="button" class="overview-stat-row" onclick="switchSection('sectionArchivedTenants')">
                 <span class="overview-stat-left">
                   <span class="overview-stat-icon"><i data-lucide="archive"></i></span>
@@ -1292,8 +1301,8 @@ try {
           </div>
         </div>
 
-        <!-- Secondary Analytics Grid: Category Spend & Unit Maintenance Breakdown -->
-        <div class="analytics-secondary-grid">
+        <!-- Secondary Analytics Grid: Category Spend Breakdown -->
+        <div class="analytics-secondary-grid single-widget">
           <div class="clay-card chart-widget">
             <div class="widget-header">
               <div>
@@ -1306,21 +1315,13 @@ try {
             </div>
             <div class="chart-container">
               <canvas id="chartCategoryBreakdown"></canvas>
-            </div>
-          </div>
-
-          <div class="clay-card chart-widget">
-            <div class="widget-header">
-              <div>
-                <h2 class="widget-title">Maintenance Costs Per Unit</h2>
-                <p style="font-size: 13px; color: var(--text-muted); margin-top: 2px;">
-                  Historical repair expense breakdown across apartment units
+              <div id="categoryChartEmptyState" class="chart-empty-overlay">
+                <i data-lucide="pie-chart" style="width: 34px; height: 34px; color: var(--tr-golden-brown); margin-bottom: 8px;"></i>
+                <div style="font-size: 14px; font-weight: 800; color: var(--tr-dark-brown);">No Maintenance Expenses Yet</div>
+                <p style="font-size: 12px; color: var(--tr-text-muted); margin-top: 4px; max-width: 260px;">
+                  Expenditure per trade discipline will appear when maintenance tickets with costs are closed.
                 </p>
               </div>
-              <span class="widget-badge">Unit Comparison</span>
-            </div>
-            <div class="chart-container">
-              <canvas id="chartUnitMaintenance"></canvas>
             </div>
           </div>
         </div>
@@ -2092,156 +2093,146 @@ try {
         </div>
       </section>
 
-      <!-- SECTION 5: LANDLORD PROFILE (VIEW WITH INTERNAL SUB-SIDEBAR) -->
+      <!-- SECTION 5: LANDLORD PROFILE (SETTINGS INTERFACE) -->
       <section id="sectionProfile" class="app-view-section">
-        <div class="dashboard-header-bar">
-          <div class="dashboard-title-group">
-            <h1>Landlord Profile &amp; Settings</h1>
-            <p>Manage your account information and login security credentials.</p>
-          </div>
-        </div>
+        <!-- Main Header -->
+        <h1 class="tararent-settings-title">ADMIN PROFILE SETTINGS</h1>
 
-        <div class="profile-view-container">
-          <!-- Internal Sub-Sidebar with exactly two options -->
-          <div class="profile-sub-sidebar">
-            <button type="button" class="profile-subnav-item active" id="adminSubnavAccount" onclick="switchProfileSubTab('accountInfo', this)">
-              <span class="subnav-icon">👤</span>
-              <span>Account Information</span>
+        <div class="tararent-settings-shell">
+          <!-- Left Nav Container -->
+          <div class="tararent-settings-nav">
+            <button type="button" class="tararent-settings-nav-btn profile-subnav-item active" id="adminSubnavAccount" onclick="switchProfileSubTab('accountInfo', this)">
+              <span class="tab-icon"><i data-lucide="user" class="w-4 h-4" aria-hidden="true"></i></span>
+              <span>ACCOUNT INFORMATION</span>
             </button>
-            <button type="button" class="profile-subnav-item" id="adminSubnavPassword" onclick="switchProfileSubTab('changePassword', this)">
-              <span class="subnav-icon">🔒</span>
-              <span>Change Password</span>
+            <button type="button" class="tararent-settings-nav-btn profile-subnav-item" id="adminSubnavPassword" onclick="switchProfileSubTab('changePassword', this)">
+              <span class="tab-icon"><i data-lucide="lock" class="w-4 h-4" aria-hidden="true"></i></span>
+              <span>CHANGE PASSWORD</span>
             </button>
           </div>
 
-          <!-- Sub-Tab Content Area -->
-          <div class="profile-content-area">
-            
+          <!-- Right Content Main Card -->
+          <div class="tararent-settings-card">
+
             <!-- Sub-Tab 1: Account Information -->
             <div id="paneAccountInfo" class="profile-tab-pane active-pane">
-              <div class="clay-card">
-                <div class="clay-card-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 22px; flex-wrap: wrap; gap: 12px;">
-                  <div>
-                    <h2 class="clay-card-title">Account Information</h2>
-                    <p class="clay-card-subtitle">Master landlord account and property administration details</p>
+              <div>
+                <!-- Top Row: Avatar + Name / Username -->
+                <div class="tararent-settings-header">
+                  <!-- Hidden profile picture form -->
+                  <form id="profilePictureForm" method="POST" action="api/profile_api.php" enctype="multipart/form-data" style="display: none;">
+                    <input type="hidden" name="action" value="upload_profile_picture">
+                    <input type="hidden" name="user_id" value="<?= (int)($user['id'] ?? 0) ?>">
+                    <input type="file" id="profile_picture" name="profile_picture" accept="image/*" onchange="previewProfilePicture(event)">
+                  </form>
+
+                  <!-- Circular Avatar with "change profile" -->
+                  <div class="tararent-settings-avatar-wrap" onclick="triggerProfilePictureInput()" title="Click to change profile picture">
+                    <?php if (!empty($userAvatarUrl)): ?>
+                      <img id="avatarPreviewImg" src="<?= htmlspecialchars($userAvatarUrl) ?>" alt="Profile Photo">
+                      <span class="tararent-settings-change-link" style="position: absolute; bottom: 4px; background: rgba(255,255,255,0.85); width: 100%; padding: 2px 0;">change<br>profile</span>
+                    <?php else: ?>
+                      <div id="avatarFallbackInitial" style="display: none;"><?= htmlspecialchars($userInitial) ?></div>
+                      <img id="avatarPreviewImg" src="" alt="Profile Photo" style="display: none;">
+                      <span class="tararent-settings-change-link">change<br>profile</span>
+                    <?php endif; ?>
                   </div>
-                  <div>
-                    <span class="clay-badge badge-verified" style="font-size: 13px; padding: 7px 16px;">
-                      <span>✓</span> Verified Landlord
-                    </span>
+
+                  <!-- Name and Handle -->
+                  <div class="tararent-settings-title-group">
+                    <h2 class="tararent-settings-user-name" id="profileFullName"><?= htmlspecialchars($user['name'] ?? 'Admin') ?></h2>
+                    <div class="tararent-settings-user-handle">@<?= htmlspecialchars($user['username'] ?? 'admin') ?></div>
                   </div>
                 </div>
 
-                <!-- Profile Picture Customization Card -->
-                <form id="profilePictureForm" method="POST" action="api/profile_api.php" enctype="multipart/form-data" class="profile-picture-section" style="display: flex; align-items: center; gap: 24px; padding: 20px; background: rgba(255, 255, 255, 0.65); border: 1.5px solid rgba(226, 232, 240, 0.8); border-radius: 16px; margin-bottom: 24px; flex-wrap: wrap;">
-                  <input type="hidden" name="action" value="upload_profile_picture">
-                  <input type="hidden" name="user_id" value="<?= (int)($user['id'] ?? 0) ?>">
+                <!-- Avatar Pending Save Actions -->
+                <div id="avatarPendingActions" style="display: none; align-items: center; gap: 8px; margin-bottom: 20px;">
+                  <button type="button" class="tararent-settings-save-btn" id="btnSaveAvatar" onclick="submitProfilePictureUpload()" style="padding: 6px 18px; font-size: 12.5px;">Save Photo</button>
+                  <button type="button" class="tararent-settings-save-btn" id="btnCancelAvatar" onclick="cancelProfilePictureSelection()" style="padding: 6px 14px; font-size: 12.5px; background: #EFE7DA;">Cancel</button>
+                </div>
 
-                  <label for="profile_picture" class="avatar-preview-wrapper cursor-pointer" style="position: relative; width: 96px; height: 96px; flex-shrink: 0; cursor: pointer; display: block;" title="Click photo to choose new picture">
-                    <img id="avatarPreviewImg" src="<?= !empty($userAvatarUrl) ? $userAvatarUrl : '' ?>" alt="Profile Preview" style="width: 96px; height: 96px; border-radius: 50%; object-fit: cover; border: 3px solid #8b5cf6; box-shadow: 0 4px 14px rgba(139,92,246,0.25); display: <?= !empty($userAvatarUrl) ? 'block' : 'none' ?>;">
-                    <div id="avatarFallbackInitial" style="width: 96px; height: 96px; border-radius: 50%; background: linear-gradient(135deg, #7c3aed 0%, #a855f7 100%); color: #ffffff; display: <?= !empty($userAvatarUrl) ? 'none' : 'flex' ?>; align-items: center; justify-content: center; font-size: 38px; font-weight: 800; border: 3px solid #8b5cf6; box-shadow: 0 4px 14px rgba(139,92,246,0.25);">
-                      <?= htmlspecialchars($userInitial) ?>
-                    </div>
-                    <span style="position: absolute; bottom: 2px; right: 2px; width: 28px; height: 28px; background: #7c3aed; color: #fff; border-radius: 50%; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 6px rgba(0,0,0,0.25); border: 2px solid #fff; font-size: 13px;">
-                      📷
-                    </span>
-                  </label>
-
-                  <div class="avatar-info-controls" style="flex: 1; min-width: 220px;">
-                    <h3 style="font-size: 16px; font-weight: 800; color: #1e1b4b; margin: 0 0 4px 0;">Profile Picture</h3>
-                    <p style="font-size: 13px; color: #64748b; margin: 0 0 14px 0;">
-                      Click the avatar or choose a photo (JPEG, PNG, WEBP, maximum 5MB). This avatar will be visible on your master landlord header and communications.
-                    </p>
-
-                    <input type="file" id="profile_picture" name="profile_picture" accept="image/*" class="hidden" style="display: none;" onchange="previewProfilePicture(event)">
-
-                    <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-                      <button type="button" class="clay-btn clay-btn-primary" id="btnChooseAvatar" style="padding: 7px 16px; font-size: 13px;" onclick="triggerProfilePictureInput()">
-                        📷 Choose Photo
-                      </button>
-
-                      <div id="avatarPendingActions" style="display: none; align-items: center; gap: 8px;">
-                        <button type="button" class="clay-btn btn-success" id="btnSaveAvatar" style="padding: 7px 16px; font-size: 13px; background: #10b981; color: #fff; border: none; border-radius: 10px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;" onclick="submitProfilePictureUpload()">
-                          <i data-lucide="check" style="width: 15px; height: 15px;"></i> Save Changes
-                        </button>
-                        <button type="button" class="clay-btn clay-btn-secondary" id="btnCancelAvatar" style="padding: 7px 14px; font-size: 13px; display: inline-flex; align-items: center; gap: 6px;" onclick="cancelProfilePictureSelection()">
-                          Cancel
-                        </button>
-                      </div>
-
-                      <button type="button" class="clay-btn" id="btnRemoveAvatar" style="padding: 7px 14px; font-size: 13px; color: #ef4444; background: rgba(239, 68, 68, 0.08); border: 1px solid rgba(239, 68, 68, 0.2); border-radius: 10px; cursor: pointer; display: <?= !empty($userAvatarUrl) ? 'inline-flex' : 'none' ?>; align-items: center; gap: 6px;" onclick="confirmRemoveProfilePicture()">
-                        <i data-lucide="trash-2" style="width: 15px; height: 15px;"></i> Remove Photo
-                      </button>
-                    </div>
+                <!-- Two-Column Information Grid -->
+                <div class="tararent-settings-info-grid">
+                  <div class="tararent-settings-info-item">
+                    <span class="tararent-settings-info-label">Full Name:</span>
+                    <span class="tararent-settings-info-val"><?= htmlspecialchars($user['name'] ?? 'Admin') ?></span>
                   </div>
-                </form>
-
-                <div class="detail-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 18px; margin-bottom: 24px;">
-                  <div class="detail-item">
-                    <span class="detail-label">Full Name: </span>
-                    <span class="detail-value" id="profileFullName" style="font-size: 15px; font-weight: 700;"><?= htmlspecialchars($user['name'] ?? 'Leah Dimaculangan') ?></span>
+                  <div class="tararent-settings-info-item">
+                    <span class="tararent-settings-info-label">username:</span>
+                    <span class="tararent-settings-info-val"><?= htmlspecialchars($user['username'] ?? 'admin') ?></span>
                   </div>
-                  <div class="detail-item">
-                    <span class="detail-label">Username: </span>
-                    <span class="detail-value" style="font-size: 15px; font-weight: 700;"><?= htmlspecialchars($user['username'] ?? 'admin') ?></span>
+                  <div class="tararent-settings-info-item">
+                    <span class="tararent-settings-info-label">Residential Address:</span>
+                    <span class="tararent-settings-info-val"><?= htmlspecialchars($user['address'] ?? 'TaraRent Residences, Batangas') ?></span>
                   </div>
-                  <div class="detail-item">
-                    <span class="detail-label">Email Address: </span>
-                    <span class="detail-value" style="font-size: 15px; font-weight: 700;"><?= htmlspecialchars($user['email'] ?? 'admin@tararent.ph') ?></span>
+                  <div class="tararent-settings-info-item">
+                    <span class="tararent-settings-info-label">phone no.:</span>
+                    <span class="tararent-settings-info-val"><?= htmlspecialchars($user['phone'] ?? '+63 912 345 6789') ?></span>
                   </div>
-                  <div class="detail-item">
-                    <span class="detail-label">Administrative Role: </span>
-                    <span class="detail-value" style="font-size: 15px; font-weight: 700; text-transform: capitalize;"><?= htmlspecialchars($user['role'] ?? 'landlord') ?> (Property Manager)</span>
-                  </div>
-                  <div class="detail-item">
-                    <span class="detail-label">Managed Property: </span>
-                    <span class="detail-value" style="font-size: 15px; font-weight: 700;">1 Apartment • 3 Units</span>
-                  </div>
-                  <div class="detail-item">
-                    <span class="detail-label">Total Active Residents: </span>
-                    <span class="detail-value" style="font-size: 15px; font-weight: 700;"><?= count($allTenants) ?> Residents</span>
-                  </div>
-                  <div class="detail-item">
-                    <span class="detail-label">Verification Status: </span>
-                    <span class="detail-value" style="font-size: 15px; font-weight: 700;">Verified Master Account</span>
+                  <div class="tararent-settings-info-item">
+                    <span class="tararent-settings-info-label">email address:</span>
+                    <span class="tararent-settings-info-val"><?= htmlspecialchars($user['email'] ?? 'admin@tararent.ph') ?></span>
                   </div>
                 </div>
+              </div>
+
+              <!-- Bottom Center: Valid Identification -->
+              <div class="tararent-settings-id-box">
+                <span class="tararent-settings-id-label">Valid Identification</span>
+                <button type="button" class="tararent-settings-id-link" onclick="openAdminIdModal()">view photo</button>
               </div>
             </div>
 
             <!-- Sub-Tab 2: Change Password -->
             <div id="paneChangePassword" class="profile-tab-pane">
-              <div class="clay-card" style="max-width: 600px;">
-                <div class="clay-card-header" style="margin-bottom: 22px;">
-                  <h2 class="clay-card-title">Change Password</h2>
-                  <p class="clay-card-subtitle">Keep your master landlord account secure with regular updates</p>
+              <div class="tararent-settings-pwd-header">
+                <h2 class="tararent-settings-pwd-title">Change Password</h2>
+                <p class="tararent-settings-pwd-sub">Protect your account by using a strong, unique password.</p>
+              </div>
+
+              <form id="changePasswordForm">
+                <div class="tararent-settings-form-group">
+                  <label class="tararent-settings-form-label" for="profCurrentPass">Current Password<span class="req">*</span></label>
+                  <input type="password" id="profCurrentPass" class="tararent-settings-input" placeholder="" required autocomplete="current-password">
                 </div>
 
-                <form id="changePasswordForm">
-                  <div class="form-group">
-                    <label class="form-label" for="profCurrentPass">Current Password <span class="req">*</span></label>
-                    <input type="password" id="profCurrentPass" class="clay-input" placeholder="Enter existing password" required autocomplete="current-password">
-                  </div>
+                <div class="tararent-settings-form-group">
+                  <label class="tararent-settings-form-label" for="profNewPass">New Password<span class="req">*</span></label>
+                  <input type="password" id="profNewPass" class="tararent-settings-input" placeholder="" minlength="6" required autocomplete="new-password">
+                </div>
 
-                  <div class="form-group">
-                    <label class="form-label" for="profNewPass">New Password <span class="req">*</span></label>
-                    <input type="password" id="profNewPass" class="clay-input" placeholder="At least 6 characters" minlength="6" required autocomplete="new-password">
-                  </div>
+                <div class="tararent-settings-form-group">
+                  <label class="tararent-settings-form-label" for="profConfirmPass">Confirm Password<span class="req">*</span></label>
+                  <input type="password" id="profConfirmPass" class="tararent-settings-input" placeholder="" minlength="6" required autocomplete="new-password">
+                </div>
 
-                  <div class="form-group">
-                    <label class="form-label" for="profConfirmPass">Confirm New Password <span class="req">*</span></label>
-                    <input type="password" id="profConfirmPass" class="clay-input" placeholder="Confirm new password" minlength="6" required autocomplete="new-password">
-                  </div>
-
-                  <div style="margin-top: 24px;">
-                    <button type="submit" class="clay-btn clay-btn-primary" id="btnSavePassword" style="min-width: 180px;">
-                      Update Password
-                    </button>
-                  </div>
-                </form>
-              </div>
+                <div style="text-align: right; max-width: 540px; margin-top: 24px;">
+                  <button type="submit" class="tararent-settings-save-btn" id="btnSavePassword">
+                    save password
+                  </button>
+                </div>
+              </form>
             </div>
 
+          </div>
+        </div>
+
+        <!-- Admin ID Viewing Modal -->
+        <div id="modalAdminProfileId" class="clay-modal" style="display: none;" onclick="if(event.target === this) this.style.display='none'">
+          <div class="clay-modal-content" style="max-width: 480px; background: #FAF3E7; border-radius: 20px; padding: 24px; border: 1.5px solid #8C6D43; box-shadow: 0 10px 30px rgba(0,0,0,0.25);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+              <h3 style="font-weight: 900; color: #1E160E; margin: 0; font-size: 17px; text-transform: uppercase;">Administrator Identification</h3>
+              <button type="button" onclick="document.getElementById('modalAdminProfileId').style.display='none'" style="background: none; border: none; font-size: 20px; cursor: pointer; color: #1E160E; font-weight: bold; line-height: 1;">✕</button>
+            </div>
+            <div style="text-align: center; padding: 24px 16px; background: #DECBB3; border-radius: 14px;">
+              <?php if (!empty($user['id_photo_filename']) && file_exists(__DIR__ . '/uploads/id_verifications/' . $user['id_photo_filename'])): ?>
+                <img src="uploads/id_verifications/<?= htmlspecialchars($user['id_photo_filename']) ?>" alt="Admin ID Photo" style="max-width: 100%; max-height: 320px; border-radius: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
+              <?php else: ?>
+                <div style="font-size: 42px; margin-bottom: 10px;">🛡️</div>
+                <div style="font-size: 16px; font-weight: 800; color: #1E160E;">Verified Property Administrator</div>
+                <p style="font-size: 13px; color: #4A3E31; margin: 6px 0 0 0; font-weight: 600;">Official Property Manager credentials verified by TaraRent System.</p>
+              <?php endif; ?>
+            </div>
           </div>
         </div>
       </section>
@@ -2905,98 +2896,114 @@ try {
        MODAL: TARARENT REBUILT TENANT INFORMATION VIEW (MATCHING IMAGE_56DA2C)
        ===================================================================== -->
   <div class="modal-backdrop" id="tenantDetailsModal" onclick="if(event.target === this) closeModal('tenantDetailsModal')">
-    <div class="relative w-full max-w-4xl bg-white rounded-3xl p-6 sm:p-9 shadow-2xl overflow-y-auto max-h-[92vh]" onclick="event.stopPropagation()" style="max-width: 890px; width: 95%; background: #ffffff; border-radius: 26px; padding: 32px 36px; box-shadow: 0 25px 60px rgba(0,0,0,0.25); max-height: 92vh; overflow-y: auto;">
+    <div class="td-modal-dialog" onclick="event.stopPropagation()">
       
       <!-- Close "X" Button -->
       <button type="button" 
-              class="modal-close-btn absolute top-5 right-5 sm:top-6 sm:right-6 w-9 h-9 rounded-full bg-black/5 hover:bg-black/10 text-gray-700 flex items-center justify-center transition-all cursor-pointer border-0 z-50 focus:outline-none"
+              class="td-modal-close-btn"
               onclick="closeModal('tenantDetailsModal')" 
               title="Close" 
-              aria-label="Close"
-              style="position: absolute; top: 20px; right: 20px; width: 38px; height: 38px; border-radius: 9999px; background: rgba(0,0,0,0.08); color: #1a120b; border: 1px solid rgba(0,0,0,0.12); display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 100;">
-        <i data-lucide="x" class="w-5 h-5 text-gray-700" style="pointer-events: none;" aria-hidden="true"></i>
+              aria-label="Close">
+        <i data-lucide="x" class="w-5 h-5" style="pointer-events: none;" aria-hidden="true"></i>
       </button>
 
       <!-- 1. HEADER & OCCUPANCY STATUS LAYOUT -->
-      <div class="flex justify-between items-start mb-6 pr-10" style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 22px; padding-right: 40px;">
+      <div class="td-modal-header">
         <div>
-          <!-- Large, bold, sans-serif Unit Number -->
-          <h1 id="tdModalUnitNumber" class="text-4xl sm:text-5xl font-black text-black tracking-tight leading-none uppercase font-sans" style="font-size: 38px; font-weight: 900; color: #000000; line-height: 1; letter-spacing: -0.5px; margin: 0; text-transform: uppercase;">
+          <!-- Large, bold Unit Number -->
+          <h1 id="tdModalUnitNumber" class="td-modal-unit-title">
             UNIT 1
           </h1>
           <!-- Subunit details directly below it -->
-          <p id="tdModalUnitDetails" class="text-lg sm:text-xl font-normal text-black mt-1.5 font-serif sm:font-sans" style="font-size: 18px; color: #111827; margin: 6px 0 0 0;">
+          <p id="tdModalUnitDetails" class="td-modal-unit-subtitle">
             1 BR | 1 CR
           </p>
         </div>
-        <!-- Bright Green OCCUPIED Badge with solid black border & soft shadow -->
+        <!-- Occupancy Badge -->
         <div>
-          <span id="tdModalOccupancyBadge" 
-                class="inline-block bg-[#6ee7b7] text-black font-extrabold text-sm sm:text-base px-6 py-2 rounded-lg border-2 border-black shadow-[2px_3px_0px_rgba(0,0,0,1)] uppercase tracking-wider"
-                style="display: inline-block; background-color: #6ee7b7; color: #000000; font-weight: 800; font-size: 14px; padding: 8px 24px; border-radius: 8px; border: 2px solid #000000; box-shadow: 2px 3px 0px rgba(0,0,0,1); text-transform: uppercase; letter-spacing: 0.05em;">
+          <span id="tdModalOccupancyBadge" class="td-badge-pill td-badge-success">
             OCCUPIED
           </span>
         </div>
       </div>
 
       <!-- 2. TOP CARD: TENANT INFORMATION (FULL WIDTH) -->
-      <div class="mb-6" style="margin-bottom: 24px;">
+      <div style="margin-bottom: 24px;">
         <!-- Section Title above Card -->
-        <div class="text-xs sm:text-sm font-bold text-gray-500 uppercase tracking-widest mb-2 font-sans" style="font-size: 13px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px;">
+        <div class="td-section-label">
           TENANT INFORMATION
         </div>
 
-        <!-- Full-Width Brown Container -->
-        <div class="relative w-full bg-[#9A7B4F] text-black rounded-2xl p-5 sm:p-6 shadow-[0_10px_25px_rgba(0,0,0,0.18)]" style="position: relative; width: 100%; background-color: #9A7B4F; color: #000000; border-radius: 18px; padding: 22px 26px; box-shadow: 0 10px 25px rgba(0,0,0,0.18); box-sizing: border-box;">
-          <!-- Top Right (Move-in Date) -->
-          <div class="absolute top-4 right-5 sm:top-5 sm:right-6 text-right" style="position: absolute; top: 18px; right: 24px; text-align: right;">
-            <div id="tdModalMoveInDate" class="text-base sm:text-lg font-bold text-[#1a120b] leading-tight" style="font-size: 17px; font-weight: 800; color: #1a120b; line-height: 1.1;">
-              08/11/2026
+        <!-- Full-Width Warm Clay Container -->
+        <div class="td-clay-card" style="padding: 24px 26px;">
+          <!-- Top Row: Avatar, Identity & Move-in Date -->
+          <div class="td-personal-top">
+            <div class="td-personal-identity">
+              <!-- Circular Avatar -->
+              <div id="tdModalAvatarBox" class="td-avatar-box">
+                <span id="tdModalAvatarInitial" class="td-avatar-initial">T</span>
+              </div>
+              <div>
+                <h2 id="tdModalTenantName" class="td-tenant-name">
+                  JANE DOE
+                </h2>
+                <div class="td-tenant-role">
+                  TENANT
+                </div>
+              </div>
             </div>
-            <div class="text-[11px] sm:text-xs text-[#3b2a1a] font-medium lowercase" style="font-size: 11px; color: #3b2a1a; font-weight: 600;">
-              date of move in
+
+            <!-- Top Right Move-in Date Badge -->
+            <div class="td-move-in-badge">
+              <div id="tdModalMoveInDate" class="td-move-in-date">
+                08/11/2026
+              </div>
+              <div class="td-move-in-label">
+                date of move in
+              </div>
             </div>
           </div>
 
-          <div class="grid grid-cols-1 md:grid-cols-[1.25fr_auto_1.2fr] items-start gap-5 pr-20 sm:pr-24 md:pr-0" style="display: grid; grid-template-columns: 1.25fr auto 1.2fr; align-items: start; gap: 20px;">
-            <!-- Left Column: Profile & Contact -->
-            <div class="flex flex-col gap-3" style="display: flex; flex-direction: column; gap: 12px;">
-              <!-- Avatar & Name/Role -->
-              <div class="flex items-center gap-3.5" style="display: flex; align-items: center; gap: 14px;">
-                <!-- Square Avatar Placeholder -->
-                <div id="tdModalAvatarBox" class="w-14 h-14 sm:w-16 sm:h-16 bg-[#d1d5db] rounded-sm flex items-center justify-center overflow-hidden flex-shrink-0 border border-black/10" style="width: 60px; height: 60px; background-color: #d1d5db; border-radius: 4px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; overflow: hidden; border: 1px solid rgba(0,0,0,0.1);">
-                  <span id="tdModalAvatarInitial" class="text-xl sm:text-2xl font-bold text-gray-700 uppercase" style="font-size: 22px; font-weight: 800; color: #374151;">T</span>
-                </div>
-                <div>
-                  <h2 id="tdModalTenantName" class="text-2xl sm:text-3xl font-extrabold text-[#1a120b] uppercase tracking-wide leading-none font-serif sm:font-sans" style="font-size: 24px; font-weight: 800; color: #1a120b; margin: 0; line-height: 1.1; text-transform: uppercase;">
-                    JANE DOE
-                  </h2>
-                  <div class="text-base sm:text-lg italic font-normal text-[#2e1f10] lowercase mt-0.5 font-serif sm:font-sans" style="font-size: 16px; font-style: italic; color: #2e1f10; margin-top: 3px;">
-                    tenant
-                  </div>
-                </div>
+          <!-- Personal & Emergency Columns -->
+          <div class="td-personal-columns">
+            <!-- Left Column: Personal Contact Info -->
+            <div class="td-info-list">
+              <div class="td-info-item">
+                <span class="td-info-label">Birthday:</span>
+                <span id="tdModalBirthday" class="td-info-val">-</span>
               </div>
-
-              <!-- Contact Information List -->
-              <div class="space-y-1 text-xs sm:text-sm text-[#2e1f10] font-serif sm:font-sans mt-1" style="font-size: 13.5px; color: #2e1f10; line-height: 1.5; margin-top: 4px;">
-                <div><strong class="font-bold" style="font-weight: 700;">Birthday:</strong> <span id="tdModalBirthday" class="font-normal font-sans ml-1" style="margin-left: 4px;">-</span></div>
-                <div><strong class="font-bold" style="font-weight: 700;">Phone No.:</strong> <span id="tdModalPhone" class="font-normal font-sans ml-1" style="margin-left: 4px;">-</span></div>
-                <div><strong class="font-bold" style="font-weight: 700;">Email Address:</strong> <span id="tdModalEmail" class="font-normal font-sans ml-1" style="margin-left: 4px;">-</span></div>
+              <div class="td-info-item">
+                <span class="td-info-label">Phone No.:</span>
+                <span id="tdModalPhone" class="td-info-val">-</span>
+              </div>
+              <div class="td-info-item">
+                <span class="td-info-label">Email Address:</span>
+                <span id="tdModalEmail" class="td-info-val">-</span>
               </div>
             </div>
 
-            <!-- Center Divider: Vertical White Line -->
-            <div class="hidden md:block w-px border-l-2 border-white self-stretch my-1" style="width: 2px; border-left: 2px solid #ffffff; align-self: stretch; margin: 4px 10px;"></div>
+            <!-- Center Divider -->
+            <div class="td-vertical-divider"></div>
 
-            <!-- Middle Column: Emergency Contact -->
-            <div class="flex flex-col text-xs sm:text-sm text-[#2e1f10] font-serif sm:font-sans" style="font-size: 13.5px; color: #2e1f10;">
-              <h3 class="text-sm sm:text-base font-normal text-[#2e1f10] mb-2 font-serif sm:font-sans" style="font-size: 15px; font-weight: 600; color: #2e1f10; margin: 0 0 8px 0;">
-                Emergency contact
-              </h3>
-              <div class="space-y-1.5 font-serif sm:font-sans" style="line-height: 1.6;">
-                <div><strong class="font-bold uppercase" style="font-weight: 700;">NAME:</strong> <span id="tdModalEmergencyName" class="font-normal font-sans ml-1" style="margin-left: 4px;">-</span></div>
-                <div><strong class="font-bold uppercase" style="font-weight: 700;">RELATIONSHIP:</strong> <span id="tdModalEmergencyRel" class="font-normal font-sans ml-1" style="margin-left: 4px;">-</span></div>
-                <div><strong class="font-bold uppercase" style="font-weight: 700;">CONTACT NO.:</strong> <span id="tdModalEmergencyPhone" class="font-normal font-sans ml-1" style="margin-left: 4px;">-</span></div>
+            <!-- Right Column: Emergency Contact -->
+            <div>
+              <div class="td-subcard-title">
+                <i data-lucide="phone-call" style="width: 14px; height: 14px; color: #5C462D;" aria-hidden="true"></i>
+                <span>Emergency Contact</span>
+              </div>
+              <div class="td-info-list">
+                <div class="td-info-item">
+                  <span class="td-info-label">NAME:</span>
+                  <span id="tdModalEmergencyName" class="td-info-val">-</span>
+                </div>
+                <div class="td-info-item">
+                  <span class="td-info-label">RELATIONSHIP:</span>
+                  <span id="tdModalEmergencyRel" class="td-info-val">-</span>
+                </div>
+                <div class="td-info-item">
+                  <span class="td-info-label">CONTACT NO.:</span>
+                  <span id="tdModalEmergencyPhone" class="td-info-val">-</span>
+                </div>
               </div>
             </div>
           </div>
@@ -3004,18 +3011,18 @@ try {
       </div>
 
       <!-- 3. BOTTOM CARDS: SPLIT GRID LAYOUT (IDENTIFICATION & BILLING) -->
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-4" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 24px; margin-bottom: 20px;">
+      <div class="td-bottom-grid">
         
         <!-- LEFT CARD: TENANT IDENTIFICATION INFORMATION -->
         <div>
-          <div class="text-xs sm:text-sm font-bold text-gray-500 uppercase tracking-widest mb-2 font-sans" style="font-size: 13px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px;">
+          <div class="td-section-label">
             TENANT IDENTIFICATION INFORMATION
           </div>
-          <div class="bg-[#9A7B4F] text-black rounded-2xl p-5 sm:p-6 shadow-[0_10px_25px_rgba(0,0,0,0.18)] min-h-[175px] flex flex-col justify-between" style="background-color: #9A7B4F; color: #000000; border-radius: 18px; padding: 22px 24px; box-shadow: 0 10px 25px rgba(0,0,0,0.18); min-height: 180px; display: flex; flex-direction: column; justify-content: space-between; box-sizing: border-box;">
+          <div class="td-clay-card td-id-card-content">
             <!-- Status Row -->
-            <div class="flex items-center justify-center gap-3" style="display: flex; align-items: center; justify-content: center; gap: 12px;">
-              <span class="text-base sm:text-lg font-bold text-[#1a120b] uppercase font-sans" style="font-size: 16px; font-weight: 800; color: #1a120b;">STATUS:</span>
-              <span id="tdModalIdStatusBadge" class="bg-[#22c55e] text-black font-extrabold text-xs sm:text-sm px-5 py-1 rounded-md border border-black shadow-sm uppercase tracking-wider" style="background-color: #22c55e; color: #000000; font-weight: 800; font-size: 13px; padding: 5px 18px; border-radius: 6px; border: 1.5px solid #000000; text-transform: uppercase; letter-spacing: 0.05em;">
+            <div class="td-id-status-row">
+              <span style="font-size: 13.5px; font-weight: 800; color: #3A2C1D; text-transform: uppercase;">STATUS:</span>
+              <span id="tdModalIdStatusBadge" class="td-badge-pill td-badge-success">
                 VERIFIED
               </span>
             </div>
@@ -3023,10 +3030,10 @@ try {
             <!-- Dynamic ID Details Container (Conditional Rendering with Unverified Privacy Masking) -->
             <div id="tdModalIdDetailsContainer">
               <?php if (!empty($tenant) && (int)($tenant['is_verified'] ?? 0) === 1): ?>
-                <!-- ID Icon, Type, and [view id] Link -->
-                <div id="tdModalVerifiedIdSection" class="flex items-center justify-center gap-4 mt-4" style="display: flex; align-items: center; justify-content: center; gap: 16px; margin-top: 14px;">
+                <!-- ID Icon, Type, and [view id] Button -->
+                <div id="tdModalVerifiedIdSection" class="td-verified-id-box">
                   <!-- Illustrated ID Card Icon -->
-                  <svg class="w-16 h-12 flex-shrink-0 drop-shadow-sm" viewBox="0 0 72 52" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="width: 64px; height: 46px; flex-shrink: 0;">
+                  <svg class="w-16 h-12 flex-shrink-0 drop-shadow-sm" viewBox="0 0 72 52" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="width: 60px; height: 44px; flex-shrink: 0;">
                     <rect x="2" y="2" width="68" height="48" rx="8" fill="#F8E5E5" stroke="#1A120B" stroke-width="2.5"/>
                     <rect x="2" y="2" width="68" height="14" rx="8" fill="#F47272" stroke="#1A120B" stroke-width="2.5"/>
                     <rect x="8" y="20" width="20" height="24" rx="4" fill="#FFFFFF" stroke="#1A120B" stroke-width="2"/>
@@ -3038,28 +3045,27 @@ try {
                     <line x1="33" y1="40" x2="54" y2="40" stroke="#1A120B" stroke-width="2" stroke-linecap="round"/>
                   </svg>
 
-                  <!-- ID Type and [view id] clickable link -->
+                  <!-- ID Type and [view id] clickable button -->
                   <div>
-                    <div id="tdModalIdType" class="text-lg sm:text-xl font-extrabold text-[#1a120b] uppercase font-sans leading-tight" style="font-size: 18px; font-weight: 800; color: #1a120b; text-transform: uppercase;">
+                    <div id="tdModalIdType" class="td-id-type-title">
                       <?= htmlspecialchars($tenant['id_type'] ?? 'PhilSys ID') ?>
                     </div>
                     <button type="button" 
                             id="tdModalBtnViewId" 
                             onclick="viewTenantIdImage()" 
-                            class="text-xs sm:text-sm font-normal text-[#1a120b] hover:text-black hover:underline underline cursor-pointer mt-0.5 bg-transparent border-0 p-0 text-left font-sans focus:outline-none"
-                            style="font-size: 13px; color: #1a120b; text-decoration: underline; cursor: pointer; background: transparent; border: none; padding: 0; margin-top: 4px; display: block;">
-                      [view id]
+                            class="td-btn-view-id">
+                      <i data-lucide="eye" style="width: 13px; height: 13px;" aria-hidden="true"></i>
+                      <span>[view id]</span>
                     </button>
                   </div>
                 </div>
               <?php else: ?>
                 <!-- Unverified Fallback Placeholder (No <a> tags, no modal triggers) -->
-                <div id="tdModalUnverifiedIdSection" class="flex flex-col items-center justify-center text-center mt-3 py-3.5 px-4 bg-black/10 rounded-xl border border-dashed border-black/20 text-[#2e1f10]" style="display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; margin-top: 12px; padding: 14px 16px; background: rgba(0,0,0,0.08); border-radius: 12px; border: 1.5px dashed rgba(0,0,0,0.25); color: #2e1f10;">
-                  <div class="flex items-center gap-2 text-sm sm:text-base font-extrabold text-[#2e1f10] opacity-85" style="display: flex; align-items: center; gap: 8px; font-size: 14.5px; font-weight: 800; color: #2e1f10;">
-                    <span style="font-size: 16px;">🔒</span>
+                <div id="tdModalUnverifiedIdSection" class="td-id-locked-box">
+                  <div style="display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 800; color: #3A2C1D;">
                     <span id="tdModalHiddenIdPlaceholder">ID Hidden (Pending Verification)</span>
                   </div>
-                  <p class="text-[11.5px] sm:text-xs text-[#45321f] mt-1 font-medium m-0 opacity-75" style="font-size: 11.5px; color: #45321f; margin: 4px 0 0 0; font-weight: 500;">
+                  <p style="font-size: 11.5px; color: #5C462D; margin: 4px 0 0 0; font-weight: 600;">
                     Identification documents are locked until account verification is complete.
                   </p>
                 </div>
@@ -3070,75 +3076,74 @@ try {
 
         <!-- RIGHT CARD: BILLING INFORMATION -->
         <div>
-          <div class="text-xs sm:text-sm font-bold text-gray-500 uppercase tracking-widest mb-2 font-sans" style="font-size: 13px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px;">
+          <div class="td-section-label">
             BILLING INFORMATION
           </div>
-          <div class="bg-[#9A7B4F] text-black rounded-2xl p-5 sm:p-6 shadow-[0_10px_25px_rgba(0,0,0,0.18)] min-h-[175px]" style="background-color: #9A7B4F; color: #000000; border-radius: 18px; padding: 22px 24px; box-shadow: 0 10px 25px rgba(0,0,0,0.18); min-height: 180px; box-sizing: border-box;">
+          <div class="td-clay-card td-billing-content">
             <!-- Top Row: Payment Status & Deposit Status -->
-            <div class="flex flex-col gap-2 mb-3" style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px;">
-              <div class="flex items-center justify-between sm:justify-start sm:gap-6" style="display: flex; align-items: center; gap: 14px;">
-                <span class="text-xs sm:text-sm font-bold text-[#1a120b] uppercase font-sans" style="font-size: 12.5px; font-weight: 800; color: #1a120b;">PAYMENT STATUS:</span>
-                <span id="tdModalPaymentStatusBadge" class="bg-[#22c55e] text-black font-extrabold text-xs px-4 py-0.5 rounded-md border border-black uppercase tracking-wider" style="background-color: #22c55e; color: #000000; font-weight: 800; font-size: 11px; padding: 2px 14px; border-radius: 4px; border: 1.5px solid #000000; text-transform: uppercase;">
+            <div class="td-billing-status-group">
+              <div class="td-billing-status-row">
+                <span style="font-size: 12.5px; font-weight: 800; color: #3A2C1D; text-transform: uppercase;">PAYMENT STATUS:</span>
+                <span id="tdModalPaymentStatusBadge" class="td-badge-pill td-badge-success">
                   PAID
                 </span>
               </div>
-              <div class="flex items-center justify-between sm:justify-start sm:gap-6" style="display: flex; align-items: center; gap: 14px;">
-                <span id="tdModalDepositLabel" class="text-xs sm:text-sm font-bold text-[#1a120b] uppercase font-sans" style="font-size: 12.5px; font-weight: 800; color: #1a120b;">
+              <div class="td-billing-status-row">
+                <span id="tdModalDepositLabel" style="font-size: 12.5px; font-weight: 800; color: #3A2C1D; text-transform: uppercase;">
                   DEPOSIT: PHP 3000
                 </span>
-                <span id="tdModalDepositStatusBadge" class="bg-[#22c55e] text-black font-extrabold text-xs px-4 py-0.5 rounded-md border border-black uppercase tracking-wider" style="background-color: #22c55e; color: #000000; font-weight: 800; font-size: 11px; padding: 2px 14px; border-radius: 4px; border: 1.5px solid #000000; text-transform: uppercase;">
+                <span id="tdModalDepositStatusBadge" class="td-badge-pill td-badge-success">
                   DONE
                 </span>
               </div>
             </div>
 
-            <!-- Divider: Dotted horizontal line -->
-            <div class="border-b border-dotted border-gray-400 my-3" style="border-bottom: 1.5px dotted rgba(255,255,255,0.6); margin: 12px 0;"></div>
+            <!-- Divider -->
+            <div class="td-billing-divider"></div>
 
             <!-- Bottom Rows Grid -->
-            <div class="grid grid-cols-2 gap-3 text-[#1a120b] font-sans" style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+            <div class="td-billing-metrics-grid">
               <!-- DUE DATE -->
               <div>
-                <div class="text-[10.5px] sm:text-xs font-bold text-red-500 uppercase tracking-tight" style="font-size: 11px; font-weight: 800; color: #ef4444; text-transform: uppercase;">
+                <div class="td-metric-label td-label-due">
                   DUE DATE:
                 </div>
-                <div id="tdModalDueDate" class="text-lg sm:text-2xl font-black text-[#1a120b] tracking-tight leading-snug" style="font-size: 20px; font-weight: 900; color: #1a120b;">
+                <div id="tdModalDueDate" class="td-metric-val">
                   08/11/26
                 </div>
               </div>
 
               <!-- PAID ON -->
               <div>
-                <div class="text-[10.5px] sm:text-xs font-bold text-[#1a120b] uppercase tracking-tight" style="font-size: 11px; font-weight: 800; color: #1a120b; text-transform: uppercase;">
+                <div class="td-metric-label">
                   PAID ON:
                 </div>
-                <div id="tdModalPaidOnDate" class="text-lg sm:text-2xl font-black text-[#1a120b] tracking-tight leading-snug" style="font-size: 20px; font-weight: 900; color: #1a120b;">
+                <div id="tdModalPaidOnDate" class="td-metric-val">
                   08/11/26
                 </div>
               </div>
 
               <!-- TOTAL AMOUNT -->
               <div>
-                <div class="text-[10.5px] sm:text-xs font-bold text-[#1a120b] uppercase tracking-tight" style="font-size: 11px; font-weight: 800; color: #1a120b; text-transform: uppercase;">
+                <div class="td-metric-label">
                   TOTAL AMOUNT:
                 </div>
-                <div id="tdModalTotalAmount" class="text-sm sm:text-base font-bold text-[#1a120b] mt-0.5" style="font-size: 14.5px; font-weight: 800; color: #1a120b; margin-top: 2px;">
+                <div id="tdModalTotalAmount" class="td-metric-val td-metric-val-total">
                   PHP 3,000.00
                 </div>
               </div>
 
               <!-- PROOF OF PAYMENT THUMBNAIL BOX -->
               <div>
-                <div class="text-[10.5px] sm:text-xs font-bold text-[#1a120b] uppercase tracking-tight mb-1" style="font-size: 11px; font-weight: 800; color: #1a120b; text-transform: uppercase; margin-bottom: 4px;">
+                <div class="td-metric-label">
                   PROOF OF PAYMENT:
                 </div>
                 <div id="tdModalReceiptThumbnail" 
                      onclick="viewTenantReceiptPhoto()" 
-                     class="w-28 sm:w-32 h-10 sm:h-11 bg-white/95 hover:bg-white border border-gray-400 rounded-sm flex items-center justify-center gap-1.5 cursor-pointer shadow-sm transition-all group"
-                     title="View Proof of Payment Photo"
-                     style="width: 115px; height: 42px; background: rgba(255, 255, 255, 0.95); border: 1.5px solid #d1d5db; border-radius: 4px; display: flex; align-items: center; justify-content: center; gap: 6px; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.06);">
-                  <i data-lucide="eye" class="w-4 h-4 text-black" aria-hidden="true" style="width: 15px; height: 15px; color: #000000;"></i>
-                  <span class="text-[9.5px] sm:text-[10px] font-black tracking-wider uppercase text-black" style="font-size: 9.5px; font-weight: 900; letter-spacing: 0.05em; color: #000000;">VIEW PHOTO</span>
+                     class="td-btn-view-receipt"
+                     title="View Proof of Payment Photo">
+                  <i data-lucide="eye" style="width: 14px; height: 14px; color: #1E160E;" aria-hidden="true"></i>
+                  <span>VIEW PHOTO</span>
                 </div>
               </div>
             </div>
@@ -3147,11 +3152,11 @@ try {
       </div>
 
       <!-- Footer Actions: Retain Move-Out / Settlement and Close Buttons -->
-      <div class="flex items-center justify-end gap-3 pt-4 border-t border-gray-200" style="display: flex; align-items: center; justify-content: flex-end; gap: 12px; padding-top: 16px; border-top: 1px solid #e2e8f0;">
-        <button type="button" class="clay-btn clay-btn-secondary px-5 py-2.5 text-xs font-bold" onclick="closeModal('tenantDetailsModal')" style="padding: 10px 20px; font-size: 12.5px; font-weight: 700;">
+      <div class="td-modal-footer">
+        <button type="button" class="td-btn-close" onclick="closeModal('tenantDetailsModal')">
           Close
         </button>
-        <button type="button" id="tdBtnDelete" class="btn-moveout-delete py-2.5 px-5 text-xs font-bold inline-flex items-center gap-2 m-0" style="padding: 10px 20px; font-size: 12.5px; font-weight: 700; margin: 0; display: inline-flex; align-items: center; gap: 8px;">
+        <button type="button" id="tdBtnDelete" class="td-btn-moveout">
           <i data-lucide="log-out" class="w-4 h-4" aria-hidden="true"></i>
           <span>Mark as Moved Out</span>
         </button>
@@ -4088,6 +4093,11 @@ try {
     let currentSavedAvatarUrl = <?= json_encode(!empty($userAvatarUrl) ? $userAvatarUrl : '') ?>;
     let userDefaultInitial = <?= json_encode($userInitial) ?>;
     let pendingAvatarFile = null;
+
+    function openAdminIdModal() {
+      const m = document.getElementById('modalAdminProfileId');
+      if (m) m.style.display = 'flex';
+    }
 
     function previewProfilePicture(e) {
       const file = e.target.files && e.target.files[0];
@@ -5085,14 +5095,14 @@ try {
       const isMovedOut = (t.rental_status === 'moved_out');
       const occBadge = document.getElementById('tdModalOccupancyBadge');
       if (occBadge) {
+        occBadge.style.backgroundColor = '';
+        occBadge.style.color = '';
         if (!isMovedOut) {
           occBadge.textContent = 'OCCUPIED';
-          occBadge.style.backgroundColor = '#6ee7b7';
-          occBadge.style.color = '#000000';
+          occBadge.className = 'td-badge-pill td-badge-success';
         } else {
           occBadge.textContent = 'MOVED OUT';
-          occBadge.style.backgroundColor = '#fef08a';
-          occBadge.style.color = '#713f12';
+          occBadge.className = 'td-badge-pill td-badge-warning';
         }
       }
 
@@ -5154,18 +5164,17 @@ try {
       const idDetailsContainer = document.getElementById('tdModalIdDetailsContainer');
 
       if (idStatusBadge) {
+        idStatusBadge.style.backgroundColor = '';
+        idStatusBadge.style.color = '';
         if (isVerified) {
           idStatusBadge.textContent = 'VERIFIED';
-          idStatusBadge.style.backgroundColor = '#22c55e';
-          idStatusBadge.style.color = '#000000';
+          idStatusBadge.className = 'td-badge-pill td-badge-success';
         } else if (vStatus === 'pending' || vStatus === 'pending_liveness') {
           idStatusBadge.textContent = 'PENDING';
-          idStatusBadge.style.backgroundColor = '#facc15';
-          idStatusBadge.style.color = '#000000';
+          idStatusBadge.className = 'td-badge-pill td-badge-warning';
         } else {
           idStatusBadge.textContent = 'UNVERIFIED';
-          idStatusBadge.style.backgroundColor = '#ef4444';
-          idStatusBadge.style.color = '#ffffff';
+          idStatusBadge.className = 'td-badge-pill td-badge-danger';
         }
       }
 
@@ -5173,8 +5182,8 @@ try {
         if (isVerified && t.id_type && t.id_photo_filename) {
           // Verified: Display ID Icon, ID Type text, and clickable [view id] link
           idDetailsContainer.innerHTML = `
-            <div id="tdModalVerifiedIdSection" class="flex items-center justify-center gap-4 mt-4" style="display: flex; align-items: center; justify-content: center; gap: 16px; margin-top: 14px;">
-              <svg class="w-16 h-12 flex-shrink-0 drop-shadow-sm" viewBox="0 0 72 52" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="width: 64px; height: 46px; flex-shrink: 0;">
+            <div id="tdModalVerifiedIdSection" class="td-verified-id-box">
+              <svg class="w-16 h-12 flex-shrink-0 drop-shadow-sm" viewBox="0 0 72 52" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="width: 60px; height: 44px; flex-shrink: 0;">
                 <rect x="2" y="2" width="68" height="48" rx="8" fill="#F8E5E5" stroke="#1A120B" stroke-width="2.5"/>
                 <rect x="2" y="2" width="68" height="14" rx="8" fill="#F47272" stroke="#1A120B" stroke-width="2.5"/>
                 <rect x="8" y="20" width="20" height="24" rx="4" fill="#FFFFFF" stroke="#1A120B" stroke-width="2"/>
@@ -5186,32 +5195,32 @@ try {
                 <line x1="33" y1="40" x2="54" y2="40" stroke="#1A120B" stroke-width="2" stroke-linecap="round"/>
               </svg>
               <div>
-                <div id="tdModalIdType" class="text-lg sm:text-xl font-extrabold text-[#1a120b] uppercase font-sans leading-tight" style="font-size: 18px; font-weight: 800; color: #1a120b; text-transform: uppercase;">
+                <div id="tdModalIdType" class="td-id-type-title">
                   ${t.id_type.toUpperCase()}
                 </div>
                 <button type="button" 
                         id="tdModalBtnViewId" 
                         onclick="viewTenantIdImage()" 
-                        class="text-xs sm:text-sm font-normal text-[#1a120b] hover:text-black hover:underline underline cursor-pointer mt-0.5 bg-transparent border-0 p-0 text-left font-sans focus:outline-none"
-                        style="font-size: 13px; color: #1a120b; text-decoration: underline; cursor: pointer; background: transparent; border: none; padding: 0; margin-top: 4px; display: block;">
-                  [view id]
+                        class="td-btn-view-id">
+                  <i data-lucide="eye" style="width: 13px; height: 13px;" aria-hidden="true"></i>
+                  <span>[view id]</span>
                 </button>
               </div>
             </div>
           `;
           window.currentActiveTenantIdPhoto = t.id_photo_filename;
+          if (window.lucide && typeof window.lucide.createIcons === 'function') window.lucide.createIcons();
         } else {
           // Unverified / Pending Fallback: Grayed-out placeholder, NO <a> tags, NO triggers
           const placeholderText = (vStatus === 'pending' || vStatus === 'pending_liveness')
             ? 'ID Hidden (Pending Verification)'
             : 'ID Hidden (Unverified Account)';
           idDetailsContainer.innerHTML = `
-            <div id="tdModalUnverifiedIdSection" class="flex flex-col items-center justify-center text-center mt-3 py-3.5 px-4 bg-black/10 rounded-xl border border-dashed border-black/20 text-[#2e1f10]" style="display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; margin-top: 12px; padding: 14px 16px; background: rgba(0,0,0,0.08); border-radius: 12px; border: 1.5px dashed rgba(0,0,0,0.25); color: #2e1f10;">
-              <div class="flex items-center gap-2 text-sm sm:text-base font-extrabold text-[#2e1f10] opacity-85" style="display: flex; align-items: center; gap: 8px; font-size: 14.5px; font-weight: 800; color: #2e1f10;">
-                <span style="font-size: 16px;">🔒</span>
+            <div id="tdModalUnverifiedIdSection" class="td-id-locked-box">
+              <div style="display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 800; color: #3A2C1D;">
                 <span id="tdModalHiddenIdPlaceholder">${placeholderText}</span>
               </div>
-              <p class="text-[11.5px] sm:text-xs text-[#45321f] mt-1 font-medium m-0 opacity-75" style="font-size: 11.5px; color: #45321f; margin: 4px 0 0 0; font-weight: 500;">
+              <p style="font-size: 11.5px; color: #5C462D; margin: 4px 0 0 0; font-weight: 600;">
                 Identification documents are locked until account verification is complete.
               </p>
             </div>
@@ -5228,15 +5237,17 @@ try {
       const depBadge = document.getElementById('tdModalDepositStatusBadge');
       if (depBadge) {
         depBadge.textContent = 'DONE';
-        depBadge.style.backgroundColor = '#22c55e';
-        depBadge.style.color = '#000000';
+        depBadge.className = 'td-badge-pill td-badge-success';
+        depBadge.style.backgroundColor = '';
+        depBadge.style.color = '';
       }
 
       const payBadge = document.getElementById('tdModalPaymentStatusBadge');
       if (payBadge) {
         payBadge.textContent = (t.is_paid_up ? 'PAID' : 'PENDING');
-        payBadge.style.backgroundColor = t.is_paid_up ? '#22c55e' : '#facc15';
-        payBadge.style.color = '#000000';
+        payBadge.className = t.is_paid_up ? 'td-badge-pill td-badge-success' : 'td-badge-pill td-badge-warning';
+        payBadge.style.backgroundColor = '';
+        payBadge.style.color = '';
       }
 
       const dueEl = document.getElementById('tdModalDueDate');
@@ -5260,8 +5271,8 @@ try {
                   window.currentActiveTenantIdPhoto = data.tenant.id_photo_filename;
                   if (idDetailsContainer) {
                     idDetailsContainer.innerHTML = `
-                      <div id="tdModalVerifiedIdSection" class="flex items-center justify-center gap-4 mt-4" style="display: flex; align-items: center; justify-content: center; gap: 16px; margin-top: 14px;">
-                        <svg class="w-16 h-12 flex-shrink-0 drop-shadow-sm" viewBox="0 0 72 52" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="width: 64px; height: 46px; flex-shrink: 0;">
+                      <div id="tdModalVerifiedIdSection" class="td-verified-id-box">
+                        <svg class="w-16 h-12 flex-shrink-0 drop-shadow-sm" viewBox="0 0 72 52" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="width: 60px; height: 44px; flex-shrink: 0;">
                           <rect x="2" y="2" width="68" height="48" rx="8" fill="#F8E5E5" stroke="#1A120B" stroke-width="2.5"/>
                           <rect x="2" y="2" width="68" height="14" rx="8" fill="#F47272" stroke="#1A120B" stroke-width="2.5"/>
                           <rect x="8" y="20" width="20" height="24" rx="4" fill="#FFFFFF" stroke="#1A120B" stroke-width="2"/>
@@ -5273,24 +5284,26 @@ try {
                           <line x1="33" y1="40" x2="54" y2="40" stroke="#1A120B" stroke-width="2" stroke-linecap="round"/>
                         </svg>
                         <div>
-                          <div id="tdModalIdType" class="text-lg sm:text-xl font-extrabold text-[#1a120b] uppercase font-sans leading-tight" style="font-size: 18px; font-weight: 800; color: #1a120b; text-transform: uppercase;">
+                          <div id="tdModalIdType" class="td-id-type-title">
                             ${data.tenant.id_type.toUpperCase()}
                           </div>
                           <button type="button" 
                                   id="tdModalBtnViewId" 
                                   onclick="viewTenantIdImage()" 
-                                  class="text-xs sm:text-sm font-normal text-[#1a120b] hover:text-black hover:underline underline cursor-pointer mt-0.5 bg-transparent border-0 p-0 text-left font-sans focus:outline-none"
-                                  style="font-size: 13px; color: #1a120b; text-decoration: underline; cursor: pointer; background: transparent; border: none; padding: 0; margin-top: 4px; display: block;">
-                            [view id]
+                                  class="td-btn-view-id">
+                            <i data-lucide="eye" style="width: 13px; height: 13px;" aria-hidden="true"></i>
+                            <span>[view id]</span>
                           </button>
                         </div>
                       </div>
                     `;
+                    if (window.lucide && typeof window.lucide.createIcons === 'function') window.lucide.createIcons();
                   }
                   if (idStatusBadge) {
                     idStatusBadge.textContent = 'VERIFIED';
-                    idStatusBadge.style.backgroundColor = '#22c55e';
-                    idStatusBadge.style.color = '#000000';
+                    idStatusBadge.className = 'td-badge-pill td-badge-success';
+                    idStatusBadge.style.backgroundColor = '';
+                    idStatusBadge.style.color = '';
                   }
                 } else {
                   window.currentActiveTenantIdPhoto = null;
@@ -5300,26 +5313,25 @@ try {
                       ? 'ID Hidden (Pending Verification)'
                       : 'ID Hidden (Unverified Account)';
                     idDetailsContainer.innerHTML = `
-                      <div id="tdModalUnverifiedIdSection" class="flex flex-col items-center justify-center text-center mt-3 py-3.5 px-4 bg-black/10 rounded-xl border border-dashed border-black/20 text-[#2e1f10]" style="display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; margin-top: 12px; padding: 14px 16px; background: rgba(0,0,0,0.08); border-radius: 12px; border: 1.5px dashed rgba(0,0,0,0.25); color: #2e1f10;">
-                        <div class="flex items-center gap-2 text-sm sm:text-base font-extrabold text-[#2e1f10] opacity-85" style="display: flex; align-items: center; gap: 8px; font-size: 14.5px; font-weight: 800; color: #2e1f10;">
-                          <span style="font-size: 16px;">🔒</span>
+                      <div id="tdModalUnverifiedIdSection" class="td-id-locked-box">
+                        <div style="display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 800; color: #3A2C1D;">
                           <span id="tdModalHiddenIdPlaceholder">${placeholderText}</span>
                         </div>
-                        <p class="text-[11.5px] sm:text-xs text-[#45321f] mt-1 font-medium m-0 opacity-75" style="font-size: 11.5px; color: #45321f; margin: 4px 0 0 0; font-weight: 500;">
+                        <p style="font-size: 11.5px; color: #5C462D; margin: 4px 0 0 0; font-weight: 600;">
                           Identification documents are locked until account verification is complete.
                         </p>
                       </div>
                     `;
                   }
                   if (idStatusBadge) {
+                    idStatusBadge.style.backgroundColor = '';
+                    idStatusBadge.style.color = '';
                     if (liveVStatus === 'pending' || liveVStatus === 'pending_liveness') {
                       idStatusBadge.textContent = 'PENDING';
-                      idStatusBadge.style.backgroundColor = '#facc15';
-                      idStatusBadge.style.color = '#000000';
+                      idStatusBadge.className = 'td-badge-pill td-badge-warning';
                     } else {
                       idStatusBadge.textContent = 'UNVERIFIED';
-                      idStatusBadge.style.backgroundColor = '#ef4444';
-                      idStatusBadge.style.color = '#ffffff';
+                      idStatusBadge.className = 'td-badge-pill td-badge-danger';
                     }
                   }
                 }
@@ -5334,18 +5346,17 @@ try {
                 const isPending = (lr.status === 'pending');
 
                 if (payBadge) {
+                  payBadge.style.backgroundColor = '';
+                  payBadge.style.color = '';
                   if (isPaid) {
                     payBadge.textContent = 'PAID';
-                    payBadge.style.backgroundColor = '#22c55e';
-                    payBadge.style.color = '#000000';
+                    payBadge.className = 'td-badge-pill td-badge-success';
                   } else if (isPending) {
                     payBadge.textContent = 'PENDING';
-                    payBadge.style.backgroundColor = '#facc15';
-                    payBadge.style.color = '#000000';
+                    payBadge.className = 'td-badge-pill td-badge-warning';
                   } else {
                     payBadge.textContent = 'UNPAID';
-                    payBadge.style.backgroundColor = '#ef4444';
-                    payBadge.style.color = '#ffffff';
+                    payBadge.className = 'td-badge-pill td-badge-danger';
                   }
                 }
 
@@ -5365,8 +5376,9 @@ try {
                 if (depBadge) {
                   const isDepDone = (ld.status === 'approved' || parseFloat(ld.amount_paid) >= depAmt);
                   depBadge.textContent = isDepDone ? 'DONE' : (ld.status === 'pending' ? 'PENDING' : 'UNPAID');
-                  depBadge.style.backgroundColor = isDepDone ? '#22c55e' : (ld.status === 'pending' ? '#facc15' : '#ef4444');
-                  depBadge.style.color = isDepDone || ld.status === 'pending' ? '#000000' : '#ffffff';
+                  depBadge.className = isDepDone ? 'td-badge-pill td-badge-success' : (ld.status === 'pending' ? 'td-badge-pill td-badge-warning' : 'td-badge-pill td-badge-danger');
+                  depBadge.style.backgroundColor = '';
+                  depBadge.style.color = '';
                 }
                 if (!window.currentActiveTenantReceiptPhoto && ld.receipt_filename) {
                   window.currentActiveTenantReceiptPhoto = ld.receipt_filename;
@@ -8642,6 +8654,12 @@ try {
         return;
       }
 
+      const tokens = q.split(/\s+/).filter(Boolean);
+      function matchesTokens(haystack) {
+        const h = String(haystack || '').toLowerCase();
+        return tokens.every(tok => h.includes(tok));
+      }
+
       const matches = [];
 
       const quickSections = [
@@ -8655,7 +8673,8 @@ try {
       ];
 
       quickSections.forEach(s => {
-        if (s.title.toLowerCase().includes(q) || s.keys.includes(q)) {
+        const hay = `${s.title} ${s.sub} ${s.keys}`.toLowerCase();
+        if (matchesTokens(hay)) {
           matches.push(s);
         }
       });
@@ -8663,9 +8682,10 @@ try {
       (OWNER_SEARCH_UNITS || []).forEach(u => {
         const unitName = String(u.unit_number || '');
         const rentStr = u.monthly_rent ? `₱${Number(u.monthly_rent).toLocaleString()}/mo` : '';
-        if (unitName.toLowerCase().includes(q) || `floor ${u.floor_level || ''}`.includes(q)) {
+        const hay = `${unitName} unit ${unitName} floor ${u.floor_level || ''} ${rentStr}`.toLowerCase();
+        if (matchesTokens(hay)) {
           matches.push({
-            title: unitName,
+            title: unitName.toLowerCase().startsWith('unit') ? unitName : `Unit ${unitName}`,
             sub: `${rentStr} • Floor ${u.floor_level || '-'}`,
             tag: 'Unit',
             kind: 'unit',
@@ -8676,7 +8696,7 @@ try {
 
       (OWNER_SEARCH_TENANTS || []).forEach(t => {
         const hay = `${t.name || ''} ${t.username || ''} ${t.email || ''} ${t.phone || ''} ${t.unit_number || ''}`.toLowerCase();
-        if (hay.includes(q)) {
+        if (matchesTokens(hay)) {
           matches.push({
             title: t.name || 'Tenant',
             sub: `${t.unit_number || 'Unit'} • @${t.username || ''} • ${t.email || ''}`,
@@ -8688,8 +8708,8 @@ try {
       });
 
       (cachedArchivedTenants || []).forEach(a => {
-        const hay = `${a.name || ''} ${a.username || ''} ${a.email || ''} ${a.archived_unit_number || ''}`.toLowerCase();
-        if (hay.includes(q)) {
+        const hay = `${a.name || ''} ${a.username || ''} ${a.email || ''} ${a.phone || ''} ${a.archived_unit_number || ''}`.toLowerCase();
+        if (matchesTokens(hay)) {
           matches.push({
             title: a.name || 'Archived Tenant',
             sub: `${a.archived_unit_number || 'Archived'} • ${a.email || ''}`,
@@ -8702,8 +8722,9 @@ try {
 
       (OWNER_SEARCH_TICKETS || []).forEach(tk => {
         const tkCode = `#MT-${String(tk.id || '').padStart(4, '0')}`;
-        const hay = `${tkCode} ${tk.title || ''} ${tk.category || ''} ${tk.tenant_name || ''} ${tk.unit_number || ''} ${tk.status || ''}`.toLowerCase();
-        if (hay.includes(q)) {
+        const rawCode = `MT-${tk.id} ${tk.id}`;
+        const hay = `${tkCode} ${rawCode} ${tk.title || ''} ${tk.category || ''} ${tk.description || ''} ${tk.tenant_name || ''} ${tk.unit_number || ''} ${tk.status || ''}`.toLowerCase();
+        if (matchesTokens(hay)) {
           matches.push({
             title: `${tkCode} — ${tk.title || 'Maintenance Request'}`,
             sub: `${tk.unit_number || ''} • ${tk.tenant_name || ''} • ${tk.status || ''}`,
@@ -8716,8 +8737,9 @@ try {
 
       (OWNER_SEARCH_REPORTS || []).forEach(rep => {
         const repCode = `#GR-${String(rep.id || '').padStart(4, '0')}`;
-        const hay = `${repCode} ${rep.subject || ''} ${rep.category || ''} ${rep.tenant_name || ''} ${rep.unit_number || ''} ${rep.status || ''}`.toLowerCase();
-        if (hay.includes(q)) {
+        const rawCode = `GR-${rep.id} ${rep.id}`;
+        const hay = `${repCode} ${rawCode} ${rep.subject || ''} ${rep.category || ''} ${rep.details || ''} ${rep.tenant_name || ''} ${rep.unit_number || ''} ${rep.status || ''}`.toLowerCase();
+        if (matchesTokens(hay)) {
           matches.push({
             title: `${repCode} — ${rep.subject || 'General Report'}`,
             sub: `${rep.unit_number || ''} • ${rep.category || ''} • ${rep.status || 'Pending'}`,
@@ -8729,12 +8751,12 @@ try {
       });
 
       (OWNER_SEARCH_PAYMENTS || []).forEach(pm => {
-        const hay = `${pm.tenant_name || ''} ${pm.unit_number || ''} ${pm.reference_number || ''} ${pm.status || ''} ${pm.billing_cycle || ''}`.toLowerCase();
-        if (hay.includes(q)) {
-          const amt = Number(pm.amount_due || pm.amount_paid || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        const amt = Number(pm.amount_due || pm.amount_paid || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        const hay = `${pm.tenant_name || ''} ${pm.unit_number || ''} ${pm.reference_number || ''} ${pm.payment_type || ''} ${pm.status || ''} ${pm.billing_cycle || ''} ₱${amt}`.toLowerCase();
+        if (matchesTokens(hay)) {
           matches.push({
             title: `${pm.tenant_name || 'Resident'} — ₱${amt}`,
-            sub: `${pm.unit_number || ''} • ${pm.billing_cycle || 'To be assigned'} • ${String(pm.status || '').toUpperCase()}`,
+            sub: `${pm.unit_number || ''} • ${pm.billing_cycle || 'Cycle'} • ${String(pm.status || '').toUpperCase()}${pm.reference_number ? ' • Ref: ' + pm.reference_number : ''}`,
             tag: 'Payment',
             kind: 'payment',
             payload: pm
@@ -8785,44 +8807,78 @@ try {
       });
     }
 
+    // Initialize immediately if DOM is ready
+    if (document.readyState === 'complete' || document.readyState === 'interactive') {
+      initGlobalOwnerSearch();
+    }
+
     // Load Charts, KPIs, Overview Panel & Diagnostics in ₱
     async function loadDashboardAnalytics() {
       try {
         const res = await fetch('api/analytics_api.php');
         const data = await res.json();
-        if (data.status === 'success') {
+        if (data.status === 'success' && data.kpis) {
           // 1. Financial KPIs in ₱
-          document.getElementById('kpiEfficiency').textContent = `${Number(data.kpis.financials.overall_collection_efficiency_pct || 0).toFixed(1)}%`;
-          document.getElementById('kpiOutstanding').textContent = `₱${Number(data.kpis.financials.total_outstanding_balance || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
-          document.getElementById('kpiRevenue').textContent = `₱${Number(data.kpis.financials.total_revenue_collected || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
-          document.getElementById('kpiMaintenance').textContent = `₱${Number(data.kpis.maintenance.total_expenditure || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+          const elEff = document.getElementById('kpiEfficiency');
+          if (elEff && data.kpis.financials) {
+            elEff.textContent = `${Number(data.kpis.financials.overall_collection_efficiency_pct || 0).toFixed(1)}%`;
+          }
+
+          const elOut = document.getElementById('kpiOutstanding');
+          if (elOut && data.kpis.financials) {
+            elOut.textContent = `₱${Number(data.kpis.financials.total_outstanding_balance || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+          }
+
+          const elRev = document.getElementById('kpiRevenue');
+          if (elRev && data.kpis.financials) {
+            elRev.textContent = `₱${Number(data.kpis.financials.total_revenue_collected || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+          }
+
+          const elMaint = document.getElementById('kpiMaintenance');
+          if (elMaint && data.kpis.maintenance) {
+            elMaint.textContent = `₱${Number(data.kpis.maintenance.total_expenditure || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+          }
 
           const ticketsCountLabel = document.getElementById('kpiTicketsCountLabel');
-          if (ticketsCountLabel) {
+          if (ticketsCountLabel && data.kpis.maintenance) {
             const totalTicketsLogged = Number(data.kpis.maintenance.total_tickets_logged || 0);
             ticketsCountLabel.textContent = `${totalTicketsLogged} logged request${totalTicketsLogged === 1 ? '' : 's'}`;
           }
 
           // 2. Sync Overview Panel live stats cleanly
-          const totalTenants = Number(data.kpis.units.total_active_tenants || 0);
+          const totalTenants = Number(data.kpis.units?.total_active_tenants || 0);
           const tenantSummaryEl = document.getElementById('tenantSummaryText');
           if (tenantSummaryEl) {
             tenantSummaryEl.textContent = String(totalTenants);
           }
+
           const pendingPaymentsEl = document.getElementById('overviewPendingPayments');
           if (pendingPaymentsEl && data.kpis.manual_verification) {
             pendingPaymentsEl.textContent = String(Number(data.kpis.manual_verification.pending_receipts_count || 0));
           }
+
           const openTicketsEl = document.getElementById('overviewOpenTickets');
           if (openTicketsEl && data.kpis.maintenance) {
             openTicketsEl.textContent = String(Number(data.kpis.maintenance.active_tickets || 0));
           }
+
+          const pendingReportsEl = document.getElementById('overviewPendingReports');
+          if (pendingReportsEl && data.kpis.reports) {
+            pendingReportsEl.textContent = String(Number(data.kpis.reports.pending_reports || 0));
+          }
+
+          const pendBadge = document.getElementById('pendingReportsCountBadge');
+          if (pendBadge && data.kpis.reports) {
+            pendBadge.textContent = String(Number(data.kpis.reports.pending_reports || 0));
+          }
+
           const overviewUnitsEl = document.getElementById('overviewUnitsValue');
           if (overviewUnitsEl && data.kpis.units) {
             const avail = data.kpis.units.available_units ?? 0;
             const tot = data.kpis.units.total_units ?? 3;
             overviewUnitsEl.textContent = `${avail} of ${tot}`;
           }
+
           const archivedTenantsEl = document.getElementById('overviewArchivedTenants');
           if (archivedTenantsEl && data.kpis.units && data.kpis.units.total_archived_tenants !== undefined) {
             archivedTenantsEl.textContent = String(data.kpis.units.total_archived_tenants);
@@ -8832,8 +8888,10 @@ try {
             window.lucide.createIcons();
           }
 
-          // 4. Render Chart.js widgets in ₱
-          RentConnectCharts.initCharts(data);
+          // 3. Render Chart.js widgets in ₱
+          if (typeof RentConnectCharts !== 'undefined' && typeof RentConnectCharts.initCharts === 'function') {
+            RentConnectCharts.initCharts(data);
+          }
         }
       } catch (e) {
         console.warn('Analytics loading error:', e);
@@ -8841,6 +8899,7 @@ try {
     }
 
     document.addEventListener('DOMContentLoaded', () => {
+      initGlobalOwnerSearch();
       loadDashboardAnalytics();
       const urlParams = new URLSearchParams(window.location.search);
       if (urlParams.get('tab') === 'archived' || urlParams.get('section') === 'archived' || window.location.hash === '#directoryArchivedView') {
