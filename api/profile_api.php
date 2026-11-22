@@ -148,26 +148,60 @@ try {
             $randStr = bin2hex(random_bytes(6));
             $newFilename = sprintf('avatar_u%d_%s_%s.%s', $userId, $timestampStr, $randStr, $rawExt);
 
-            // Upload directly to Supabase Cloud Storage bucket 'avatars' via REST API
-            $publicAvatarUrl = uploadToSupabaseStorage($picFile['tmp_name'], $newFilename, 'avatars');
-            if ($publicAvatarUrl === false) {
-                http_response_code(500);
-                echo json_encode([
-                    'status' => 'error',
-                    'message' => 'Failed to upload profile picture to cloud storage.'
-                ]);
-                exit;
+            // Attempt storage: First try cloud storage (Supabase), fallback to local storage
+            $savedDbPath = null;
+            try {
+                if (function_exists('uploadToSupabaseStorage')) {
+                    $cloudUrl = uploadToSupabaseStorage($picFile['tmp_name'], $newFilename, 'avatars');
+                    if (!empty($cloudUrl) && is_string($cloudUrl)) {
+                        $savedDbPath = $cloudUrl;
+                    }
+                }
+            } catch (\Throwable $cloudEx) {
+                error_log("[Profile API] Cloud storage notice: " . $cloudEx->getMessage());
             }
 
-            $savedDbPath = $publicAvatarUrl;
+            // Fallback to local storage if cloud storage was unreachable or returned false
+            if (empty($savedDbPath)) {
+                $localUploadDir = dirname(__DIR__) . '/uploads/avatars/';
+                if (!is_dir($localUploadDir)) {
+                    @mkdir($localUploadDir, 0777, true);
+                }
+                $targetLocalPath = $localUploadDir . $newFilename;
 
-            // Update database record using PostgreSQL UPDATE query with absolute public URL
+                $storedLocally = false;
+                if (is_uploaded_file($picFile['tmp_name'])) {
+                    $storedLocally = @move_uploaded_file($picFile['tmp_name'], $targetLocalPath);
+                }
+                if (!$storedLocally) {
+                    $storedLocally = @copy($picFile['tmp_name'], $targetLocalPath);
+                }
+                if (!$storedLocally) {
+                    $content = @file_get_contents($picFile['tmp_name']);
+                    if ($content !== false && strlen($content) > 0) {
+                        $storedLocally = (@file_put_contents($targetLocalPath, $content) !== false);
+                    }
+                }
+
+                if ($storedLocally) {
+                    $savedDbPath = 'uploads/avatars/' . $newFilename;
+                } else {
+                    http_response_code(500);
+                    echo json_encode([
+                        'status' => 'error',
+                        'message' => 'Failed to store profile picture to storage system.'
+                    ]);
+                    exit;
+                }
+            }
+
+            // Update database record using PostgreSQL UPDATE query
             $updStmt = $pdo->prepare("UPDATE users SET profile_picture = :pic WHERE id = :id");
             $updStmt->execute([':pic' => $savedDbPath, ':id' => $userId]);
 
-            // Clean up old local avatar file safely if it was local
-            if (!empty($oldAvatar) && !str_starts_with((string)$oldAvatar, 'http')) {
-                $oldPath = __DIR__ . '/../uploads/avatars/' . basename((string)$oldAvatar);
+            // Clean up old local avatar file safely if it was local and distinct
+            if (!empty($oldAvatar) && !str_starts_with((string)$oldAvatar, 'http') && $oldAvatar !== $savedDbPath) {
+                $oldPath = dirname(__DIR__) . '/uploads/avatars/' . basename((string)$oldAvatar);
                 if (file_exists($oldPath) && is_file($oldPath)) {
                     @unlink($oldPath);
                 }
@@ -1187,8 +1221,36 @@ try {
             exit;
         }
 
-        // ACTION C: Update Account Information (Phone, Email, Emergency Contacts)
+        // ACTION C: Update Account Information (Name, Phone, Email, Emergency Contacts)
         if ($action === 'update_account_info') {
+            // Strict backend enforcement: Disallow modifying any rental or system control fields
+            $disallowedKeys = ['unit_id', 'monthly_rent', 'advance_deposit', 'rental_status', 'role', 'is_verified', 'verification_status', 'move_in_date', 'move_out_date', 'username', 'password_hash'];
+            foreach ($disallowedKeys as $k) {
+                unset($input[$k], $_POST[$k]);
+            }
+
+            $firstName = trim((string)($input['first_name'] ?? ''));
+            $middleName = trim((string)($input['middle_name'] ?? ''));
+            $lastName = trim((string)($input['last_name'] ?? ''));
+            $directName = trim((string)($input['name'] ?? ''));
+
+            $existingName = (string)($currentUser['name'] ?? '');
+            $fullName = $existingName;
+
+            if ($firstName !== '' || $lastName !== '') {
+                if ($firstName === '' || $lastName === '') {
+                    http_response_code(422);
+                    echo json_encode([
+                        'status' => 'error',
+                        'message' => 'Both First Name and Last Name are required when updating your name.'
+                    ]);
+                    exit;
+                }
+                $fullName = trim(implode(' ', array_filter([$firstName, $middleName, $lastName], fn($v) => $v !== '')));
+            } elseif ($directName !== '') {
+                $fullName = $directName;
+            }
+
             $email = trim((string)($input['email'] ?? ''));
             $phone = trim((string)($input['phone'] ?? ''));
             $emergencyName = trim((string)($input['emergency_contact_name'] ?? ''));
@@ -1227,7 +1289,8 @@ try {
 
             $updateStmt = $pdo->prepare("
                 UPDATE users 
-                SET email = :email,
+                SET name = :name,
+                    email = :email,
                     phone = :phone,
                     emergency_contact = :em_contact,
                     emergency_contact_name = :em_name,
@@ -1236,6 +1299,7 @@ try {
                 WHERE id = :id
             ");
             $updateStmt->execute([
+                ':name' => !empty($fullName) ? $fullName : $existingName,
                 ':email' => !empty($email) ? $email : null,
                 ':phone' => !empty($phone) ? $phone : null,
                 ':em_contact' => !empty($emergencyName) ? $emergencyName : null,
@@ -1247,18 +1311,18 @@ try {
 
             // Refresh user session data if needed
             if (isset($_SESSION['user']['id']) && (int)$_SESSION['user']['id'] === $userId) {
+                $_SESSION['user']['name'] = $fullName;
                 $_SESSION['user']['email'] = $email;
                 $_SESSION['user']['phone'] = $phone;
             }
 
             // If tenant updated info, notify landlord
             if (!Auth::isLandlord()) {
-                $tenantName = $currentUser['name'] ?? 'Tenant';
                 NotificationService::notifyLandlords(
                     $pdo,
                     'account',
                     'Tenant Profile Updated',
-                    "{$tenantName} updated their profile and emergency contact information.",
+                    "{$fullName} updated their profile and personal information.",
                     'sectionDirectory',
                     $userId,
                     'tenant_profile_update'
@@ -1267,7 +1331,10 @@ try {
 
             echo json_encode([
                 'status' => 'success',
-                'message' => 'Account information updated successfully!'
+                'message' => 'Profile information updated successfully!',
+                'name' => $fullName,
+                'email' => $email,
+                'phone' => $phone
             ]);
             exit;
         }

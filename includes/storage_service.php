@@ -39,8 +39,8 @@ if (!function_exists('uploadToSupabaseStorage')) {
         $publicUrl = "{$supabaseUrl}/storage/v1/object/public/{$cleanBucket}/{$cleanFileName}";
 
         // 2. Validate input temporary file
-        if (!file_exists($fileTmpPath) || !is_readable($fileTmpPath)) {
-            error_log("[Supabase Storage] File does not exist or is unreadable: {$fileTmpPath}");
+        if (!file_exists($fileTmpPath)) {
+            error_log("[Supabase Storage] File does not exist: {$fileTmpPath}");
             return false;
         }
 

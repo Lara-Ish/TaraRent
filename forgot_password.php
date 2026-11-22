@@ -1,22 +1,25 @@
 <?php
 /**
- * RentConnect - Forgot Password Workflow
+ * TaraRent - Secure Forgot Password Workflow
  * 
- * 4 Separate Screens (No top progress labels):
- *   1. Forgot Password – Registered Email
- *   2. Verify Your Email – 6-Digit Code
- *   3. Change Password
- *   4. Password Reset Successful
+ * 4 Focused Screens:
+ *   Screen 1: Forgot Password (Registered Email)
+ *   Screen 2: Verify Your Email (6-Digit Numeric Code)
+ *   Screen 3: Change Password (Gated by cryptographic token)
+ *   Screen 4: Password Reset Successful
  *
- * Security & Navigation Rules:
- *   - Refreshing the page (F5 / reload) automatically returns user to login.php
- *   - Pressing browser Back button automatically returns user to login.php
- *   - Abandoned sessions invalidate MySQL verification codes and clear session state
- *   - Change Password screen (Screen 3) is strictly gated by PHP backend verification
- *   - Styled with Tailwind CSS utility classes, glassmorphism, and natural emoji indicators
+ * Theme:
+ *   Warm brown claymorphic card (reference: TaraRent Unit Card)
+ *   Gradient: linear-gradient(180deg, #7D5124 0%, #563815 48%, #3A220B 100%)
+ *   High contrast warm cream typography (#FFFFFF, #F5EFEB, #EFE7DA)
+ *   Pill-shaped action buttons & tactile inputs
  */
 
 declare(strict_types=1);
+
+ob_start();
+
+date_default_timezone_set('Asia/Manila');
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
@@ -47,10 +50,22 @@ function isJsonRequest(): bool {
         || (isset($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest');
 }
 
+/**
+ * Output a clean, uncorrupted JSON response and terminate.
+ */
+function sendJsonResponse(array $data, int $statusCode = 200): void {
+    while (ob_get_level() > 0) {
+        ob_end_clean();
+    }
+    http_response_code($statusCode);
+    header('Content-Type: application/json; charset=UTF-8');
+    echo json_encode($data);
+    exit;
+}
+
 // -----------------------------------------------------------------------------
-// ABANDONMENT / REFRESH HANDLING ON GET REQUESTS
+// EXPLICIT ABANDONMENT VIA GET PARAMETER
 // -----------------------------------------------------------------------------
-// If explicitly abandoned via query param
 if (isset($_GET['abandon']) && $_GET['abandon'] === '1') {
     if (!empty($_SESSION['forgot_pwd']['reset_id'])) {
         $pdo->prepare("UPDATE password_resets SET used_at = NOW() WHERE id = :id AND used_at IS NULL")
@@ -61,17 +76,17 @@ if (isset($_GET['abandon']) && $_GET['abandon'] === '1') {
     exit;
 }
 
-// If user navigates or refreshes forgot_password.php while an active/completed reset session exists:
-// Invalidate code in DB, clear temporary state, and return to login.php as required
-if ($_SERVER['REQUEST_METHOD'] === 'GET') {
-    if (!empty($_SESSION['forgot_pwd']) || !empty($_SESSION['forgot_pwd_done'])) {
-        if (!empty($_SESSION['forgot_pwd']['reset_id'])) {
-            $pdo->prepare("UPDATE password_resets SET used_at = NOW() WHERE id = :id AND used_at IS NULL")
-                ->execute([':id' => (int)$_SESSION['forgot_pwd']['reset_id']]);
-        }
-        unset($_SESSION['forgot_pwd'], $_SESSION['forgot_pwd_done']);
-        header('Location: login.php');
-        exit;
+// Check initial screen state based on active session
+$initialScreen = 1;
+$initialEmail = '';
+$initialResetToken = '';
+if (!empty($_SESSION['forgot_pwd']['email']) && empty($_SESSION['forgot_pwd_done'])) {
+    $initialEmail = (string)$_SESSION['forgot_pwd']['email'];
+    if (!empty($_SESSION['forgot_pwd']['verified']) && !empty($_SESSION['forgot_pwd']['reset_token'])) {
+        $initialScreen = 3;
+        $initialResetToken = (string)$_SESSION['forgot_pwd']['reset_token'];
+    } else {
+        $initialScreen = 2;
     }
 }
 
@@ -87,7 +102,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $ip = $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
 
     // -------------------------------------------------------------------------
-    // ACTION: ABANDON RESET SESSION (Called via Beacon or Popstate)
+    // ACTION: ABANDON RESET SESSION
     // -------------------------------------------------------------------------
     if ($action === 'abandon') {
         if (!empty($_SESSION['forgot_pwd']['reset_id'])) {
@@ -144,7 +159,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $userStmt = $pdo->prepare("
                     SELECT id, name, email, role, is_active 
                     FROM users 
-                    WHERE email = :email AND is_active = TRUE AND (is_archived = FALSE OR is_archived IS NULL)
+                    WHERE LOWER(email) = LOWER(:email) AND is_active = TRUE AND (is_archived = FALSE OR is_archived IS NULL)
                     LIMIT 1
                 ");
                 $userStmt->execute([':email' => $email]);
@@ -172,18 +187,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $verificationCode = str_pad((string)random_int(100000, 999999), 6, '0', STR_PAD_LEFT);
                     $codeHash = hash('sha256', $verificationCode);
 
-                    // Store hashed code with 5-minute expiry & max 5 attempts
+                    // Expiration calculation: strictly at least 5 minutes from generation, with 10-minute buffer
+                    $nowUnix = time();
+                    $expiryDuration = 10 * 60; // 10 minutes safety buffer
+                    $expiresAtUnix = $nowUnix + $expiryDuration;
+                    $expiresAtUtc = gmdate('Y-m-d H:i:s', $expiresAtUnix);
+                    $createdAtUtc = gmdate('Y-m-d H:i:s', $nowUnix);
+
+                    // Store hashed code with explicit UTC expiration & max 5 attempts
                     $insertStmt = $pdo->prepare("
                         INSERT INTO password_resets 
                             (user_id, email, token_hash, ip_address, expires_at, attempts, max_attempts, created_at)
                         VALUES 
-                            (:uid, :email, :thash, :ip, (NOW() + INTERVAL '5 MINUTE'), 0, 5, NOW())
+                            (:uid, :email, :thash, :ip, :expires_at, 0, 5, :created_at)
                     ");
                     $insertStmt->execute([
-                        ':uid'   => $userId,
-                        ':email' => $user['email'],
-                        ':thash' => $codeHash,
-                        ':ip'    => $ip
+                        ':uid'        => $userId,
+                        ':email'      => $user['email'],
+                        ':thash'      => $codeHash,
+                        ':ip'         => $ip,
+                        ':expires_at' => $expiresAtUtc,
+                        ':created_at' => $createdAtUtc
                     ]);
                     $resetId = (int)$pdo->lastInsertId();
 
@@ -197,17 +221,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $userId
                     );
 
-                    // Store temporary session state
+                    // Store temporary session state with absolute UNIX timestamps
                     $_SESSION['forgot_pwd'] = [
-                        'email'        => (string)$user['email'],
-                        'name'         => (string)$user['name'],
-                        'user_id'      => $userId,
-                        'reset_id'     => $resetId,
-                        'code_sent_at' => time(),
-                        'verified'     => false,
-                        'verified_at'  => null,
-                        'reset_token'  => null,
-                        'screen'       => 2
+                        'email'           => (string)$user['email'],
+                        'name'            => (string)$user['name'],
+                        'user_id'         => $userId,
+                        'reset_id'        => $resetId,
+                        'code_sent_at'    => $nowUnix,
+                        'expires_at_unix' => $expiresAtUnix,
+                        'verified'        => false,
+                        'verified_at'     => null,
+                        'reset_token'     => null,
+                        'screen'          => 2
                     ];
 
                     $resp = [
@@ -247,13 +272,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                        pr.attempts, pr.max_attempts, u.name, u.role
                 FROM password_resets pr
                 JOIN users u ON pr.user_id = u.id
-                WHERE pr.email = :email
+                WHERE LOWER(pr.email) = LOWER(:email)
                   AND pr.used_at IS NULL
                 ORDER BY pr.id DESC
                 LIMIT 1
             ");
             $stmt->execute([':email' => $email]);
             $record = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            // Compute expiration safely using UTC comparison
+            $rawExpiresAt = trim((string)($record['expires_at'] ?? ''));
+            $recordExpiresUnix = 0;
+            if (!empty($rawExpiresAt)) {
+                // If the string lacks an explicit timezone offset, treat it as UTC
+                if (!preg_match('/[Z\+\-]\d{2}(:\d{2})?$/i', $rawExpiresAt)) {
+                    $recordExpiresUnix = strtotime($rawExpiresAt . ' UTC');
+                } else {
+                    $recordExpiresUnix = strtotime($rawExpiresAt);
+                }
+            }
+
+            // Fallback to session timestamp if database formatting had skew
+            if ($recordExpiresUnix <= 0 && !empty($_SESSION['forgot_pwd']['expires_at_unix'])) {
+                $recordExpiresUnix = (int)$_SESSION['forgot_pwd']['expires_at_unix'];
+            }
+
+            $currentTime = time();
 
             if (!$record) {
                 $resp = [
@@ -265,7 +309,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'status' => 'error', 
                     'message' => 'Too many failed attempts. For your security, this code is no longer valid. Please request a new code.'
                 ];
-            } elseif (strtotime($record['expires_at']) < time()) {
+            } elseif ($recordExpiresUnix > 0 && $currentTime > $recordExpiresUnix) {
                 $resp = [
                     'status' => 'error', 
                     'message' => 'This verification code has expired. Codes are only valid for 5 minutes. Please request a new code.'
@@ -289,15 +333,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $resetToken = bin2hex(random_bytes(32));
 
                     $_SESSION['forgot_pwd'] = [
-                        'email'        => (string)$record['email'],
-                        'name'         => (string)$record['name'],
-                        'user_id'      => (int)$record['user_id'],
-                        'reset_id'     => (int)$record['id'],
-                        'code_sent_at' => $_SESSION['forgot_pwd']['code_sent_at'] ?? time(),
-                        'verified'     => true,
-                        'verified_at'  => time(),
-                        'reset_token'  => $resetToken,
-                        'screen'       => 3
+                        'email'           => (string)$record['email'],
+                        'name'            => (string)$record['name'],
+                        'user_id'         => (int)$record['user_id'],
+                        'reset_id'        => (int)$record['id'],
+                        'code_sent_at'    => $_SESSION['forgot_pwd']['code_sent_at'] ?? $currentTime,
+                        'expires_at_unix' => $recordExpiresUnix,
+                        'verified'        => true,
+                        'verified_at'     => $currentTime,
+                        'reset_token'     => $resetToken,
+                        'screen'          => 3
                     ];
 
                     $resp = [
@@ -337,7 +382,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $cooldown = 45;
             $timeSince = time() - $lastSent;
 
-            if ($timeSince < $cooldown) {
+            if ($timeSince < $cooldown && $lastSent > 0) {
                 $remainingSec = $cooldown - $timeSince;
                 $resp = [
                     'status' => 'error',
@@ -348,7 +393,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $userStmt = $pdo->prepare("
                     SELECT id, name, email, is_active 
                     FROM users 
-                    WHERE email = :email AND is_active = TRUE AND (is_archived = FALSE OR is_archived IS NULL)
+                    WHERE LOWER(email) = LOWER(:email) AND is_active = TRUE AND (is_archived = FALSE OR is_archived IS NULL)
                     LIMIT 1
                 ");
                 $userStmt->execute([':email' => $email]);
@@ -367,17 +412,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $verificationCode = str_pad((string)random_int(100000, 999999), 6, '0', STR_PAD_LEFT);
                     $codeHash = hash('sha256', $verificationCode);
 
+                    $nowUnix = time();
+                    $expiryDuration = 10 * 60; // 10 minutes safety buffer
+                    $expiresAtUnix = $nowUnix + $expiryDuration;
+                    $expiresAtUtc = gmdate('Y-m-d H:i:s', $expiresAtUnix);
+                    $createdAtUtc = gmdate('Y-m-d H:i:s', $nowUnix);
+
                     $insertStmt = $pdo->prepare("
                         INSERT INTO password_resets 
                             (user_id, email, token_hash, ip_address, expires_at, attempts, max_attempts, created_at)
                         VALUES 
-                            (:uid, :email, :thash, :ip, (NOW() + INTERVAL '5 MINUTE'), 0, 5, NOW())
+                            (:uid, :email, :thash, :ip, :expires_at, 0, 5, :created_at)
                     ");
                     $insertStmt->execute([
-                        ':uid'   => $userId,
-                        ':email' => $user['email'],
-                        ':thash' => $codeHash,
-                        ':ip'    => $ip
+                        ':uid'        => $userId,
+                        ':email'      => $user['email'],
+                        ':thash'      => $codeHash,
+                        ':ip'         => $ip,
+                        ':expires_at' => $expiresAtUtc,
+                        ':created_at' => $createdAtUtc
                     ]);
                     $resetId = (int)$pdo->lastInsertId();
 
@@ -391,15 +444,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     );
 
                     $_SESSION['forgot_pwd'] = [
-                        'email'        => (string)$user['email'],
-                        'name'         => (string)$user['name'],
-                        'user_id'      => $userId,
-                        'reset_id'     => $resetId,
-                        'code_sent_at' => time(),
-                        'verified'     => false,
-                        'verified_at'  => null,
-                        'reset_token'  => null,
-                        'screen'       => 2
+                        'email'           => (string)$user['email'],
+                        'name'            => (string)$user['name'],
+                        'user_id'         => $userId,
+                        'reset_id'        => $resetId,
+                        'code_sent_at'    => $nowUnix,
+                        'expires_at_unix' => $expiresAtUnix,
+                        'verified'        => false,
+                        'verified_at'     => null,
+                        'reset_token'     => null,
+                        'screen'          => 2
                     ];
 
                     $resp = [
@@ -456,69 +510,103 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $confirmPassword = (string)($input['confirm_password'] ?? '');
 
             if (empty($newPassword) || strlen($newPassword) < 6) {
-                $resp = ['status' => 'error', 'message' => 'New password must be at least 6 characters long.'];
+                $resp = ['status' => 'error', 'message' => 'Password must be at least 6 characters long.'];
             } elseif ($newPassword !== $confirmPassword) {
-                $resp = ['status' => 'error', 'message' => 'The new passwords do not match. Please verify and re-type.'];
+                $resp = ['status' => 'error', 'message' => 'Passwords do not match.'];
             } else {
-                try {
-                    $pdo->beginTransaction();
+                $userId = (int)$_SESSION['forgot_pwd']['user_id'];
 
-                    $userId = (int)$_SESSION['forgot_pwd']['user_id'];
-                    $resetId = (int)$_SESSION['forgot_pwd']['reset_id'];
-                    $userEmail = (string)$_SESSION['forgot_pwd']['email'];
-                    $userName = (string)($_SESSION['forgot_pwd']['name'] ?? 'User');
-                    $newHash = password_hash($newPassword, PASSWORD_BCRYPT);
+                // Fetch user role and existing password hash
+                $userCheckStmt = $pdo->prepare("SELECT role, password_hash FROM users WHERE id = :id LIMIT 1");
+                $userCheckStmt->execute([':id' => $userId]);
+                $userRow = $userCheckStmt->fetch(PDO::FETCH_ASSOC);
+                $userRole = (string)($userRow['role'] ?? 'tenant');
+                $currentHash = $userRow['password_hash'] ?? null;
 
-                    // 1. Update user password
-                    $upd = $pdo->prepare("UPDATE users SET password_hash = :hash, updated_at = NOW() WHERE id = :id");
-                    $upd->execute([':hash' => $newHash, ':id' => $userId]);
-
-                    // 2. Mark this reset record used (Single-use enforcement)
-                    $pdo->prepare("UPDATE password_resets SET used_at = NOW() WHERE id = :id")->execute([':id' => $resetId]);
-
-                    // 3. Invalidate all other active reset tokens for this user
-                    $pdo->prepare("UPDATE password_resets SET used_at = NOW() WHERE user_id = :uid AND used_at IS NULL")
-                        ->execute([':uid' => $userId]);
-
-                    $pdo->commit();
-
-                    // 4. Send security confirmation email
-                    EmailService::notifyPasswordResetSuccess($pdo, $userEmail, $userName, $userId);
-
-                    // 5. In-App Notification
-                    NotificationService::create(
-                        $pdo,
-                        $userId,
-                        'account',
-                        'Password Reset Successfully',
-                        'Your account password was updated successfully. You can now log in using your new credentials.',
-                        'tenantProfile',
-                        $userId,
-                        'password_reset'
-                    );
-
-                    // 6. Destroy reset session and flag completion
-                    unset($_SESSION['forgot_pwd']);
-                    $_SESSION['forgot_pwd_done'] = true;
-
+                if (!empty($currentHash) && password_verify($newPassword, (string)$currentHash)) {
                     $resp = [
-                        'status'  => 'success',
-                        'message' => 'Your password has been successfully reset!',
-                        'screen'  => 4
+                        'status'  => 'error',
+                        'success' => false,
+                        'message' => 'You cannot use your previous password as your new password.'
                     ];
-                } catch (Throwable $e) {
-                    if ($pdo->inTransaction()) {
-                        $pdo->rollBack();
+                } else {
+                    $dbCommitted = false;
+                    try {
+                        $pdo->beginTransaction();
+
+                        $resetId = (int)$_SESSION['forgot_pwd']['reset_id'];
+                        $userEmail = (string)$_SESSION['forgot_pwd']['email'];
+                        $userName = (string)($_SESSION['forgot_pwd']['name'] ?? 'User');
+                        $newHash = password_hash($newPassword, PASSWORD_DEFAULT);
+
+                        // 1. Update user password
+                        $upd = $pdo->prepare("UPDATE users SET password_hash = :hash, updated_at = NOW() WHERE id = :id");
+                        $upd->execute([':hash' => $newHash, ':id' => $userId]);
+
+                        // 2. Mark this reset record used (Single-use enforcement)
+                        $pdo->prepare("UPDATE password_resets SET used_at = NOW() WHERE id = :id")->execute([':id' => $resetId]);
+
+                        // 3. Invalidate all other active reset tokens for this user
+                        $pdo->prepare("UPDATE password_resets SET used_at = NOW() WHERE user_id = :uid AND used_at IS NULL")
+                            ->execute([':uid' => $userId]);
+
+                        $pdo->commit();
+                        $dbCommitted = true;
+                    } catch (Throwable $dbEx) {
+                        if ($pdo->inTransaction()) {
+                            $pdo->rollBack();
+                        }
+                        error_log("[Password Reset DB Error]: " . $dbEx->getMessage());
+                        $resp = [
+                            'status'  => 'error',
+                            'success' => false,
+                            'message' => 'Unable to reset password. Please try again later.'
+                        ];
                     }
-                    $resp = ['status' => 'error', 'message' => 'Unable to reset password. Please try again later.'];
+
+                    if ($dbCommitted) {
+                        // 4. Send security confirmation email (Isolated so mail errors do not fail the reset)
+                        try {
+                            EmailService::notifyPasswordResetSuccess($pdo, $userEmail, $userName, $userId);
+                        } catch (Throwable $mailEx) {
+                            error_log("[Password Reset Email Error]: " . $mailEx->getMessage());
+                        }
+
+                        // 5. In-App Notification (strictly matching signature of NotificationService::create)
+                        try {
+                            NotificationService::create(
+                                $pdo,
+                                $userId,
+                                $userRole,
+                                'account',
+                                'Password Reset Successfully',
+                                'Your account password was updated successfully. You can now log in using your new credentials.',
+                                'login.php',
+                                $userId,
+                                'password_reset',
+                                false // sendEmail = false to prevent duplicate email dispatch
+                            );
+                        } catch (Throwable $notifEx) {
+                            error_log("[Password Reset Notification Error]: " . $notifEx->getMessage());
+                        }
+
+                        // 6. Destroy reset session and flag completion
+                        unset($_SESSION['forgot_pwd']);
+                        $_SESSION['forgot_pwd_done'] = true;
+
+                        $resp = [
+                            'status'  => 'success',
+                            'success' => true,
+                            'message' => 'Password successfully updated! You can now log in.',
+                            'screen'  => 4
+                        ];
+                    }
                 }
             }
         }
 
         if (isJsonRequest()) {
-            header('Content-Type: application/json; charset=UTF-8');
-            echo json_encode($resp);
-            exit;
+            sendJsonResponse($resp);
         }
 
         if (($resp['status'] ?? '') === 'success') {
@@ -542,7 +630,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>TaraRent – Apartment Management System</title>
+  <title>TaraRent – Reset Password</title>
 
   <!-- Global Favicon -->
   <link rel="icon" type="image/png" sizes="16x16" href="assets/images/favicon-16.png">
@@ -555,7 +643,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   <!-- Typography: Plus Jakarta Sans -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 
   <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
@@ -565,36 +653,224 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         extend: {
           fontFamily: {
             sans: ['"Plus Jakarta Sans"', 'system-ui', 'sans-serif'],
-            mono: ['"Courier New"', 'Courier', 'monospace']
-          },
-          colors: {
-            brand: {
-              50: '#eef2ff',
-              100: '#e0e7ff',
-              200: '#c7d2fe',
-              500: '#6366f1',
-              600: '#4f46e5',
-              700: '#4338ca'
-            }
+            mono: ['"Plus Jakarta Sans"', 'monospace']
           }
         }
       }
     }
   </script>
 
-  <!-- Claymorphism / Glassmorphism Stylesheet -->
-  <link rel="stylesheet" href="assets/css/claymorphism.css">
   <script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
-  <script src="assets/js/lucide_init.js?v=20261112"></script>
 
   <style>
-    /* Monospace Code Input Formatting */
-    .code-input-spacing {
-      font-family: 'Courier New', Courier, monospace;
+    :root {
+      --tararent-warm-cream: #EFE7DA;
+      --tararent-card-top: #7D5124;
+      --tararent-card-mid: #563815;
+      --tararent-card-bot: #3A220B;
+      --tararent-text-light: #FFFDF8;
+      --tararent-text-cream: #F5EFEB;
+      --tararent-text-muted: #EFE7DA;
+    }
+
+    *, *::before, *::after {
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+      background-color: var(--tararent-warm-cream);
+      background-image: 
+        radial-gradient(circle at 50% 20%, rgba(245, 222, 179, 0.45) 0%, rgba(239, 231, 218, 0.85) 55%, #DFCEB0 100%);
+      color: #FFFDF8;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0;
+      padding: 24px 16px;
+      position: relative;
+      overflow-x: hidden;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* Ambient Background Glows */
+    .ambient-glow-1 {
+      position: absolute;
+      top: -80px;
+      left: -80px;
+      width: 380px;
+      height: 380px;
+      background: rgba(184, 130, 53, 0.22);
+      border-radius: 50%;
+      filter: blur(80px);
+      pointer-events: none;
+    }
+
+    .ambient-glow-2 {
+      position: absolute;
+      bottom: -80px;
+      right: -80px;
+      width: 440px;
+      height: 440px;
+      background: rgba(125, 81, 36, 0.25);
+      border-radius: 50%;
+      filter: blur(90px);
+      pointer-events: none;
+    }
+
+    /* Signature Brown Claymorphic Card */
+    .tararent-brown-card {
+      width: 100%;
+      max-width: 450px;
+      background: linear-gradient(180deg, #7D5124 0%, #563815 48%, #3A220B 100%);
+      border: 1.5px solid rgba(220, 195, 155, 0.3);
+      border-radius: 24px;
+      padding: 34px 32px 30px;
+      box-shadow: 
+        0 24px 56px rgba(35, 20, 8, 0.4),
+        0 8px 20px rgba(35, 20, 8, 0.25),
+        inset 0 1px 1px rgba(255, 255, 255, 0.22);
+      position: relative;
+      z-index: 10;
+      transition: all 0.3s ease;
+    }
+
+    /* Reference Unit Card Clean Divider */
+    .unit-card-divider {
+      height: 2px;
+      background: rgba(245, 239, 235, 0.65);
+      border-radius: 2px;
+      margin: 16px 0 22px;
+      width: 100%;
+    }
+
+    /* Tactile Dark Inset Inputs */
+    .tararent-input {
+      width: 100%;
+      background: rgba(24, 13, 5, 0.55);
+      border: 1.5px solid rgba(212, 175, 55, 0.35);
+      border-radius: 14px;
+      color: #FFFDF8;
+      font-weight: 600;
+      font-size: 14px;
+      padding: 12px 16px;
+      box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.4);
+      transition: all 0.2s ease;
+    }
+
+    .tararent-input:focus {
+      outline: none;
+      border-color: #E5B263;
+      background: rgba(20, 10, 4, 0.7);
+      box-shadow: 0 0 0 3.5px rgba(229, 178, 99, 0.28), inset 0 2px 5px rgba(0, 0, 0, 0.45);
+    }
+
+    .tararent-input::placeholder {
+      color: rgba(239, 231, 218, 0.45);
+      font-weight: 500;
+    }
+
+    /* 6-Digit Monospace Tactile Code Entry */
+    .tararent-code-input {
+      font-family: 'Plus Jakarta Sans', monospace;
       letter-spacing: 0.45em;
       text-align: center;
-      font-size: 1.5rem;
+      font-size: 1.7rem;
       font-weight: 800;
+      padding: 13px 16px;
+      background: rgba(18, 9, 3, 0.65);
+      border: 2px solid rgba(212, 175, 55, 0.45);
+      border-radius: 16px;
+      color: #FFFDF8;
+      box-shadow: inset 0 3px 8px rgba(0, 0, 0, 0.5);
+    }
+
+    .tararent-code-input:focus {
+      border-color: #F3CA7E;
+      box-shadow: 0 0 0 4px rgba(243, 202, 126, 0.28), inset 0 3px 8px rgba(0, 0, 0, 0.55);
+    }
+
+    /* Pill-Shaped Claymorphic Action Buttons */
+    .tararent-pill-btn {
+      width: 100%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      background: linear-gradient(180deg, #C29B63 0%, #9E7438 50%, #6E4D1D 100%);
+      color: #FFFDF8;
+      border: 1px solid rgba(255, 240, 210, 0.4);
+      border-radius: 9999px;
+      padding: 13px 24px;
+      font-size: 14px;
+      font-weight: 800;
+      letter-spacing: 0.02em;
+      cursor: pointer;
+      box-shadow: 
+        0 4px 14px rgba(25, 15, 6, 0.35),
+        inset 0 1px 1px rgba(255, 255, 255, 0.25);
+      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+      text-decoration: none;
+    }
+
+    .tararent-pill-btn:hover:not(:disabled) {
+      background: linear-gradient(180deg, #CEAA73 0%, #AA8042 50%, #7A5623 100%);
+      transform: translateY(-1.5px);
+      box-shadow: 
+        0 6px 18px rgba(25, 15, 6, 0.45),
+        inset 0 1px 1px rgba(255, 255, 255, 0.3);
+    }
+
+    .tararent-pill-btn:active:not(:disabled) {
+      transform: translateY(0.5px);
+      box-shadow: 0 2px 8px rgba(25, 15, 6, 0.3);
+    }
+
+    .tararent-pill-btn:disabled {
+      opacity: 0.65;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    /* Red Occupied-style badge for urgency ("Valid for 5 mins") */
+    .tararent-red-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      background: #D35454;
+      border: 1px solid rgba(255, 255, 255, 0.25);
+      color: #FFFDF8;
+      font-size: 11px;
+      font-weight: 800;
+      padding: 3px 10px;
+      border-radius: 9999px;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+    }
+
+    /* Warm Alert Box */
+    .tararent-alert {
+      padding: 12px 14px;
+      border-radius: 14px;
+      font-size: 12.5px;
+      font-weight: 600;
+      line-height: 1.4;
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      margin-bottom: 18px;
+    }
+
+    .tararent-alert-error {
+      background: rgba(185, 28, 28, 0.35);
+      border: 1px solid rgba(248, 113, 113, 0.4);
+      color: #FEE2E2;
+    }
+
+    .tararent-alert-success {
+      background: rgba(16, 185, 129, 0.3);
+      border: 1px solid rgba(110, 231, 183, 0.45);
+      color: #D1FAE5;
     }
 
     /* Loading Spinner */
@@ -614,7 +890,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       vertical-align: middle;
     }
 
-    /* Screen Fade Transition */
+    /* Screen Fade Animation */
     .screen-fade {
       animation: screenFadeIn 0.22s ease-out;
     }
@@ -624,19 +900,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
   </style>
 </head>
-<body class="font-sans antialiased bg-gradient-to-br from-indigo-50 via-purple-50 to-violet-100 min-h-screen flex items-center justify-center p-4 relative overflow-x-hidden selection:bg-indigo-500 selection:text-white">
+<body>
 
-  <!-- Decorative Background Orbs for Glassmorphism Depth -->
-  <div class="absolute -top-24 -left-24 w-80 h-80 rounded-full bg-indigo-400/30 blur-3xl pointer-events-none"></div>
-  <div class="absolute -bottom-24 -right-24 w-96 h-96 rounded-full bg-purple-400/30 blur-3xl pointer-events-none"></div>
+  <!-- Ambient Glow Elements -->
+  <div class="ambient-glow-1"></div>
+  <div class="ambient-glow-2"></div>
 
-  <!-- Main Card Container -->
-  <div class="w-full max-w-md p-7 sm:p-9 rounded-3xl bg-white/85 backdrop-blur-xl border border-white/70 shadow-2xl relative z-10 transition-all duration-300">
+  <!-- Main Signature Brown Claymorphic Card -->
+  <div class="tararent-brown-card">
 
-    <!-- Brand Pill -->
-    <div class="text-center mb-6">
-      <div class="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-indigo-50/90 border border-indigo-100 shadow-inner text-xs font-bold text-indigo-700">
-        <img src="assets/images/tararent-logo.png" alt="TaraRent Logo" class="w-4 h-4 object-contain" style="width: 18px; height: 18px; object-fit: contain;">
+    <!-- Brand Header -->
+    <div class="text-center mb-5">
+      <div class="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white/10 border border-white/20 shadow-inner text-xs font-bold text-[#FFFDF8]">
+        <img src="assets/images/tararent-logo.png" alt="TaraRent Logo" style="width: 18px; height: 18px; object-fit: contain;">
         <span>TaraRent</span>
       </div>
     </div>
@@ -644,32 +920,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <!-- =====================================================================
          SCREEN 1 – FORGOT PASSWORD (REGISTERED EMAIL)
          ===================================================================== -->
-    <div id="screen1View" class="screen-fade">
-      <h1 class="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight text-center mb-2 flex items-center justify-center gap-2">
-        <i data-lucide="lock" class="w-7 h-7 text-indigo-600" aria-hidden="true"></i>
-        <span>Forgot Password</span>
+    <div id="screen1View" class="screen-fade <?= $initialScreen === 1 ? '' : 'hidden' ?>">
+      <h1 class="text-2xl font-black text-white text-center m-0 tracking-tight">
+        Forgot Password
       </h1>
-      <p class="text-xs sm:text-sm text-slate-500 text-center leading-relaxed mb-6">
-        Enter your registered email address to receive a 6-digit verification code to reset your account password.
+      <p class="text-xs text-[#F5EFEB] text-center mt-1.5 mb-0 leading-relaxed font-medium">
+        Enter your registered email address to receive a 6-digit verification code.
       </p>
 
-      <div id="screen1Alert" class="hidden p-3.5 rounded-xl text-xs sm:text-sm font-medium mb-5 flex items-start gap-2.5 bg-rose-50 border border-rose-200 text-rose-800">
-        <span class="flex-shrink-0 mt-0.5"><i data-lucide="alert-triangle" class="w-4 h-4" aria-hidden="true"></i></span>
+      <!-- Signature Reference Card Divider -->
+      <div class="unit-card-divider"></div>
+
+      <div id="screen1Alert" class="tararent-alert tararent-alert-error hidden">
+        <i data-lucide="alert-triangle" class="w-4 h-4 flex-shrink-0 mt-0.5 text-[#FCA5A5]"></i>
         <span id="screen1AlertText"></span>
       </div>
 
       <form id="formScreen1" onsubmit="handleSendCode(event)" class="space-y-4">
         <div>
-          <label for="screen1Email" class="block text-xs sm:text-sm font-bold text-slate-700 mb-1.5 flex items-center gap-1.5">
-            <i data-lucide="mail" class="w-4 h-4 text-indigo-600" aria-hidden="true"></i>
+          <label for="screen1Email" class="block text-xs font-extrabold text-[#EFE7DA] mb-1.5 uppercase tracking-wide flex items-center gap-1.5">
+            <i data-lucide="mail" class="w-3.5 h-3.5 text-[#D4AF37]"></i>
             <span>Registered Email Address</span>
           </label>
           <input 
             type="email" 
             id="screen1Email" 
             name="email" 
-            class="w-full px-4 py-3 rounded-xl bg-slate-50 border border-slate-200 text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all shadow-inner text-sm font-medium" 
+            class="tararent-input" 
             placeholder="e.g. name@example.com" 
+            value="<?= htmlspecialchars($initialEmail) ?>"
             required 
             autofocus
           >
@@ -678,16 +957,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <button 
           type="submit" 
           id="btnSendCode" 
-          class="w-full py-3.5 px-6 rounded-xl bg-gradient-to-r from-indigo-500 to-indigo-600 hover:from-indigo-600 hover:to-indigo-700 text-white font-bold text-sm shadow-lg shadow-indigo-500/25 active:scale-[0.99] transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-75 disabled:cursor-not-allowed"
+          class="tararent-pill-btn"
         >
-          <i data-lucide="mail" class="w-4 h-4" aria-hidden="true"></i>
+          <i data-lucide="send" class="w-4 h-4"></i>
           <span>Send Verification Code</span>
         </button>
       </form>
 
       <div class="text-center mt-6 pt-2">
-        <a href="login.php" class="text-xs sm:text-sm font-bold text-indigo-600 hover:text-indigo-800 transition-colors inline-flex items-center gap-1.5">
-          <i data-lucide="home" class="w-4 h-4" aria-hidden="true"></i>
+        <a href="login.php" class="text-xs font-bold text-[#EFE7DA] hover:text-white transition-colors inline-flex items-center gap-1.5">
+          <i data-lucide="arrow-left" class="w-3.5 h-3.5"></i>
           <span>Back to Login</span>
         </a>
       </div>
@@ -696,39 +975,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <!-- =====================================================================
          SCREEN 2 – VERIFY YOUR EMAIL (6-DIGIT CODE)
          ===================================================================== -->
-    <div id="screen2View" class="screen-fade hidden">
-      <h1 class="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight text-center mb-2 flex items-center justify-center gap-2">
-        <i data-lucide="mail-check" class="w-7 h-7 text-indigo-600" aria-hidden="true"></i>
-        <span>Verify Your Email</span>
+    <div id="screen2View" class="screen-fade <?= $initialScreen === 2 ? '' : 'hidden' ?>">
+      <h1 class="text-2xl font-black text-white text-center m-0 tracking-tight">
+        Verify Your Email
       </h1>
-      <p class="text-xs sm:text-sm text-slate-500 text-center leading-relaxed mb-5">
-        Enter the 6-digit verification code sent to your registered email address.
+      <p class="text-xs text-[#F5EFEB] text-center mt-1.5 mb-0 leading-relaxed font-medium">
+        Enter the 6-digit verification code sent to your registered email.
       </p>
 
+      <!-- Signature Reference Card Divider -->
+      <div class="unit-card-divider"></div>
+
       <!-- Registered Email Pill with Change Option -->
-      <div class="bg-indigo-50/80 border border-indigo-100 rounded-xl px-3.5 py-2.5 mb-5 flex items-center justify-between gap-2 text-xs sm:text-sm text-indigo-900">
+      <div class="bg-black/25 border border-white/15 rounded-xl px-3.5 py-2.5 mb-4 flex items-center justify-between gap-2 text-xs text-white">
         <div class="flex items-center gap-2 overflow-hidden truncate">
-          <i data-lucide="mail" class="w-4 h-4 text-indigo-600 flex-shrink-0" aria-hidden="true"></i>
-          <span class="font-bold truncate" id="screen2EmailDisplay">email@example.com</span>
+          <i data-lucide="mail-check" class="w-4 h-4 text-[#D4AF37] flex-shrink-0"></i>
+          <span class="font-bold truncate text-[#FFFDF8]" id="screen2EmailDisplay"><?= htmlspecialchars($initialEmail ?: 'email@example.com') ?></span>
         </div>
-        <button type="button" onclick="goToScreen(1)" class="text-xs font-bold text-indigo-600 hover:text-indigo-800 underline flex-shrink-0 cursor-pointer">
+        <button type="button" onclick="goToScreen(1)" class="text-xs font-extrabold text-[#F3CA7E] hover:text-white underline flex-shrink-0 cursor-pointer">
           Change
         </button>
       </div>
 
-      <div id="screen2Alert" class="hidden p-3.5 rounded-xl text-xs sm:text-sm font-medium mb-5 flex items-start gap-2.5 bg-rose-50 border border-rose-200 text-rose-800">
-        <span class="flex-shrink-0 mt-0.5"><i data-lucide="alert-triangle" class="w-4 h-4" aria-hidden="true"></i></span>
+      <div id="screen2Alert" class="tararent-alert tararent-alert-error hidden">
+        <i data-lucide="alert-triangle" class="w-4 h-4 flex-shrink-0 mt-0.5 text-[#FCA5A5]"></i>
         <span id="screen2AlertText"></span>
       </div>
 
       <form id="formScreen2" onsubmit="handleVerifyCode(event)" class="space-y-4">
         <div>
           <div class="flex items-center justify-between mb-1.5">
-            <label for="screen2Code" class="text-xs sm:text-sm font-bold text-slate-700 flex items-center gap-1.5">
-              <i data-lucide="hash" class="w-4 h-4 text-indigo-600" aria-hidden="true"></i>
-              <span>Enter Verification Code</span>
+            <label for="screen2Code" class="text-xs font-extrabold text-[#EFE7DA] uppercase tracking-wide flex items-center gap-1.5">
+              <i data-lucide="hash" class="w-3.5 h-3.5 text-[#D4AF37]"></i>
+              <span>Verification Code</span>
             </label>
-            <span class="text-[11px] font-bold text-rose-600 bg-rose-50 px-2 py-0.5 rounded-full border border-rose-100">
+            <span class="tararent-red-badge">
               Valid for 5 mins
             </span>
           </div>
@@ -736,7 +1017,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             type="text" 
             id="screen2Code" 
             name="code" 
-            class="w-full px-4 py-3 rounded-xl bg-slate-50 border border-slate-200 text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all shadow-inner code-input-spacing" 
+            class="tararent-input tararent-code-input" 
             placeholder="••••••" 
             maxlength="6" 
             pattern="[0-9]{6}" 
@@ -749,25 +1030,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <button 
           type="submit" 
           id="btnVerifyCode" 
-          class="w-full py-3.5 px-6 rounded-xl bg-gradient-to-r from-indigo-500 to-indigo-600 hover:from-indigo-600 hover:to-indigo-700 text-white font-bold text-sm shadow-lg shadow-indigo-500/25 active:scale-[0.99] transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-75 disabled:cursor-not-allowed"
+          class="tararent-pill-btn"
         >
-          <i data-lucide="check-circle-2" class="w-4 h-4" aria-hidden="true"></i>
+          <i data-lucide="shield-check" class="w-4 h-4"></i>
           <span>Verify Code</span>
         </button>
       </form>
 
-      <div class="flex items-center justify-between mt-6 pt-2 text-xs sm:text-sm">
+      <div class="flex items-center justify-between mt-6 pt-2 text-xs">
         <button 
           type="button" 
           id="btnResendCode" 
           onclick="handleResendCode()" 
-          class="font-bold text-indigo-600 hover:text-indigo-800 transition-colors inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+          class="font-extrabold text-[#F3CA7E] hover:text-white transition-colors inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
         >
-          <i data-lucide="refresh-cw" class="w-4 h-4" aria-hidden="true"></i>
+          <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
           <span id="btnResendText">Resend Code</span>
         </button>
-        <a href="login.php" class="font-bold text-slate-500 hover:text-slate-700 transition-colors inline-flex items-center gap-1.5">
-          <i data-lucide="home" class="w-4 h-4" aria-hidden="true"></i>
+        <a href="forgot_password.php?abandon=1" class="font-bold text-[#EFE7DA] hover:text-white transition-colors inline-flex items-center gap-1.5">
+          <i data-lucide="arrow-left" class="w-3.5 h-3.5"></i>
           <span>Back to Login</span>
         </a>
       </div>
@@ -775,28 +1056,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     <!-- =====================================================================
          SCREEN 3 – CHANGE PASSWORD
-         Strictly gated by backend verification token
          ===================================================================== -->
-    <div id="screen3View" class="screen-fade hidden">
-      <h1 class="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight text-center mb-2 flex items-center justify-center gap-2">
-        <i data-lucide="key-round" class="w-7 h-7 text-indigo-600" aria-hidden="true"></i>
-        <span>Change Password</span>
+    <div id="screen3View" class="screen-fade <?= $initialScreen === 3 ? '' : 'hidden' ?>">
+      <h1 class="text-2xl font-black text-white text-center m-0 tracking-tight">
+        Change Password
       </h1>
-      <p class="text-xs sm:text-sm text-slate-500 text-center leading-relaxed mb-6">
-        Your email has been successfully verified. You can now create a new password.
+      <p class="text-xs text-[#F5EFEB] text-center mt-1.5 mb-0 leading-relaxed font-medium">
+        Email verified successfully! Please enter your new account password.
       </p>
 
-      <div id="screen3Alert" class="hidden p-3.5 rounded-xl text-xs sm:text-sm font-medium mb-5 flex items-start gap-2.5 bg-rose-50 border border-rose-200 text-rose-800">
-        <span class="flex-shrink-0 mt-0.5"><i data-lucide="alert-triangle" class="w-4 h-4" aria-hidden="true"></i></span>
+      <!-- Signature Reference Card Divider -->
+      <div class="unit-card-divider"></div>
+
+      <div id="screen3Alert" class="tararent-alert tararent-alert-error hidden">
+        <i data-lucide="alert-triangle" class="w-4 h-4 flex-shrink-0 mt-0.5 text-[#FCA5A5]"></i>
         <span id="screen3AlertText"></span>
       </div>
 
       <form id="formScreen3" onsubmit="handleResetPassword(event)" class="space-y-4">
-        <input type="hidden" id="screen3ResetToken" name="reset_token" value="">
+        <input type="hidden" id="screen3ResetToken" name="reset_token" value="<?= htmlspecialchars($initialResetToken) ?>">
 
         <div>
-          <label for="screen3Password" class="block text-xs sm:text-sm font-bold text-slate-700 mb-1.5 flex items-center gap-1.5">
-            <i data-lucide="key-round" class="w-4 h-4 text-indigo-600" aria-hidden="true"></i>
+          <label for="screen3Password" class="block text-xs font-extrabold text-[#EFE7DA] mb-1.5 uppercase tracking-wide flex items-center gap-1.5">
+            <i data-lucide="lock" class="w-3.5 h-3.5 text-[#D4AF37]"></i>
             <span>New Password</span>
           </label>
           <div class="relative">
@@ -804,7 +1086,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
               type="password" 
               id="screen3Password" 
               name="new_password" 
-              class="w-full px-4 py-3 pr-11 rounded-xl bg-slate-50 border border-slate-200 text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all shadow-inner text-sm font-medium" 
+              class="tararent-input pr-10" 
               placeholder="Enter at least 6 characters" 
               required 
               minlength="6"
@@ -812,19 +1094,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             >
             <button 
               type="button" 
-              class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1 text-sm cursor-pointer inline-flex items-center justify-center" 
+              class="absolute right-3 top-1/2 -translate-y-1/2 text-[#EFE7DA]/70 hover:text-white p-1 text-sm cursor-pointer inline-flex items-center justify-center transition-colors" 
               onclick="togglePasswordVisibility('screen3Password', this)" 
               title="Show / Hide Password"
               aria-label="Show or Hide Password"
             >
-              <i data-lucide="eye" class="w-4 h-4" aria-hidden="true"></i>
+              <i data-lucide="eye" class="w-4 h-4"></i>
             </button>
           </div>
         </div>
 
         <div>
-          <label for="screen3ConfirmPassword" class="block text-xs sm:text-sm font-bold text-slate-700 mb-1.5 flex items-center gap-1.5">
-            <i data-lucide="lock" class="w-4 h-4 text-indigo-600" aria-hidden="true"></i>
+          <label for="screen3ConfirmPassword" class="block text-xs font-extrabold text-[#EFE7DA] mb-1.5 uppercase tracking-wide flex items-center gap-1.5">
+            <i data-lucide="shield" class="w-3.5 h-3.5 text-[#D4AF37]"></i>
             <span>Confirm Password</span>
           </label>
           <div class="relative">
@@ -832,19 +1114,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
               type="password" 
               id="screen3ConfirmPassword" 
               name="confirm_password" 
-              class="w-full px-4 py-3 pr-11 rounded-xl bg-slate-50 border border-slate-200 text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all shadow-inner text-sm font-medium" 
-              placeholder="Confirm your new password" 
+              class="tararent-input pr-10" 
+              placeholder="Re-type your new password" 
               required 
               minlength="6"
             >
             <button 
               type="button" 
-              class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1 text-sm cursor-pointer inline-flex items-center justify-center" 
+              class="absolute right-3 top-1/2 -translate-y-1/2 text-[#EFE7DA]/70 hover:text-white p-1 text-sm cursor-pointer inline-flex items-center justify-center transition-colors" 
               onclick="togglePasswordVisibility('screen3ConfirmPassword', this)" 
               title="Show / Hide Password"
               aria-label="Show or Hide Password"
             >
-              <i data-lucide="eye" class="w-4 h-4" aria-hidden="true"></i>
+              <i data-lucide="eye" class="w-4 h-4"></i>
             </button>
           </div>
         </div>
@@ -852,16 +1134,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <button 
           type="submit" 
           id="btnResetPassword" 
-          class="w-full py-3.5 px-6 rounded-xl bg-gradient-to-r from-indigo-500 to-indigo-600 hover:from-indigo-600 hover:to-indigo-700 text-white font-bold text-sm shadow-lg shadow-indigo-500/25 active:scale-[0.99] transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-75 disabled:cursor-not-allowed"
+          class="tararent-pill-btn"
         >
-          <i data-lucide="save" class="w-4 h-4" aria-hidden="true"></i>
-          <span>Reset Password</span>
+          <i data-lucide="check" class="w-4 h-4"></i>
+          <span>Save New Password</span>
         </button>
       </form>
 
       <div class="text-center mt-6 pt-2">
-        <a href="login.php" class="text-xs sm:text-sm font-bold text-slate-500 hover:text-slate-700 transition-colors inline-flex items-center gap-1.5">
-          <i data-lucide="home" class="w-4 h-4" aria-hidden="true"></i>
+        <a href="forgot_password.php?abandon=1" class="text-xs font-bold text-[#EFE7DA] hover:text-white transition-colors inline-flex items-center gap-1.5">
+          <i data-lucide="arrow-left" class="w-3.5 h-3.5"></i>
           <span>Back to Login</span>
         </a>
       </div>
@@ -872,26 +1154,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
          ===================================================================== -->
     <div id="screen4View" class="screen-fade hidden text-center py-2">
       <!-- Animated Success Checkmark Badge -->
-      <div class="w-20 h-20 mx-auto mb-5 rounded-full bg-gradient-to-tr from-emerald-400 to-emerald-500 text-white flex items-center justify-center shadow-xl shadow-emerald-500/30">
-        <i data-lucide="check-circle-2" class="w-10 h-10" aria-hidden="true"></i>
+      <div style="width: 72px; height: 72px; margin: 0 auto 16px; border-radius: 50%; background: linear-gradient(135deg, #10B981 0%, #059669 100%); color: #FFFFFF; display: flex; align-items: center; justify-content: center; box-shadow: 0 10px 24px rgba(5, 150, 105, 0.4); border: 2px solid rgba(110, 231, 183, 0.4);">
+        <i data-lucide="check" class="w-9 h-9" style="stroke-width: 3;"></i>
       </div>
 
-      <h1 class="text-xl sm:text-2xl font-extrabold text-emerald-900 tracking-tight mb-2">
+      <h1 class="text-2xl font-black text-white tracking-tight mb-2">
         Password Reset Successful
       </h1>
-      <p class="text-sm font-bold text-emerald-700 mb-1">
-        Your password has been successfully reset!
+      <p id="screen4SuccessText" class="text-sm font-bold text-[#A7F3D0] mb-2">
+        Password successfully updated! You can now log in.
       </p>
-      <p class="text-xs sm:text-sm text-slate-500 leading-relaxed mb-7 max-w-xs mx-auto">
-        You can now log in using your new password.
+      <p class="text-xs text-[#F5EFEB] leading-relaxed mb-7 max-w-xs mx-auto font-medium">
+        You can now sign in to your TaraRent account using your new credentials.
       </p>
 
       <a 
         href="login.php" 
-        class="w-full py-3.5 px-6 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white font-bold text-sm shadow-lg shadow-emerald-500/25 active:scale-[0.99] transition-all inline-flex items-center justify-center gap-2 text-center"
+        class="tararent-pill-btn text-center"
       >
-        <i data-lucide="home" class="w-4 h-4" aria-hidden="true"></i>
-        <span>Back to Login</span>
+        <i data-lucide="log-in" class="w-4 h-4"></i>
+        <span>Proceed to Sign In</span>
       </a>
     </div>
 
@@ -899,59 +1181,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
   <script>
     // State management
-    let currentScreen = 1;
-    let registeredEmail = '';
-    let verifiedResetToken = '';
+    let currentScreen = <?= (int)$initialScreen ?>;
+    let registeredEmail = <?= json_encode($initialEmail) ?>;
+    let verifiedResetToken = <?= json_encode($initialResetToken) ?>;
     let resendCooldownTimer = null;
     let resendSecondsRemaining = 0;
 
-    // =========================================================================
-    // NAVIGATION & REFRESH ENFORCEMENT: RETURN TO LOGIN ON REFRESH OR BACK
-    // =========================================================================
-
-    // 1. Detect page refresh / reload via Navigation Timing API
-    (function checkPageReload() {
-      let isReload = false;
-      if (window.performance) {
-        const navEntries = performance.getEntriesByType && performance.getEntriesByType('navigation');
-        if (navEntries && navEntries.length > 0) {
-          isReload = navEntries[0].type === 'reload';
-        } else if (performance.navigation) {
-          isReload = performance.navigation.type === 1;
-        }
+    // Initialize Lucide icons on DOM ready
+    document.addEventListener('DOMContentLoaded', () => {
+      if (window.lucide && typeof window.lucide.createIcons === 'function') {
+        window.lucide.createIcons();
       }
-
-      if (isReload) {
-        // If refreshed, immediately abandon any in-flight reset session and navigate to login.php
-        window.location.replace('forgot_password.php?abandon=1');
-      }
-    })();
-
-    // 2. Setup History State & Popstate Listener (Intercept Browser Back Button)
-    window.history.replaceState({ screen: 1 }, '', window.location.href);
-
-    window.addEventListener('popstate', function (event) {
-      // Whenever the user clicks the browser Back button at ANY point in the process:
-      // Invalidate the session on the backend and return to login.php
-      if (navigator.sendBeacon) {
-        navigator.sendBeacon('forgot_password.php', JSON.stringify({ action: 'abandon' }));
-      }
-      window.location.replace('forgot_password.php?abandon=1');
     });
 
-    // 3. Pagehide / BeforeUnload Listener (Abandonment cleanup on tab close)
-    window.addEventListener('pagehide', function () {
-      if (currentScreen > 1 && currentScreen < 4 && registeredEmail) {
-        if (navigator.sendBeacon) {
-          navigator.sendBeacon('forgot_password.php', JSON.stringify({ action: 'abandon' }));
-        }
+    // Setup History State & Intercept Browser Back Button
+    window.history.replaceState({ screen: currentScreen }, '', window.location.href);
+
+    window.addEventListener('popstate', function (event) {
+      if (event.state && event.state.screen) {
+        goToScreen(event.state.screen, false);
+      } else {
+        window.location.href = 'login.php';
       }
     });
 
     // =========================================================================
     // SCREEN DISPLAY & TOGGLES
     // =========================================================================
-    function goToScreen(screenNum) {
+    function goToScreen(screenNum, pushState = true) {
       currentScreen = screenNum;
 
       // Update Screen Visibility
@@ -960,8 +1217,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       document.getElementById('screen3View').classList.toggle('hidden', screenNum !== 3);
       document.getElementById('screen4View').classList.toggle('hidden', screenNum !== 4);
 
-      // Push history state so back button press can be captured by popstate
-      window.history.pushState({ screen: screenNum }, '', window.location.href);
+      if (pushState) {
+        window.history.pushState({ screen: screenNum }, '', window.location.href);
+      }
+
+      if (window.lucide && typeof window.lucide.createIcons === 'function') {
+        window.lucide.createIcons();
+      }
 
       // Focus fields
       if (screenNum === 1) {
@@ -979,12 +1241,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       if (!input) return;
       if (input.type === 'password') {
         input.type = 'text';
-        btn.innerHTML = window.rcIcon('eye-off', 'w-4 h-4');
+        btn.innerHTML = '<i data-lucide="eye-off" class="w-4 h-4"></i>';
         btn.title = 'Hide Password';
       } else {
         input.type = 'password';
-        btn.innerHTML = window.rcIcon('eye', 'w-4 h-4');
+        btn.innerHTML = '<i data-lucide="eye" class="w-4 h-4"></i>';
         btn.title = 'Show Password';
+      }
+      if (window.lucide && typeof window.lucide.createIcons === 'function') {
+        window.lucide.createIcons();
       }
     }
 
@@ -993,10 +1258,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       const alertText = document.getElementById(`screen${screenNum}AlertText`);
       if (!alertBox || !alertText) return;
 
-      alertBox.className = `p-3.5 rounded-xl text-xs sm:text-sm font-medium mb-5 flex items-start gap-2.5 border ${
+      alertBox.className = `tararent-alert ${
         type === 'success' 
-          ? 'bg-emerald-50 border-emerald-200 text-emerald-800' 
-          : 'bg-rose-50 border-rose-200 text-rose-800'
+          ? 'tararent-alert-success' 
+          : 'tararent-alert-error'
       }`;
       alertText.textContent = msg;
       alertBox.classList.remove('hidden');
@@ -1054,6 +1319,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       } finally {
         btn.disabled = false;
         btn.innerHTML = originalBtnHtml;
+        if (window.lucide && typeof window.lucide.createIcons === 'function') {
+          window.lucide.createIcons();
+        }
       }
     }
 
@@ -1095,12 +1363,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         const data = await res.json();
 
         if (res.ok && data.status === 'success') {
-          // Verification confirmed by PHP backend! Proceed to Screen 3
           verifiedResetToken = data.reset_token || '';
           document.getElementById('screen3ResetToken').value = verifiedResetToken;
           goToScreen(3);
         } else {
-          // Failure: remain on Screen 2 and display error
           showScreenAlert(2, data.message || 'Invalid verification code. Please check your email and try again.');
           codeInput.select();
         }
@@ -1110,6 +1376,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       } finally {
         btn.disabled = false;
         btn.innerHTML = originalBtnHtml;
+        if (window.lucide && typeof window.lucide.createIcons === 'function') {
+          window.lucide.createIcons();
+        }
       }
     }
 
@@ -1157,6 +1426,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         showScreenAlert(2, 'Network error requesting new code.');
         btn.disabled = false;
         textEl.textContent = 'Resend Code';
+      } finally {
+        if (window.lucide && typeof window.lucide.createIcons === 'function') {
+          window.lucide.createIcons();
+        }
       }
     }
 
@@ -1194,13 +1467,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       const p2 = document.getElementById('screen3ConfirmPassword').value;
 
       if (!p1 || p1.length < 6) {
-        showScreenAlert(3, 'New password must be at least 6 characters long.');
+        showScreenAlert(3, 'Password must be at least 6 characters long.');
         document.getElementById('screen3Password').focus();
         return;
       }
 
       if (p1 !== p2) {
-        showScreenAlert(3, 'The new passwords do not match. Please verify and re-type.');
+        showScreenAlert(3, 'Passwords do not match.');
         document.getElementById('screen3ConfirmPassword').focus();
         return;
       }
@@ -1209,7 +1482,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       const btn = document.getElementById('btnResetPassword');
       const originalBtnHtml = btn.innerHTML;
       btn.disabled = true;
-      btn.innerHTML = '<span class="btn-spinner"></span> Resetting Password...';
+      btn.innerHTML = '<span class="btn-spinner"></span> Saving New Password...';
 
       try {
         const res = await fetch('forgot_password.php', {
@@ -1226,18 +1499,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
           })
         });
 
-        const data = await res.json();
+        let data;
+        const rawText = await res.text();
+        try {
+          data = JSON.parse(rawText);
+        } catch (jsonErr) {
+          console.error('[Reset Password JSON Parse Error]:', jsonErr, 'Raw response:', rawText);
+          showScreenAlert(3, 'Unable to reset password. Please try again later.');
+          return;
+        }
 
-        if (res.ok && data.status === 'success') {
-          // Success! Move to Screen 4
+        const isSuccess = Boolean(data && (data.status === 'success' || data.success === true));
+
+        if (isSuccess) {
+          const successEl = document.getElementById('screen4SuccessText');
+          if (successEl && data.message) {
+            successEl.textContent = data.message;
+          }
           goToScreen(4);
         } else {
-          // If server reports unauthorized / session timeout, redirect to login or corresponding screen
-          if (data.screen && data.screen !== 3) {
+          if (data && data.screen && data.screen !== 3) {
             goToScreen(data.screen);
             showScreenAlert(data.screen, data.message || 'Session expired. Please start over.');
           } else {
-            showScreenAlert(3, data.message || 'Unable to update password. Please try again.');
+            showScreenAlert(3, (data && data.message) ? data.message : 'Unable to reset password. Please try again later.');
           }
         }
       } catch (err) {
@@ -1246,6 +1531,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       } finally {
         btn.disabled = false;
         btn.innerHTML = originalBtnHtml;
+        if (window.lucide && typeof window.lucide.createIcons === 'function') {
+          window.lucide.createIcons();
+        }
       }
     }
   </script>

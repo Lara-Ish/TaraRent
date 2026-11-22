@@ -92,6 +92,12 @@ if ($userInitial === '') {
     $userInitial = 'T';
 }
 
+// Name breakdown for personal information editing & profile display
+$tenantNamePieces = preg_split('/\s+/', $userFullName);
+$tenantEditFirstName = !empty($tenantNamePieces) ? array_shift($tenantNamePieces) : '';
+$tenantEditLastName = !empty($tenantNamePieces) ? array_pop($tenantNamePieces) : '';
+$tenantEditMiddleName = !empty($tenantNamePieces) ? implode(' ', $tenantNamePieces) : '';
+
 // Fetch assigned unit details
 $unitStmt = $pdo->prepare("SELECT * FROM units WHERE id = :uid LIMIT 1");
 $unitStmt->execute([':uid' => $user['unit_id'] ?? 1]);
@@ -2452,69 +2458,217 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
             <!-- Sub-Tab 1: Account Information -->
             <div id="paneAccountInfo" class="profile-tab-pane active-pane">
               <div>
-                <!-- Top Row: Avatar + Name / Username -->
-                <div class="tararent-settings-header">
-                  <!-- Hidden profile picture form -->
-                  <form id="profilePictureForm" method="POST" action="api/profile_api.php" enctype="multipart/form-data" style="display: none;">
-                    <input type="hidden" name="action" value="upload_profile_picture">
-                    <input type="hidden" name="user_id" value="<?= (int)($user['id'] ?? 0) ?>">
-                    <input type="file" id="profile_picture" name="profile_picture" accept="image/*" onchange="previewProfilePicture(event)">
-                  </form>
+                <!-- Top Row: Avatar + Name / Username + Role & Edit Profile -->
+                <div class="tararent-settings-header" style="justify-content: space-between; flex-wrap: wrap; gap: 16px;">
+                  <div style="display: flex; align-items: center; gap: 18px;">
+                    <!-- Hidden profile picture form -->
+                    <form id="profilePictureForm" method="POST" action="api/profile_api.php" enctype="multipart/form-data" style="display: none;">
+                      <input type="hidden" name="action" value="upload_profile_picture">
+                      <input type="hidden" name="user_id" value="<?= (int)($user['id'] ?? 0) ?>">
+                      <input type="file" id="profile_picture" name="profile_picture" accept="image/jpeg,image/png,image/webp,image/jpg" onchange="previewProfilePicture(event)">
+                    </form>
 
-                  <!-- Circular Avatar with "change profile" -->
-                  <div class="tararent-settings-avatar-wrap" onclick="triggerProfilePictureInput()" title="Click to change profile picture">
-                    <?php if (!empty($userAvatarUrl)): ?>
-                      <img id="avatarPreviewImg" src="<?= htmlspecialchars($userAvatarUrl) ?>" alt="Profile Photo">
-                      <span class="tararent-settings-change-link" style="position: absolute; bottom: 4px; background: rgba(255,255,255,0.85); width: 100%; padding: 2px 0;">change<br>profile</span>
-                    <?php else: ?>
-                      <div id="avatarFallbackInitial" style="display: none;"><?= htmlspecialchars($userInitial) ?></div>
-                      <img id="avatarPreviewImg" src="" alt="Profile Photo" style="display: none;">
-                      <span class="tararent-settings-change-link">change<br>profile</span>
-                    <?php endif; ?>
-                  </div>
+                    <!-- Circular Avatar Column with Change Profile Label Below (Fits properly, no overlap) -->
+                    <div class="tararent-avatar-column">
+                      <div class="tararent-settings-avatar-wrap" onclick="triggerProfilePictureInput()" title="Click to change profile picture" role="button" tabindex="0">
+                        <?php if (!empty($userAvatarUrl)): ?>
+                          <img id="avatarPreviewImg" src="<?= htmlspecialchars($userAvatarUrl) ?>" alt="Profile Photo" class="tararent-avatar-img">
+                          <div id="avatarFallbackInitial" class="tararent-avatar-initial" style="display: none !important;"></div>
+                        <?php else: ?>
+                          <div id="avatarFallbackInitial" class="tararent-avatar-initial"><?= htmlspecialchars($userInitial) ?></div>
+                          <img id="avatarPreviewImg" src="" alt="Profile Photo" class="tararent-avatar-img" style="display: none !important;">
+                        <?php endif; ?>
+                        <div class="tararent-avatar-hover-overlay" title="Change Profile Picture">
+                          <i data-lucide="camera" class="w-5 h-5 text-white"></i>
+                        </div>
+                      </div>
 
-                  <!-- Name and Handle -->
-                  <div class="tararent-settings-title-group">
-                    <h2 class="tararent-settings-user-name" id="profileFullName"><?= htmlspecialchars($user['name'] ?? 'Tenant') ?></h2>
-                    <div class="tararent-settings-user-handle">@<?= htmlspecialchars($user['username'] ?? 'tenant') ?></div>
+                      <button type="button" class="tararent-change-profile-link" onclick="triggerProfilePictureInput()" title="Change Profile Picture">
+                        <i data-lucide="camera" class="w-3 h-3"></i> Change Profile
+                      </button>
+                    </div>
+
+                    <!-- Name and Handle -->
+                    <div class="tararent-settings-title-group">
+                      <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                        <h2 class="tararent-settings-user-name" id="profileFullName" style="margin: 0;"><?= htmlspecialchars($user['name'] ?? 'Tenant') ?></h2>
+                        <span style="font-size: 11px; font-weight: 800; background: #EFE7DA; color: #56380E; border: 1px solid #D1C2A5; border-radius: 9999px; padding: 2px 10px; text-transform: uppercase;">Resident</span>
+                      </div>
+                      <div class="tararent-settings-user-handle">@<?= htmlspecialchars($user['username'] ?? 'tenant') ?></div>
+                    </div>
                   </div>
                 </div>
 
-                <!-- Avatar Pending Save Actions -->
-                <div id="avatarPendingActions" style="display: none; align-items: center; gap: 8px; margin-bottom: 20px;">
-                  <button type="button" class="tararent-settings-save-btn" id="btnSaveAvatar" onclick="submitProfilePictureUpload()" style="padding: 6px 18px; font-size: 12.5px;">Save Photo</button>
-                  <button type="button" class="tararent-settings-save-btn" id="btnCancelAvatar" onclick="cancelProfilePictureSelection()" style="padding: 6px 14px; font-size: 12.5px; background: #EFE7DA;">Cancel</button>
+                <!-- 1. PERSONAL INFORMATION SUBCARD -->
+                <div class="tararent-settings-subcard">
+                  <div class="tararent-subcard-header">
+                    <h3 class="tararent-subcard-title">
+                      <i data-lucide="user" class="w-4 h-4"></i> Personal Information
+                    </h3>
+                    <button type="button" class="tararent-btn-edit-profile" onclick="openEditAccountInfoModal()" style="font-size: 11.5px; padding: 5px 14px;">
+                      <i data-lucide="edit-2" class="w-3 h-3"></i> Edit
+                    </button>
+                  </div>
+                  <div class="tararent-subcard-grid">
+                    <div class="tararent-info-field">
+                      <span class="tararent-field-label">Full Name</span>
+                      <span class="tararent-field-value"><?= htmlspecialchars($user['name'] ?? 'Resident') ?></span>
+                    </div>
+                    <div class="tararent-info-field">
+                      <span class="tararent-field-label">Registered Email</span>
+                      <span class="tararent-field-value"><?= htmlspecialchars($user['email'] ?? 'Not set') ?></span>
+                    </div>
+                    <div class="tararent-info-field">
+                      <span class="tararent-field-label">Contact Number</span>
+                      <span class="tararent-field-value"><?= htmlspecialchars($user['phone'] ?? 'Not set') ?></span>
+                    </div>
+                    <div class="tararent-info-field">
+                      <span class="tararent-field-label">Emergency Contact Name</span>
+                      <span class="tararent-field-value"><?= htmlspecialchars($user['emergency_contact_name'] ?? $user['emergency_contact'] ?? 'Not set') ?></span>
+                    </div>
+                    <div class="tararent-info-field">
+                      <span class="tararent-field-label">Emergency Relationship</span>
+                      <span class="tararent-field-value"><?= htmlspecialchars($user['emergency_contact_relationship'] ?? 'Not set') ?></span>
+                    </div>
+                    <div class="tararent-info-field">
+                      <span class="tararent-field-label">Emergency Contact Phone</span>
+                      <span class="tararent-field-value"><?= htmlspecialchars($user['emergency_contact_phone'] ?? 'Not set') ?></span>
+                    </div>
+                  </div>
                 </div>
 
-                <!-- Two-Column Information Grid -->
-                <div class="tararent-settings-info-grid">
-                  <div class="tararent-settings-info-item">
-                    <span class="tararent-settings-info-label">Full Name:</span>
-                    <span class="tararent-settings-info-val"><?= htmlspecialchars($user['name'] ?? 'Resident') ?></span>
+                <!-- 2. RENTAL INFORMATION SUBCARD (STRICTLY READ-ONLY) -->
+                <div class="tararent-settings-subcard" style="border-left: 3.5px solid #AA7B3E;">
+                  <div class="tararent-subcard-header">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                      <h3 class="tararent-subcard-title">
+                        <i data-lucide="home" class="w-4 h-4"></i> Rental Information
+                      </h3>
+                      <span class="tararent-readonly-badge"><i data-lucide="lock" class="w-3 h-3"></i> READ-ONLY</span>
+                    </div>
+                    <span style="font-size: 11px; font-weight: 700; color: #8C6D43;">Managed by Landlord</span>
                   </div>
-                  <div class="tararent-settings-info-item">
-                    <span class="tararent-settings-info-label">username:</span>
-                    <span class="tararent-settings-info-val"><?= htmlspecialchars($user['username'] ?? 'resident') ?></span>
+                  <div class="tararent-subcard-grid">
+                    <div class="tararent-info-field">
+                      <span class="tararent-field-label">Assigned Unit</span>
+                      <span class="tararent-field-value font-black text-[#56380E]"><?= htmlspecialchars(!empty($unit['unit_number']) ? (str_starts_with(strtolower($unit['unit_number']), 'unit') ? $unit['unit_number'] : 'Unit ' . $unit['unit_number']) : 'Unit 1') ?></span>
+                    </div>
+                    <div class="tararent-info-field">
+                      <span class="tararent-field-label">Date of Moving In</span>
+                      <span class="tararent-field-value"><?= !empty($user['move_in_date']) ? date('F d, Y', strtotime($user['move_in_date'])) : 'November 18, 2026' ?></span>
+                    </div>
+                    <div class="tararent-info-field">
+                      <span class="tararent-field-label">Monthly Rent Amount</span>
+                      <span class="tararent-field-value font-black text-[#56380E]">₱<?= number_format((float)($unit['monthly_rent'] ?? 3000.00), 2) ?></span>
+                    </div>
+                    <div class="tararent-info-field">
+                      <span class="tararent-field-label">Advance Deposit</span>
+                      <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                        <span class="tararent-field-value">₱<?= number_format((float)($depositBill['amount_due'] ?? ($unit['monthly_rent'] ?? 3000.00)), 2) ?></span>
+                        <?php if ($depositBill && strtolower((string)($depositBill['status'] ?? '')) === 'approved'): ?>
+                          <span style="font-size: 10.5px; font-weight: 900; background: #D1FAE5; color: #065F46; border: 1px solid #A7F3D0; border-radius: 9999px; padding: 2px 8px; text-transform: uppercase;">Paid</span>
+                        <?php else: ?>
+                          <span style="font-size: 10.5px; font-weight: 900; background: #FEE2E2; color: #991B1B; border: 1px solid #FECACA; border-radius: 9999px; padding: 2px 8px; text-transform: uppercase;">Unpaid</span>
+                        <?php endif; ?>
+                      </div>
+                    </div>
+                    <div class="tararent-info-field">
+                      <span class="tararent-field-label">Rent Payment Status</span>
+                      <div>
+                        <?php if ($rentStatusDisplay === 'PAID'): ?>
+                          <span style="display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 900; background: #D1FAE5; color: #065F46; border: 1px solid #A7F3D0; border-radius: 9999px; padding: 3px 10px; text-transform: uppercase;">
+                            <span style="width: 6px; height: 6px; border-radius: 50%; background: #059669;"></span> PAID
+                          </span>
+                        <?php elseif ($rentStatusDisplay === 'PENDING'): ?>
+                          <span style="display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 900; background: #FEF3C7; color: #92400E; border: 1px solid #FDE68A; border-radius: 9999px; padding: 3px 10px; text-transform: uppercase;">
+                            <span style="width: 6px; height: 6px; border-radius: 50%; background: #D97706;"></span> PENDING
+                          </span>
+                        <?php elseif ($rentStatusDisplay === 'OVERDUE'): ?>
+                          <span style="display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 900; background: #FEE2E2; color: #991B1B; border: 1px solid #FECACA; border-radius: 9999px; padding: 3px 10px; text-transform: uppercase;">
+                            <span style="width: 6px; height: 6px; border-radius: 50%; background: #DC2626;"></span> OVERDUE
+                          </span>
+                        <?php else: ?>
+                          <span style="display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 900; background: #FEE2E2; color: #991B1B; border: 1px solid #FECACA; border-radius: 9999px; padding: 3px 10px; text-transform: uppercase;">
+                            <span style="width: 6px; height: 6px; border-radius: 50%; background: #DC2626;"></span> UNPAID
+                          </span>
+                        <?php endif; ?>
+                      </div>
+                    </div>
                   </div>
-                  <div class="tararent-settings-info-item">
-                    <span class="tararent-settings-info-label">Residential Address:</span>
-                    <span class="tararent-settings-info-val"><?= htmlspecialchars(!empty($user['address']) ? $user['address'] : (!empty($unit['unit_number']) ? 'Unit ' . $unit['unit_number'] . ', TaraRent Residences' : 'TaraRent Residences')) ?></span>
-                  </div>
-                  <div class="tararent-settings-info-item">
-                    <span class="tararent-settings-info-label">phone no.:</span>
-                    <span class="tararent-settings-info-val"><?= htmlspecialchars($user['phone'] ?? '+63 912 345 6789') ?></span>
-                  </div>
-                  <div class="tararent-settings-info-item">
-                    <span class="tararent-settings-info-label">email address:</span>
-                    <span class="tararent-settings-info-val"><?= htmlspecialchars($user['email'] ?? 'Not set') ?></span>
+                  <div class="tararent-readonly-notice">
+                    <i data-lucide="shield-alert" class="w-4 h-4 flex-shrink-0" style="color: #92400E;"></i>
+                    <span>Rental terms, assignment, deposit, and payment ledgers are strictly read-only and managed exclusively by the property administrator.</span>
                   </div>
                 </div>
-              </div>
 
-              <!-- Bottom Center: Valid Identification -->
-              <div class="tararent-settings-id-box">
-                <span class="tararent-settings-id-label">Valid Identification</span>
-                <button type="button" class="tararent-settings-id-link" onclick="openTenantIdModal()">view photo</button>
+                <!-- 3. ACCOUNT INFORMATION SUBCARD -->
+                <div class="tararent-settings-subcard">
+                  <div class="tararent-subcard-header">
+                    <h3 class="tararent-subcard-title">
+                      <i data-lucide="shield-check" class="w-4 h-4"></i> Account Information
+                    </h3>
+                  </div>
+                  <div class="tararent-subcard-grid">
+                    <div class="tararent-info-field">
+                      <span class="tararent-field-label">Username</span>
+                      <span class="tararent-field-value font-mono">@<?= htmlspecialchars($user['username'] ?? 'tenant') ?></span>
+                    </div>
+                    <div class="tararent-info-field">
+                      <span class="tararent-field-label">Account Role</span>
+                      <span class="tararent-field-value"><?= htmlspecialchars(ucfirst($user['role'] ?? 'Tenant')) ?></span>
+                    </div>
+                    <div class="tararent-info-field">
+                      <span class="tararent-field-label">Account Creation Date</span>
+                      <span class="tararent-field-value"><?= !empty($user['created_at']) ? date('F d, Y', strtotime($user['created_at'])) : 'Recently' ?></span>
+                    </div>
+                    <div class="tararent-info-field">
+                      <span class="tararent-field-label">Account Verification Status</span>
+                      <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 3px;">
+                        <?php if ($isTenantVerified): ?>
+                          <span id="tenantAccountVerificationBadge" style="display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 900; background: #D1FAE5; color: #065F46; border: 1px solid #A7F3D0; border-radius: 9999px; padding: 3px 12px; text-transform: uppercase;">
+                            <i data-lucide="check-circle-2" class="w-3.5 h-3.5"></i> Verified
+                          </span>
+                        <?php else: ?>
+                          <span id="tenantAccountVerificationBadge" style="display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 900; background: #FEE2E2; color: #991B1B; border: 1px solid #FECACA; border-radius: 9999px; padding: 3px 12px; text-transform: uppercase;">
+                            <i data-lucide="alert-circle" class="w-3.5 h-3.5"></i> Unverified
+                          </span>
+                          <button type="button" class="tararent-btn-verify-account" id="tenantBtnVerifyAccount" onclick="openVerifyAccountModal()" title="Verify your account now">
+                            <i data-lucide="shield-check" class="w-3.5 h-3.5"></i>
+                            <span>Verify Account</span>
+                          </button>
+                        <?php endif; ?>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 4. ID INFORMATION & VERIFICATION SUBCARD -->
+                <div class="tararent-settings-subcard">
+                  <div class="tararent-subcard-header">
+                    <h3 class="tararent-subcard-title">
+                      <i data-lucide="credit-card" class="w-4 h-4"></i> ID Information &amp; Verification
+                    </h3>
+                    <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                      <button type="button" class="tararent-btn-view-id" onclick="openTenantIdModal()" title="View submitted ID photo">
+                        <i data-lucide="eye" class="w-3.5 h-3.5"></i> View ID Photo
+                      </button>
+                      <button type="button" class="tararent-btn-update-id" onclick="openVerifyAccountModal(true)" title="Update your valid identification">
+                        <i data-lucide="upload" class="w-3.5 h-3.5"></i> Update Valid ID
+                      </button>
+                    </div>
+                  </div>
+                  <div class="tararent-subcard-grid">
+                    <div class="tararent-info-field">
+                      <span class="tararent-field-label">Submitted ID Type</span>
+                      <span class="tararent-field-value"><?= htmlspecialchars($user['id_type'] ?? ($isTenantVerified ? 'Government ID' : 'None Uploaded')) ?></span>
+                    </div>
+                    <div class="tararent-info-field">
+                      <span class="tararent-field-label">Date of Last Verification</span>
+                      <span class="tararent-field-value"><?= !empty($user['verified_at']) ? date('F d, Y', strtotime($user['verified_at'])) : (!empty($user['created_at']) && $isTenantVerified ? date('F d, Y', strtotime($user['created_at'])) : 'Pending Verification') ?></span>
+                    </div>
+                  </div>
+                </div>
+
               </div>
             </div>
 
@@ -2551,31 +2705,6 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
 
           </div>
         </div>
-
-        <!-- Tenant ID Viewing Modal -->
-        <div id="modalTenantProfileId" class="clay-modal" style="display: none;" onclick="if(event.target === this) this.style.display='none'">
-          <div class="clay-modal-content" style="max-width: 480px; background: #FAF3E7; border-radius: 20px; padding: 24px; border: 1.5px solid #8C6D43; box-shadow: 0 10px 30px rgba(0,0,0,0.25);">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-              <h3 style="font-weight: 900; color: #1E160E; margin: 0; font-size: 17px; text-transform: uppercase;">Valid Identification Document</h3>
-              <button type="button" onclick="document.getElementById('modalTenantProfileId').style.display='none'" style="background: none; border: none; font-size: 20px; cursor: pointer; color: #1E160E; font-weight: bold; line-height: 1;">✕</button>
-            </div>
-            <div style="text-align: center; padding: 24px 16px; background: #DECBB3; border-radius: 14px;">
-              <?php if (!empty($user['id_photo_filename']) && file_exists(__DIR__ . '/uploads/id_verifications/' . $user['id_photo_filename'])): ?>
-                <img src="uploads/id_verifications/<?= htmlspecialchars($user['id_photo_filename']) ?>" alt="Tenant ID Photo" style="max-width: 100%; max-height: 320px; border-radius: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
-                <div style="margin-top: 12px; font-size: 13px; font-weight: 800; color: #1E160E; text-transform: uppercase;">
-                  ID Type: <?= htmlspecialchars($user['id_type'] ?? 'Government ID') ?>
-                </div>
-              <?php else: ?>
-                <div style="font-size: 42px; margin-bottom: 10px;">⚠️</div>
-                <div style="font-size: 16px; font-weight: 800; color: #1E160E;">No ID Document Uploaded Yet</div>
-                <p style="font-size: 13px; color: #4A3E31; margin: 6px 0 16px 0; font-weight: 600;">Please complete your account verification by uploading a valid government-issued ID.</p>
-                <button type="button" onclick="document.getElementById('modalTenantProfileId').style.display='none'; openVerifyAccountModal();" class="verify-btn" style="background: #DC2626; color: #fff; padding: 8px 18px; border-radius: 8px; font-weight: 800; border: none; cursor: pointer;">
-                  Verify Account Now →
-                </button>
-              <?php endif; ?>
-            </div>
-          </div>
-        </div>
       </section>
 
       </div> <!-- /.tenant-content-container -->
@@ -2585,31 +2714,212 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
   </div>
 
   <!-- =====================================================================
+       MODAL: VIEW TENANT IDENTIFICATION DOCUMENT (PHOTO & DETAILS)
+       Centered fixed dialog with dark blur backdrop and escape/backdrop controls
+       ===================================================================== -->
+  <div class="modal-backdrop" id="modalTenantProfileId" style="display: none; pointer-events: none; position: fixed; inset: 0; width: 100vw; height: 100vh; background: rgba(20, 14, 8, 0.68); z-index: 10030; align-items: center; justify-content: center; backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); padding: 16px; box-sizing: border-box;" onclick="if(event.target === this) closeTenantIdModal()">
+    <div class="clay-modal" style="max-width: 520px; width: 94%; max-height: 90vh; overflow-y: auto; background: #FCFBF9; border: 2px solid #B89B72; border-radius: 24px; padding: 24px 26px; box-shadow: 0 20px 48px rgba(43, 33, 22, 0.28); margin: auto; position: relative;" onclick="event.stopPropagation()">
+      
+      <!-- Modal Header -->
+      <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px dashed rgba(140, 109, 67, 0.35);">
+        <div>
+          <h2 style="font-size: 18px; font-weight: 900; color: #3E2723; margin: 0 0 3px 0; display: flex; align-items: center; gap: 8px;">
+            <i data-lucide="shield-check" class="w-5 h-5 text-[#8C6D43]"></i> Valid Identification Document
+          </h2>
+          <p style="font-size: 11.5px; font-weight: 600; color: #7A6245; margin: 0;">
+            Government-issued identification on file for this account
+          </p>
+        </div>
+        <button type="button" class="modal-close-btn" onclick="closeTenantIdModal()" title="Close" aria-label="Close" style="background: rgba(74, 55, 40, 0.1); border: none; border-radius: 50%; width: 34px; height: 34px; min-width: 34px; min-height: 34px; display: inline-flex; align-items: center; justify-content: center; color: #4A3728; cursor: pointer; transition: background 0.15s;">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+
+      <!-- Modal Body -->
+      <?php 
+        $tenantIdPhotoPath = '';
+        if (!empty($user['id_photo_filename'])) {
+            $rawIdFile = (string)$user['id_photo_filename'];
+            if (str_starts_with($rawIdFile, 'http://') || str_starts_with($rawIdFile, 'https://')) {
+                $tenantIdPhotoPath = $rawIdFile;
+            } elseif (file_exists(__DIR__ . '/uploads/id_verifications/' . $rawIdFile)) {
+                $tenantIdPhotoPath = 'uploads/id_verifications/' . htmlspecialchars($rawIdFile);
+            } elseif (file_exists(__DIR__ . '/' . $rawIdFile)) {
+                $tenantIdPhotoPath = htmlspecialchars($rawIdFile);
+            }
+        }
+      ?>
+
+      <?php if (!empty($tenantIdPhotoPath)): ?>
+        <div style="background: #F5EFE6; border: 1.5px solid #D1C2A5; border-radius: 18px; padding: 16px; text-align: center; margin-bottom: 16px; box-shadow: inset 0 2px 6px rgba(43, 33, 22, 0.05);">
+          <div style="max-height: 380px; display: flex; align-items: center; justify-content: center; overflow: hidden; border-radius: 12px; background: rgba(0,0,0,0.03);">
+            <img id="tenantIdModalPreviewImg" src="<?= $tenantIdPhotoPath ?>" alt="Tenant ID Photo" style="max-width: 100%; max-height: 380px; width: auto; height: auto; object-fit: contain; border-radius: 12px; box-shadow: 0 4px 14px rgba(43, 33, 22, 0.15); display: block; margin: 0 auto; border: 1px solid rgba(140, 109, 67, 0.25);">
+          </div>
+          <div style="margin-top: 14px; display: flex; align-items: center; justify-content: center; gap: 8px; flex-wrap: wrap;">
+            <span style="display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 800; color: #56380E; background: rgba(140, 109, 67, 0.14); padding: 4px 12px; border-radius: 9999px; border: 1px solid rgba(140, 109, 67, 0.25);">
+              <i data-lucide="id-card" class="w-3.5 h-3.5 text-[#8C6D43]"></i>
+              ID Type: <?= htmlspecialchars($user['id_type'] ?? 'Government ID') ?>
+            </span>
+            <span style="display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 800; <?= $isTenantVerified ? 'color: #166534; background: #DCFCE7; border: 1px solid #86EFAC;' : 'color: #991B1B; background: #FEE2E2; border: 1px solid #FCA5A5;' ?> padding: 4px 12px; border-radius: 9999px;">
+              <i data-lucide="<?= $isTenantVerified ? 'check-circle' : 'alert-circle' ?>" class="w-3.5 h-3.5"></i>
+              <?= strtoupper(htmlspecialchars($user['verification_status'] ?? 'Unverified')) ?>
+            </span>
+          </div>
+        </div>
+      <?php else: ?>
+        <div style="text-align: center; padding: 32px 20px; background: #F7EFE1; border: 1.5px dashed #C4A47C; border-radius: 18px; margin-bottom: 16px;">
+          <div style="width: 54px; height: 54px; margin: 0 auto 12px; border-radius: 50%; background: rgba(140, 109, 67, 0.12); display: flex; align-items: center; justify-content: center; color: #8C6D43;">
+            <i data-lucide="file-question" class="w-7 h-7"></i>
+          </div>
+          <div style="font-size: 16px; font-weight: 900; color: #3E2723; margin-bottom: 6px;">No ID Document Uploaded Yet</div>
+          <p style="font-size: 12.5px; color: #6D4D22; margin: 0 auto 18px; max-width: 320px; font-weight: 600; line-height: 1.5;">
+            You have not submitted a valid government identification document. Complete verification to unlock all account features.
+          </p>
+          <button type="button" onclick="closeTenantIdModal(); openVerifyAccountModal(true);" class="tararent-btn-verify-account" style="display: inline-flex; align-items: center; gap: 6px; padding: 9px 22px; font-size: 12px; font-weight: 800; cursor: pointer;">
+            <i data-lucide="shield-check" class="w-4 h-4"></i> Complete Verification Now
+          </button>
+        </div>
+      <?php endif; ?>
+
+      <!-- Modal Footer -->
+      <div style="display: flex; justify-content: flex-end; align-items: center; gap: 10px; margin-top: 14px; padding-top: 12px; border-top: 1px dashed rgba(140, 109, 67, 0.3);">
+        <?php if (!empty($tenantIdPhotoPath)): ?>
+          <button type="button" onclick="closeTenantIdModal(); openVerifyAccountModal(true);" style="display: inline-flex; align-items: center; gap: 6px; padding: 9px 16px; border-radius: 12px; font-weight: 800; font-size: 12px; background: #F5F0E6; color: #56380E; border: 1.5px solid #8C6D43; cursor: pointer; transition: all 0.15s ease;">
+            <i data-lucide="upload" class="w-3.5 h-3.5 text-[#8C6D43]"></i> Update ID
+          </button>
+        <?php endif; ?>
+        <button type="button" onclick="closeTenantIdModal()" style="display: inline-flex; align-items: center; gap: 6px; padding: 9px 22px; border-radius: 12px; font-weight: 900; font-size: 12px; background: #4A3728; color: #FFFFFF; border: 1.5px solid #382618; cursor: pointer; transition: all 0.15s ease; box-shadow: 0 3px 10px rgba(56, 38, 24, 0.22);">
+          Close
+        </button>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- =====================================================================
+       MODAL: PROFILE PICTURE ADJUSTMENT & CIRCULAR CROP
+       Allows tenant to zoom, pan/drag, reset, preview, and save profile picture
+       ===================================================================== -->
+  <div class="modal-backdrop" id="profileAdjustmentModal" style="display: none; pointer-events: none; align-items: center; justify-content: center; z-index: 10030;" onclick="if(event.target === this) closeProfileAdjustmentModal()">
+    <div class="clay-modal" style="max-width: 460px; width: 94%; border: 2px solid #B89B72; border-radius: 24px; background: #FCFBF9; box-shadow: 0 20px 48px rgba(43, 33, 22, 0.25); padding: 22px 24px 24px; max-height: 94vh; overflow-y: auto;" onclick="event.stopPropagation()">
+      
+      <!-- Modal Header -->
+      <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px dashed rgba(140, 109, 67, 0.35);">
+        <div>
+          <h2 style="font-size: 18px; font-weight: 900; color: #3E2723; margin: 0 0 2px 0; display: flex; align-items: center; gap: 8px;">
+            <i data-lucide="crop" class="w-5 h-5 text-[#8C6D43]"></i> Adjust Profile Picture
+          </h2>
+          <p style="font-size: 11.5px; font-weight: 600; color: #7A6245; margin: 0;">
+            Drag to reposition your photo and use the slider to zoom in or out.
+          </p>
+        </div>
+        <button type="button" class="modal-close-btn" onclick="closeProfileAdjustmentModal()" title="Close" aria-label="Close" style="background: rgba(74, 55, 40, 0.1); border: none; border-radius: 50%; width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; color: #4A3728; cursor: pointer; transition: background 0.15s;">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+
+      <!-- Interactive Cropping Area -->
+      <div style="position: relative; width: 100%; max-width: 320px; height: 320px; margin: 0 auto 14px; border-radius: 18px; overflow: hidden; background: #1E160E; box-shadow: inset 0 2px 10px rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center;">
+        <canvas id="cropCanvas" width="320" height="320" style="width: 320px; height: 320px; display: block; cursor: grab; touch-action: none; user-select: none;"></canvas>
+        <div style="position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.65); color: #FAF3E7; font-size: 10.5px; font-weight: 700; padding: 3px 12px; border-radius: 9999px; pointer-events: none; display: flex; align-items: center; gap: 5px; white-space: nowrap; backdrop-filter: blur(4px);">
+          <i data-lucide="move" class="w-3 h-3"></i> Drag to move • Scroll to zoom
+        </div>
+      </div>
+
+      <!-- Zoom & Adjustment Controls -->
+      <div style="background: #F5F0E6; border: 1.5px solid #D1C2A5; border-radius: 16px; padding: 12px 14px; margin-bottom: 14px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+          <span style="font-size: 12px; font-weight: 800; color: #3E2723; display: flex; align-items: center; gap: 6px;">
+            <i data-lucide="zoom-in" class="w-3.5 h-3.5 text-[#8C6D43]"></i> Zoom
+          </span>
+          <span id="cropZoomLabel" style="font-size: 12px; font-weight: 900; color: #56380E; font-family: monospace;">100%</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <button type="button" onclick="stepCropZoom(-0.1)" title="Zoom Out" style="background: #FAF3E7; border: 1px solid #B89B72; border-radius: 8px; width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; color: #3E2723; font-weight: 900; font-size: 16px; transition: background 0.15s;">
+            −
+          </button>
+          <input type="range" id="cropZoomSlider" min="1.0" max="3.0" step="0.01" value="1.0" oninput="handleCropZoomSlider(this.value)" style="flex: 1; accent-color: #56380E; cursor: pointer; height: 6px;">
+          <button type="button" onclick="stepCropZoom(0.1)" title="Zoom In" style="background: #FAF3E7; border: 1px solid #B89B72; border-radius: 8px; width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; color: #3E2723; font-weight: 900; font-size: 16px; transition: background 0.15s;">
+            +
+          </button>
+          <button type="button" onclick="resetCropAdjustment()" title="Reset Adjustment" style="background: #FAF3E7; border: 1px solid #B89B72; border-radius: 8px; padding: 6px 10px; font-size: 11px; font-weight: 800; color: #56380E; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; transition: background 0.15s;">
+            <i data-lucide="rotate-ccw" class="w-3 h-3"></i> Reset
+          </button>
+        </div>
+      </div>
+
+      <!-- Live Circular Preview -->
+      <div style="display: flex; align-items: center; gap: 14px; background: #FAF3E7; border: 1.5px solid #D1C2A5; border-radius: 16px; padding: 10px 14px; margin-bottom: 18px;">
+        <canvas id="cropPreviewCanvas" width="56" height="56" style="width: 52px; height: 52px; border-radius: 50%; border: 2px solid #8C6D43; background: #EFE7DA; box-shadow: 0 2px 6px rgba(0,0,0,0.12); flex-shrink: 0; display: block;"></canvas>
+        <div>
+          <div style="font-weight: 900; font-size: 12.5px; color: #3E2723; margin-bottom: 2px;">Live Circular Preview</div>
+          <div style="font-size: 11px; color: #7A6245; font-weight: 600;">This preview reflects your exact circular profile avatar.</div>
+        </div>
+      </div>
+
+      <!-- Action Buttons (Cancel & Save) -->
+      <div style="display: flex; gap: 12px;">
+        <button type="button" onclick="closeProfileAdjustmentModal()" style="flex: 1; padding: 11px 16px; border-radius: 12px; font-weight: 800; font-size: 13px; background: #F5F0E6; color: #3E2723; border: 1.5px solid #8C6D43; cursor: pointer; transition: background 0.15s;">
+          Cancel
+        </button>
+        <button type="button" id="btnSaveCroppedAvatar" onclick="saveCroppedProfilePicture()" style="flex: 2; padding: 11px 20px; border-radius: 12px; font-weight: 900; font-size: 13px; background: #4A3728; color: #FFFFFF; border: 1.5px solid #382618; box-shadow: 0 4px 12px rgba(56, 38, 24, 0.25); cursor: pointer; transition: background 0.15s; display: inline-flex; align-items: center; justify-content: center; gap: 8px;">
+          <i data-lucide="check" class="w-4 h-4"></i> Save Profile Picture
+        </button>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- =====================================================================
        MODAL: EDIT TENANT ACCOUNT INFORMATION
        Allows tenant to update phone, email, and emergency contact details
        ===================================================================== -->
   <div class="modal-backdrop" id="editAccountInfoModal" style="display: none; pointer-events: none;">
-    <div class="clay-modal bg-[#FCFBF9] border-2 border-[#B89B72] rounded-2xl p-6 sm:p-8 shadow-2xl" style="max-width: 500px;">
-      <div class="flex justify-between items-center mb-5 pb-3 border-b border-dashed border-[#8C6D43]/30">
+    <div class="clay-modal bg-[#FCFBF9] border-2 border-[#B89B72] rounded-2xl p-6 sm:p-8 shadow-2xl" style="max-width: 540px; width: 94%;">
+      <div class="flex justify-between items-center mb-4 pb-3 border-b border-dashed border-[#8C6D43]/30">
         <div>
-          <h2 class="text-xl font-black text-[#3E2723] m-0 mb-0.5">Edit Account Information</h2>
-          <p class="text-xs font-semibold text-[#7A6245] m-0">Update your contact details and emergency contact records</p>
+          <h2 class="text-xl font-black text-[#3E2723] m-0 mb-0.5">Edit Personal Information</h2>
+          <p class="text-xs font-semibold text-[#7A6245] m-0">Update your name, contact details, and emergency contacts</p>
         </div>
-        <button type="button" class="modal-close-btn text-[#4A3728] hover:text-[#382618] p-1.5 rounded-lg hover:bg-[#4A3728]/10 transition-colors cursor-pointer" onclick="closeModal('editAccountInfoModal')" title="Close" aria-label="Close"><i data-lucide="x" class="w-5 h-5" aria-hidden="true"></i></button>
+        <button type="button" class="modal-close-btn text-[#4A3728] hover:text-[#382618] p-1.5 rounded-lg hover:bg-[#4A3728]/10 transition-colors cursor-pointer" onclick="closeEditAccountInfoModal()" title="Close" aria-label="Close"><i data-lucide="x" class="w-5 h-5" aria-hidden="true"></i></button>
+      </div>
+
+      <!-- Read-Only Notice -->
+      <div class="bg-amber-50 border border-amber-200 rounded-xl p-3 mb-4 text-xs font-semibold text-amber-900 flex items-center gap-2">
+        <i data-lucide="lock" class="w-4 h-4 text-amber-700 flex-shrink-0"></i>
+        <span>Rental details (Unit, Monthly Rent, Deposit, Move-in Date) are read-only and managed exclusively by your landlord.</span>
       </div>
 
       <form id="editAccountInfoForm">
-        <div class="form-group mb-3.5">
-          <label class="font-bold text-xs text-[#3E2723] block mb-1.5" for="editEmail">Email Address</label>
-          <input type="email" id="editEmail" name="email" class="w-full h-10 px-3.5 py-2 rounded-lg bg-[#F5F0E6] text-[#3E2723] font-semibold text-sm border border-[#B89B72] focus:outline-none focus:ring-2 focus:ring-[#4A3728] shadow-sm" value="<?= htmlspecialchars($user['email'] ?? '') ?>" placeholder="your.email@example.com">
+        <!-- Name Breakdown (First, Middle, Last) -->
+        <div class="mb-3.5">
+          <label class="font-bold text-xs text-[#3E2723] block mb-1.5">Tenant Full Name</label>
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <div>
+              <input type="text" id="editFirstName" name="first_name" class="w-full h-10 px-3 py-2 rounded-lg bg-[#F5F0E6] text-[#3E2723] font-semibold text-xs border border-[#B89B72] focus:outline-none focus:ring-2 focus:ring-[#4A3728] shadow-sm" value="<?= htmlspecialchars($tenantEditFirstName) ?>" placeholder="First Name *" required>
+            </div>
+            <div>
+              <input type="text" id="editMiddleName" name="middle_name" class="w-full h-10 px-3 py-2 rounded-lg bg-[#F5F0E6] text-[#3E2723] font-semibold text-xs border border-[#B89B72] focus:outline-none focus:ring-2 focus:ring-[#4A3728] shadow-sm" value="<?= htmlspecialchars($tenantEditMiddleName) ?>" placeholder="Middle Name">
+            </div>
+            <div>
+              <input type="text" id="editLastName" name="last_name" class="w-full h-10 px-3 py-2 rounded-lg bg-[#F5F0E6] text-[#3E2723] font-semibold text-xs border border-[#B89B72] focus:outline-none focus:ring-2 focus:ring-[#4A3728] shadow-sm" value="<?= htmlspecialchars($tenantEditLastName) ?>" placeholder="Last Name *" required>
+            </div>
+          </div>
         </div>
 
-        <div class="form-group mb-4">
-          <label class="font-bold text-xs text-[#3E2723] block mb-1.5" for="editPhone">Phone Number</label>
-          <input type="tel" id="editPhone" name="phone" class="w-full h-10 px-3.5 py-2 rounded-lg bg-[#F5F0E6] text-[#3E2723] font-semibold text-sm border border-[#B89B72] focus:outline-none focus:ring-2 focus:ring-[#4A3728] shadow-sm" value="<?= htmlspecialchars($user['phone'] ?? '') ?>" placeholder="+63 900 000 0000">
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3.5">
+          <div class="form-group mb-0">
+            <label class="font-bold text-xs text-[#3E2723] block mb-1.5" for="editEmail">Email Address *</label>
+            <input type="email" id="editEmail" name="email" class="w-full h-10 px-3.5 py-2 rounded-lg bg-[#F5F0E6] text-[#3E2723] font-semibold text-xs border border-[#B89B72] focus:outline-none focus:ring-2 focus:ring-[#4A3728] shadow-sm" value="<?= htmlspecialchars($user['email'] ?? '') ?>" placeholder="your.email@example.com" required>
+          </div>
+
+          <div class="form-group mb-0">
+            <label class="font-bold text-xs text-[#3E2723] block mb-1.5" for="editPhone">Contact Number *</label>
+            <input type="tel" id="editPhone" name="phone" class="w-full h-10 px-3.5 py-2 rounded-lg bg-[#F5F0E6] text-[#3E2723] font-semibold text-xs border border-[#B89B72] focus:outline-none focus:ring-2 focus:ring-[#4A3728] shadow-sm" value="<?= htmlspecialchars($user['phone'] ?? '') ?>" placeholder="+63 900 000 0000" required>
+          </div>
         </div>
 
-        <div class="bg-[#F5F0E6] border border-[#B89B72] rounded-xl p-4 shadow-sm mb-4">
+        <div class="bg-[#F5F0E6] border border-[#B89B72] rounded-xl p-3.5 shadow-sm mb-4">
           <div class="text-xs font-black text-[#3E2723] mb-2.5 flex items-center gap-1.5">
             <i data-lucide="phone-call" class="w-4 h-4 text-rose-600" aria-hidden="true"></i> Emergency Contact Details
           </div>
@@ -2629,9 +2939,9 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
           </div>
         </div>
 
-        <div class="flex gap-3 mt-5">
-          <button type="button" class="flex-1 py-2.5 px-4 rounded-xl font-bold text-sm bg-[#F5F0E6] text-[#3E2723] border border-[#8C6D43] hover:bg-[#E8D8B0] shadow-sm transition-colors cursor-pointer" onclick="closeEditAccountInfoModal()">Cancel</button>
-          <button type="submit" class="flex-[2] py-2.5 px-5 rounded-xl font-black text-sm bg-[#4A3728] hover:bg-[#382618] text-white border border-[#382618] shadow-md transition-colors cursor-pointer" id="btnSaveAccountInfo">Save Information</button>
+        <div class="flex gap-3 mt-4">
+          <button type="button" class="flex-1 py-2.5 px-4 rounded-xl font-bold text-xs bg-[#F5F0E6] text-[#3E2723] border border-[#8C6D43] hover:bg-[#E8D8B0] shadow-sm transition-colors cursor-pointer" onclick="closeEditAccountInfoModal()">Cancel</button>
+          <button type="submit" class="flex-[2] py-2.5 px-5 rounded-xl font-black text-xs bg-[#4A3728] hover:bg-[#382618] text-white border border-[#382618] shadow-md transition-colors cursor-pointer" id="btnSaveAccountInfo">Save Information</button>
         </div>
       </form>
     </div>
@@ -3345,9 +3655,10 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
       const modal = typeof modalId === 'string' ? document.getElementById(modalId) : modalId;
       if (!modal) return;
       modal.classList.remove('hidden');
-      modal.classList.add('open');
+      modal.classList.add('open', 'active');
       modal.style.display = 'flex';
       modal.style.pointerEvents = 'auto';
+      document.body.style.overflow = 'hidden';
       if (modal.id === 'verifyAccountModal' && typeof goToVerificationStep === 'function') {
         goToVerificationStep(1);
       }
@@ -3368,19 +3679,23 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
 
       const id = modal.id;
       if (id === 'verifyAccountModal' && typeof closeVerifyAccountModal === 'function') {
-        closeVerifyAccountModal();
+        closeVerifyAccountModal(true);
       } else if (id === 'editAccountInfoModal' && typeof closeEditAccountInfoModal === 'function') {
-        closeEditAccountInfoModal();
+        closeEditAccountInfoModal(true);
       } else if (id === 'verificationActionPromptModal' && typeof closeVerificationActionPrompt === 'function') {
-        closeVerificationActionPrompt();
+        closeVerificationActionPrompt(true);
       } else if (id === 'tenantTicketModal' && typeof closeTenantTicketModal === 'function') {
-        closeTenantTicketModal();
+        closeTenantTicketModal(true);
       } else if (id === 'tenantReportModal' && typeof closeTenantReportModal === 'function') {
-        closeTenantReportModal();
+        closeTenantReportModal(true);
       } else if (id === 'termsContentModal' && typeof closeTermsModal === 'function') {
-        closeTermsModal();
+        closeTermsModal(true);
       } else if (id === 'privacyContentModal' && typeof closePrivacyModal === 'function') {
-        closePrivacyModal();
+        closePrivacyModal(true);
+      } else if (id === 'modalTenantProfileId' && typeof closeTenantIdModal === 'function') {
+        closeTenantIdModal(true);
+      } else if (id === 'profileAdjustmentModal' && typeof closeProfileAdjustmentModal === 'function') {
+        closeProfileAdjustmentModal(true);
       }
     }
     window.closeModal = closeModal;
@@ -3549,6 +3864,9 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
       if (updateUrl && window.history && window.history.replaceState) {
         history.replaceState(null, '', `tenant_portal.php?section=tenantProfile&tab=${tabName}`);
       }
+      if (window.lucide && typeof window.lucide.createIcons === 'function') {
+        window.lucide.createIcons();
+      }
     }
 
     // =========================================================================
@@ -3564,24 +3882,24 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
     function openVerificationActionPrompt(moduleName = '') {
       const modal = document.getElementById('verificationActionPromptModal');
       if (modal) {
-        modal.style.display = 'flex';
-        modal.classList.add('open');
-        modal.style.pointerEvents = 'auto';
-        if (window.lucide && typeof window.lucide.createIcons === 'function') {
-          window.lucide.createIcons();
-        }
+        openModal('verificationActionPromptModal');
       } else {
         showToast(VERIFICATION_ACTION_REQUIRED_MSG, 'warning', 6000);
         openVerifyAccountModal();
       }
     }
 
-    function closeVerificationActionPrompt() {
+    function closeVerificationActionPrompt(fromCloseModal = false) {
       const modal = document.getElementById('verificationActionPromptModal');
       if (modal) {
-        modal.classList.remove('open');
+        modal.classList.add('hidden');
+        modal.classList.remove('open', 'active');
         modal.style.display = 'none';
         modal.style.pointerEvents = 'none';
+        document.body.style.overflow = '';
+      }
+      if (!fromCloseModal && typeof closeModal === 'function') {
+        closeModal('verificationActionPromptModal');
       }
     }
 
@@ -3601,7 +3919,7 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
 
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' || e.keyCode === 27) {
-        const openBackdrops = document.querySelectorAll('.modal-backdrop.open, .modal-backdrop:not(.hidden):not([style*="display: none"])');
+        const openBackdrops = document.querySelectorAll('.modal-backdrop.open, .modal-backdrop:not(.hidden):not([style*="display: none"]), .clay-modal.open, .clay-modal:not(.hidden):not([style*="display: none"])');
         if (openBackdrops.length > 0) {
           const topModal = openBackdrops[openBackdrops.length - 1];
           if (topModal && topModal.id && typeof window.closeModal === 'function') {
@@ -3613,8 +3931,49 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
 
     function openTenantIdModal() {
       const m = document.getElementById('modalTenantProfileId');
-      if (m) m.style.display = 'flex';
+      if (m) {
+        m.classList.remove('hidden');
+        m.classList.add('open', 'active');
+        m.style.display = 'flex';
+        m.style.pointerEvents = 'auto';
+      }
+      document.body.style.overflow = 'hidden';
+      if (typeof openModal === 'function') {
+        openModal('modalTenantProfileId');
+      }
+      if (window.lucide && typeof window.lucide.createIcons === 'function') {
+        window.lucide.createIcons();
+      }
     }
+
+    function closeTenantIdModal(fromCloseModal = false) {
+      const m = document.getElementById('modalTenantProfileId');
+      if (m) {
+        m.classList.add('hidden');
+        m.classList.remove('open', 'active');
+        m.style.display = 'none';
+        m.style.pointerEvents = 'none';
+      }
+      document.body.style.overflow = '';
+      if (!fromCloseModal && typeof closeModal === 'function') {
+        closeModal('modalTenantProfileId');
+      }
+    }
+
+    // =========================================================================
+    // PROFILE PICTURE ADJUSTMENT & CIRCULAR CROPPING ENGINE (TENANT)
+    // =========================================================================
+    let cropOriginalImg = null;
+    let cropScale = 1.0;
+    let cropBaseScale = 1.0;
+    let cropOffsetX = 0;
+    let cropOffsetY = 0;
+    const CROP_CANVAS_SIZE = 320;
+    const CROP_RADIUS = 115; // 230px diameter crop circle inside 320x320 canvas
+    let isCropDragging = false;
+    let cropDragStartX = 0;
+    let cropDragStartY = 0;
+    let cropListenersInitialized = false;
 
     function previewProfilePicture(e) {
       const file = e.target.files && e.target.files[0];
@@ -3633,26 +3992,7 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
         return;
       }
 
-      pendingAvatarFile = file;
-
-      const reader = new FileReader();
-      reader.onload = function(evt) {
-        const previewImg = document.getElementById('avatarPreviewImg');
-        const fallbackInit = document.getElementById('avatarFallbackInitial');
-        if (previewImg) {
-          previewImg.src = evt.target.result;
-          previewImg.style.display = 'block';
-        }
-        if (fallbackInit) {
-          fallbackInit.style.display = 'none';
-        }
-        const pendingActions = document.getElementById('avatarPendingActions');
-        if (pendingActions) pendingActions.style.display = 'inline-flex';
-        const removeBtn = document.getElementById('btnRemoveAvatar');
-        if (removeBtn) removeBtn.style.display = 'none';
-        if (window.lucide && typeof window.lucide.createIcons === 'function') window.lucide.createIcons();
-      };
-      reader.readAsDataURL(file);
+      openProfileAdjustmentModal(file);
     }
 
     // Aliases for compatibility
@@ -3661,124 +4001,353 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
 
     function triggerProfilePictureInput() {
       const input = document.getElementById('profile_picture') || document.getElementById('profilePictureInput') || document.getElementById('profileAvatarInput');
-      if (input) input.click();
+      if (input) {
+        input.value = ''; // Reset input to allow selecting the same file again
+        input.click();
+      }
     }
 
-    function cancelProfilePictureSelection() {
-      pendingAvatarFile = null;
+    function openProfileAdjustmentModal(file) {
+      const reader = new FileReader();
+      reader.onload = function(evt) {
+        const img = new Image();
+        img.onload = function() {
+          cropOriginalImg = img;
+          cropScale = 1.0;
+          cropOffsetX = 0;
+          cropOffsetY = 0;
+
+          // Calculate base scale so image at 1.0x covers the circular cutout
+          const minDim = Math.min(img.naturalWidth, img.naturalHeight);
+          cropBaseScale = (2 * CROP_RADIUS) / Math.max(1, minDim);
+
+          const slider = document.getElementById('cropZoomSlider');
+          if (slider) slider.value = '1.0';
+          const label = document.getElementById('cropZoomLabel');
+          if (label) label.textContent = '100%';
+
+          openModal('profileAdjustmentModal');
+
+          initCropCanvasInteractions();
+          renderCropCanvas();
+        };
+        img.onerror = function() {
+          showToast('Failed to load image for adjustment.', 'error');
+        };
+        img.src = evt.target.result;
+      };
+      reader.readAsDataURL(file);
+    }
+
+    function closeProfileAdjustmentModal(fromCloseModal = false) {
       const input = document.getElementById('profile_picture') || document.getElementById('profilePictureInput') || document.getElementById('profileAvatarInput');
       if (input) input.value = '';
+      cropOriginalImg = null;
 
-      const previewImg = document.getElementById('avatarPreviewImg');
-      const fallbackInit = document.getElementById('avatarFallbackInitial');
-      const pendingActions = document.getElementById('avatarPendingActions');
-      const removeBtn = document.getElementById('btnRemoveAvatar');
-
-      if (pendingActions) pendingActions.style.display = 'none';
-
-      if (currentSavedAvatarUrl) {
-        if (previewImg) {
-          previewImg.src = currentSavedAvatarUrl;
-          previewImg.style.display = 'block';
-        }
-        if (fallbackInit) fallbackInit.style.display = 'none';
-        if (removeBtn) removeBtn.style.display = 'inline-flex';
-      } else {
-        if (previewImg) {
-          previewImg.src = '';
-          previewImg.style.display = 'none';
-        }
-        if (fallbackInit) {
-          fallbackInit.textContent = userDefaultInitial;
-          fallbackInit.style.display = 'flex';
-        }
-        if (removeBtn) removeBtn.style.display = 'none';
+      const modal = document.getElementById('profileAdjustmentModal');
+      if (modal) {
+        modal.classList.add('hidden');
+        modal.classList.remove('open', 'active');
+        modal.style.display = 'none';
+        modal.style.pointerEvents = 'none';
+        document.body.style.overflow = '';
       }
-      if (window.lucide && typeof window.lucide.createIcons === 'function') window.lucide.createIcons();
+      if (!fromCloseModal && typeof closeModal === 'function') {
+        closeModal('profileAdjustmentModal');
+      }
     }
 
-    function submitProfilePictureUpload() {
-      const input = document.getElementById('profile_picture') || document.getElementById('profilePictureInput') || document.getElementById('profileAvatarInput');
-      const file = pendingAvatarFile || (input && input.files && input.files[0]);
-      if (!file) {
-        showToast('Please select a photo first.', 'warning');
+    function initCropCanvasInteractions() {
+      const canvas = document.getElementById('cropCanvas');
+      if (!canvas || cropListenersInitialized) return;
+      cropListenersInitialized = true;
+
+      // Pointer events for dragging / moving (supports Mouse and Touch seamlessly)
+      canvas.addEventListener('pointerdown', (e) => {
+        if (!cropOriginalImg) return;
+        isCropDragging = true;
+        canvas.style.cursor = 'grabbing';
+        try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
+
+        const rect = canvas.getBoundingClientRect();
+        const factor = CROP_CANVAS_SIZE / rect.width;
+        cropDragStartX = (e.clientX - rect.left) * factor - cropOffsetX;
+        cropDragStartY = (e.clientY - rect.top) * factor - cropOffsetY;
+      });
+
+      canvas.addEventListener('pointermove', (e) => {
+        if (!isCropDragging || !cropOriginalImg) return;
+        const rect = canvas.getBoundingClientRect();
+        const factor = CROP_CANVAS_SIZE / rect.width;
+        const curX = (e.clientX - rect.left) * factor;
+        const curY = (e.clientY - rect.top) * factor;
+
+        cropOffsetX = curX - cropDragStartX;
+        cropOffsetY = curY - cropDragStartY;
+
+        renderCropCanvas();
+      });
+
+      const stopDrag = (e) => {
+        if (!isCropDragging) return;
+        isCropDragging = false;
+        canvas.style.cursor = 'grab';
+        try { canvas.releasePointerCapture(e.pointerId); } catch (_) {}
+      };
+
+      canvas.addEventListener('pointerup', stopDrag);
+      canvas.addEventListener('pointercancel', stopDrag);
+
+      // Mouse wheel zoom
+      canvas.addEventListener('wheel', (e) => {
+        if (!cropOriginalImg) return;
+        e.preventDefault();
+        const delta = e.deltaY < 0 ? 0.08 : -0.08;
+        stepCropZoom(delta);
+      }, { passive: false });
+    }
+
+    function renderCropCanvas() {
+      const canvas = document.getElementById('cropCanvas');
+      if (!canvas || !cropOriginalImg) return;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      const W = CROP_CANVAS_SIZE;
+      const H = CROP_CANVAS_SIZE;
+      const cx = W / 2;
+      const cy = H / 2;
+
+      ctx.clearRect(0, 0, W, H);
+
+      // Draw dark background
+      ctx.fillStyle = '#140E08';
+      ctx.fillRect(0, 0, W, H);
+
+      // Scaled dimensions
+      const curScale = cropBaseScale * cropScale;
+      const dispW = cropOriginalImg.naturalWidth * curScale;
+      const dispH = cropOriginalImg.naturalHeight * curScale;
+
+      // Bound clamping: ensure image always fills the circular crop window
+      const maxOffX = Math.max(0, (dispW / 2) - CROP_RADIUS);
+      const maxOffY = Math.max(0, (dispH / 2) - CROP_RADIUS);
+      cropOffsetX = Math.max(-maxOffX, Math.min(maxOffX, cropOffsetX));
+      cropOffsetY = Math.max(-maxOffY, Math.min(maxOffY, cropOffsetY));
+
+      const drawX = cx + cropOffsetX - (dispW / 2);
+      const drawY = cy + cropOffsetY - (dispH / 2);
+
+      // Draw original image
+      ctx.drawImage(cropOriginalImg, drawX, drawY, dispW, dispH);
+
+      // Draw dark semi-transparent circular mask overlay
+      ctx.save();
+      ctx.fillStyle = 'rgba(20, 14, 8, 0.65)';
+      ctx.beginPath();
+      // Outer box
+      ctx.rect(0, 0, W, H);
+      // Cutout circle counter-clockwise
+      ctx.arc(cx, cy, CROP_RADIUS, 0, Math.PI * 2, true);
+      ctx.fill();
+
+      // Golden circular guide border
+      ctx.strokeStyle = '#D4AF37';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.arc(cx, cy, CROP_RADIUS, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // Subtle dashed inner ring for alignment
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.arc(cx, cy, CROP_RADIUS - 6, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+
+      // Update Live Circular Preview
+      updateCropPreview(drawX, drawY, curScale);
+    }
+
+    function updateCropPreview(drawX, drawY, curScale) {
+      const prevCanvas = document.getElementById('cropPreviewCanvas');
+      if (!prevCanvas || !cropOriginalImg) return;
+      const prevCtx = prevCanvas.getContext('2d');
+      if (!prevCtx) return;
+
+      const pSize = prevCanvas.width;
+      prevCtx.clearRect(0, 0, pSize, pSize);
+
+      const cx = CROP_CANVAS_SIZE / 2;
+      const cy = CROP_CANVAS_SIZE / 2;
+      const cropLeft = cx - CROP_RADIUS;
+      const cropTop = cy - CROP_RADIUS;
+      const cropSize = 2 * CROP_RADIUS;
+
+      const sx = (cropLeft - drawX) / curScale;
+      const sy = (cropTop - drawY) / curScale;
+      const sw = cropSize / curScale;
+      const sh = cropSize / curScale;
+
+      prevCtx.drawImage(cropOriginalImg, sx, sy, sw, sh, 0, 0, pSize, pSize);
+    }
+
+    function handleCropZoomSlider(val) {
+      cropScale = Math.max(1.0, Math.min(3.0, parseFloat(val) || 1.0));
+      const label = document.getElementById('cropZoomLabel');
+      if (label) label.textContent = Math.round(cropScale * 100) + '%';
+      renderCropCanvas();
+    }
+
+    function stepCropZoom(delta) {
+      cropScale = Math.max(1.0, Math.min(3.0, cropScale + delta));
+      const slider = document.getElementById('cropZoomSlider');
+      if (slider) slider.value = cropScale.toFixed(2);
+      const label = document.getElementById('cropZoomLabel');
+      if (label) label.textContent = Math.round(cropScale * 100) + '%';
+      renderCropCanvas();
+    }
+
+    function resetCropAdjustment() {
+      cropScale = 1.0;
+      cropOffsetX = 0;
+      cropOffsetY = 0;
+      const slider = document.getElementById('cropZoomSlider');
+      if (slider) slider.value = '1.0';
+      const label = document.getElementById('cropZoomLabel');
+      if (label) label.textContent = '100%';
+      renderCropCanvas();
+    }
+
+    async function saveCroppedProfilePicture() {
+      // Prevent saving if no new profile picture has been selected or loaded
+      if (!cropOriginalImg) {
+        showToast('Please select a profile picture first.', 'warning');
         return;
       }
 
-      const saveBtn = document.getElementById('btnSaveAvatar');
+      const saveBtn = document.getElementById('btnSaveCroppedAvatar');
+      const origHtml = saveBtn ? saveBtn.innerHTML : '';
       if (saveBtn) {
         saveBtn.disabled = true;
-        saveBtn.innerHTML = 'Saving...';
+        saveBtn.innerHTML = '<span class="clay-spinner" style="width: 15px; height: 15px; border-width: 2px; margin-right: 6px; vertical-align: middle;"></span>Saving...';
       }
 
-      const form = document.getElementById('profilePictureForm');
-      const formData = new FormData(form || undefined);
-      formData.set('action', 'upload_profile_picture');
-      formData.set('profile_picture', file);
-      formData.set('is_ajax', '1');
+      try {
+        const OUT_SIZE = 512;
+        const outCanvas = document.createElement('canvas');
+        outCanvas.width = OUT_SIZE;
+        outCanvas.height = OUT_SIZE;
+        const outCtx = outCanvas.getContext('2d');
 
-      fetch('api/profile_api.php', {
-        method: 'POST',
-        body: formData
-      })
-      .then(res => res.json())
-      .then(data => {
-        if (saveBtn) {
-          saveBtn.disabled = false;
-          saveBtn.innerHTML = '<i data-lucide="check" style="width: 15px; height: 15px;"></i> Save Changes';
-          if (window.lucide && typeof window.lucide.createIcons === 'function') window.lucide.createIcons();
+        const cx = CROP_CANVAS_SIZE / 2;
+        const cy = CROP_CANVAS_SIZE / 2;
+        const curScale = cropBaseScale * cropScale;
+        const dispW = cropOriginalImg.naturalWidth * curScale;
+        const dispH = cropOriginalImg.naturalHeight * curScale;
+        const drawX = cx + cropOffsetX - (dispW / 2);
+        const drawY = cy + cropOffsetY - (dispH / 2);
+
+        const cropLeft = cx - CROP_RADIUS;
+        const cropTop = cy - CROP_RADIUS;
+        const cropSize = 2 * CROP_RADIUS;
+
+        const sx = (cropLeft - drawX) / curScale;
+        const sy = (cropTop - drawY) / curScale;
+        const sw = cropSize / curScale;
+        const sh = cropSize / curScale;
+
+        outCtx.drawImage(cropOriginalImg, sx, sy, sw, sh, 0, 0, OUT_SIZE, OUT_SIZE);
+
+        let blob = await new Promise((resolve) => outCanvas.toBlob(resolve, 'image/jpeg', 0.92));
+        if (!blob) {
+          // Fallback via dataURL if toBlob fails
+          const dataUrl = outCanvas.toDataURL('image/jpeg', 0.92);
+          const parts = dataUrl.split(',');
+          const byteString = atob(parts[1]);
+          const mimeString = parts[0].split(':')[1].split(';')[0];
+          const ab = new ArrayBuffer(byteString.length);
+          const ia = new Uint8Array(ab);
+          for (let i = 0; i < byteString.length; i++) {
+            ia[i] = byteString.charCodeAt(i);
+          }
+          blob = new Blob([ab], { type: mimeString });
         }
 
-        if (data.status === 'success') {
+        if (!blob) throw new Error('Could not process profile image.');
+
+        const formData = new FormData();
+        formData.append('action', 'upload_profile_picture');
+        formData.append('profile_picture', blob, 'avatar.jpg');
+        formData.append('is_ajax', '1');
+
+        const res = await fetch('api/profile_api.php', {
+          method: 'POST',
+          headers: {
+            'X-Requested-With': 'XMLHttpRequest',
+            'Accept': 'application/json'
+          },
+          body: formData
+        });
+
+        let data = null;
+        try {
+          data = await res.json();
+        } catch (jsonErr) {
+          console.error('Non-JSON response from profile API:', jsonErr);
+        }
+
+        if (res.ok && data && data.status === 'success' && data.profile_picture) {
           currentSavedAvatarUrl = data.profile_picture;
-          pendingAvatarFile = null;
-          if (input) input.value = '';
-
-          const pendingActions = document.getElementById('avatarPendingActions');
-          if (pendingActions) pendingActions.style.display = 'none';
-
-          const removeBtn = document.getElementById('btnRemoveAvatar');
-          if (removeBtn) removeBtn.style.display = 'inline-flex';
-
           const stamp = Date.now();
           const avatarUrlWithCache = data.profile_picture + '?t=' + stamp;
 
-          // Update header avatar badge
-          const headerBadge = document.getElementById('headerAvatarBadge');
-          if (headerBadge) {
-            headerBadge.innerHTML = `<img src="${avatarUrlWithCache}" alt="Profile" class="header-avatar-img">`;
-          }
-
-          // Update profile dropdown avatar
-          const dropCircle = document.getElementById('profileDropdownAvatarCircle') || document.querySelector('.fb-profile-avatar-circle');
-          if (dropCircle) {
-            dropCircle.innerHTML = `<img src="${avatarUrlWithCache}" alt="Profile" id="profileDropdownAvatarImg">`;
-          }
-
-          // Update settings preview
+          // 1. Display updated profile picture in settings immediately without page refresh
           const previewImg = document.getElementById('avatarPreviewImg');
           if (previewImg) {
             previewImg.src = avatarUrlWithCache;
             previewImg.style.display = 'block';
           }
           const fallbackInit = document.getElementById('avatarFallbackInitial');
-          if (fallbackInit) fallbackInit.style.display = 'none';
+          if (fallbackInit) {
+            fallbackInit.style.setProperty('display', 'none', 'important');
+            fallbackInit.textContent = '';
+          }
 
-          if (window.lucide && typeof window.lucide.createIcons === 'function') window.lucide.createIcons();
-          showToast('Profile picture updated successfully!', 'success');
+          // 2. Display updated profile picture in header avatar badge immediately
+          const headerBadge = document.getElementById('headerAvatarBadge');
+          if (headerBadge) {
+            headerBadge.innerHTML = `<img src="${avatarUrlWithCache}" alt="Profile" class="header-avatar-img">`;
+          }
+
+          // 3. Display updated profile picture in profile dropdown menu immediately
+          const dropCircles = document.querySelectorAll('#profileDropdownAvatarCircle, .fb-profile-avatar-circle');
+          dropCircles.forEach(circle => {
+            circle.innerHTML = `<img src="${avatarUrlWithCache}" alt="Profile" id="profileDropdownAvatarImg">`;
+          });
+
+          // Close modal and surface success notification
+          closeProfileAdjustmentModal();
+          showToast('Profile picture saved successfully!', 'success');
         } else {
-          showToast(data.message || 'Failed to update profile picture.', 'error');
+          // Preserve existing profile picture unchanged on save failure
+          const errorMsg = (data && data.message) ? data.message : 'Failed to save profile picture. Please try again.';
+          showToast(errorMsg, 'error');
         }
-      })
-      .catch(err => {
+      } catch (err) {
+        // Preserve existing profile picture unchanged on network/runtime error
+        showToast(err.message || 'Network error saving profile picture. Please try again.', 'error');
+      } finally {
         if (saveBtn) {
           saveBtn.disabled = false;
-          saveBtn.innerHTML = '<i data-lucide="check" style="width: 15px; height: 15px;"></i> Save Changes';
+          saveBtn.innerHTML = origHtml;
           if (window.lucide && typeof window.lucide.createIcons === 'function') window.lucide.createIcons();
         }
-        showToast('Network error uploading profile picture.', 'error');
-      });
+      }
     }
+    window.saveCroppedProfilePicture = saveCroppedProfilePicture;
 
     function confirmRemoveProfilePicture() {
       if (!confirm('Are you sure you want to remove your profile picture and revert to the default circular initial icon?')) {
@@ -3848,20 +4417,20 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
 
     // Edit Account Information Modal Controls
     function openEditAccountInfoModal() {
-      const modal = document.getElementById('editAccountInfoModal');
-      if (modal) {
-        modal.style.display = 'flex';
-        modal.classList.add('open');
-        modal.style.pointerEvents = 'auto';
-      }
+      openModal('editAccountInfoModal');
     }
 
-    function closeEditAccountInfoModal() {
+    function closeEditAccountInfoModal(fromCloseModal = false) {
       const modal = document.getElementById('editAccountInfoModal');
       if (modal) {
-        modal.classList.remove('open');
+        modal.classList.add('hidden');
+        modal.classList.remove('open', 'active');
         modal.style.display = 'none';
         modal.style.pointerEvents = 'none';
+        document.body.style.overflow = '';
+      }
+      if (!fromCloseModal && typeof closeModal === 'function') {
+        closeModal('editAccountInfoModal');
       }
     }
 
@@ -4529,18 +5098,20 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
         e.preventDefault();
         e.stopPropagation();
       }
-      const m = document.getElementById('termsContentModal');
-      if (m) {
-        m.style.display = 'flex';
-        m.style.pointerEvents = 'auto';
-      }
+      openModal('termsContentModal');
     }
 
-    function closeTermsModal() {
+    function closeTermsModal(fromCloseModal = false) {
       const m = document.getElementById('termsContentModal');
       if (m) {
+        m.classList.add('hidden');
+        m.classList.remove('open', 'active');
         m.style.display = 'none';
         m.style.pointerEvents = 'none';
+        document.body.style.overflow = '';
+      }
+      if (!fromCloseModal && typeof closeModal === 'function') {
+        closeModal('termsContentModal');
       }
     }
 
@@ -4555,18 +5126,20 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
         e.preventDefault();
         e.stopPropagation();
       }
-      const m = document.getElementById('privacyContentModal');
-      if (m) {
-        m.style.display = 'flex';
-        m.style.pointerEvents = 'auto';
-      }
+      openModal('privacyContentModal');
     }
 
-    function closePrivacyModal() {
+    function closePrivacyModal(fromCloseModal = false) {
       const m = document.getElementById('privacyContentModal');
       if (m) {
+        m.classList.add('hidden');
+        m.classList.remove('open', 'active');
         m.style.display = 'none';
         m.style.pointerEvents = 'none';
+        document.body.style.overflow = '';
+      }
+      if (!fromCloseModal && typeof closeModal === 'function') {
+        closeModal('privacyContentModal');
       }
     }
 
@@ -4600,13 +5173,7 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
       window.isUpdatingVerifiedId = (window.IS_TENANT_VERIFIED || isUpdate === true);
       window.hasStagedPendingId = false;
 
-      const modal = document.getElementById('verifyAccountModal');
-      if (modal) {
-        modal.classList.remove('hidden');
-        modal.classList.add('open');
-        modal.style.display = 'flex';
-        modal.style.pointerEvents = 'auto';
-      }
+      openModal('verifyAccountModal');
 
       const titleEl = document.getElementById('verifyModalTitleText');
       const subEl = document.getElementById('verifyModalSubText');
@@ -4745,7 +5312,7 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
     }
     window.removeIdFile = removeIdFile;
 
-    function closeVerifyAccountModal() {
+    function closeVerifyAccountModal(fromCloseModal = false) {
       cancelIdUpdateIfPending();
 
       stopIdCamera();
@@ -4760,9 +5327,10 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
       const modal = document.getElementById('verifyAccountModal');
       if (modal) {
         modal.classList.add('hidden');
-        modal.classList.remove('open');
+        modal.classList.remove('open', 'active');
         modal.style.display = 'none';
         modal.style.pointerEvents = 'none';
+        document.body.style.overflow = '';
       }
       stopLivenessCamera();
       const retryBtn = document.getElementById('btnLivenessRetry');
@@ -4777,6 +5345,9 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
       isLivenessConfirmed = false;
       lastFaceDetected = false;
       resetLivenessAntiSpoofingState();
+      if (!fromCloseModal && typeof closeModal === 'function') {
+        closeModal('verifyAccountModal');
+      }
     }
 
     function goToVerificationStep(stepNum) {
@@ -6101,17 +6672,20 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
       }
       document.getElementById('ttModalDateResolved').textContent = dateRes;
 
-      modal.style.display = 'flex';
-      modal.style.pointerEvents = 'auto';
-      modal.classList.add('open');
+      openModal('tenantTicketModal');
     }
 
-    function closeTenantTicketModal() {
+    function closeTenantTicketModal(fromCloseModal = false) {
       const modal = document.getElementById('tenantTicketModal');
       if (modal) {
-        modal.classList.remove('open');
+        modal.classList.add('hidden');
+        modal.classList.remove('open', 'active');
         modal.style.display = 'none';
         modal.style.pointerEvents = 'none';
+        document.body.style.overflow = '';
+      }
+      if (!fromCloseModal && typeof closeModal === 'function') {
+        closeModal('tenantTicketModal');
       }
     }
 
@@ -6313,17 +6887,20 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
         ? new Date(String(rep.reviewed_at).replace(' ', 'T')).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
         : 'Pending review';
 
-      modal.style.display = 'flex';
-      modal.style.pointerEvents = 'auto';
-      modal.classList.add('open');
+      openModal('tenantReportModal');
     }
 
-    function closeTenantReportModal() {
+    function closeTenantReportModal(fromCloseModal = false) {
       const modal = document.getElementById('tenantReportModal');
       if (modal) {
-        modal.classList.remove('open');
+        modal.classList.add('hidden');
+        modal.classList.remove('open', 'active');
         modal.style.display = 'none';
         modal.style.pointerEvents = 'none';
+        document.body.style.overflow = '';
+      }
+      if (!fromCloseModal && typeof closeModal === 'function') {
+        closeModal('tenantReportModal');
       }
     }
 
@@ -6404,7 +6981,7 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
     function initTenantEventListeners() {
       // 0. Universal Modal Backdrop Click-to-Close for Tenant Modals
       try {
-        ['tenantTicketModal', 'tenantReportModal', 'verifyAccountModal', 'editAccountInfoModal', 'verificationActionPromptModal', 'termsContentModal', 'privacyContentModal'].forEach(mId => {
+        ['tenantTicketModal', 'tenantReportModal', 'verifyAccountModal', 'editAccountInfoModal', 'verificationActionPromptModal', 'termsContentModal', 'privacyContentModal', 'modalTenantProfileId', 'profileAdjustmentModal'].forEach(mId => {
           const m = document.getElementById(mId);
           if (m) {
             m.addEventListener('click', (e) => {
@@ -6722,6 +7299,9 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
 
             const payload = {
               action: 'update_account_info',
+              first_name: (document.getElementById('editFirstName') ? document.getElementById('editFirstName').value.trim() : ''),
+              middle_name: (document.getElementById('editMiddleName') ? document.getElementById('editMiddleName').value.trim() : ''),
+              last_name: (document.getElementById('editLastName') ? document.getElementById('editLastName').value.trim() : ''),
               email: document.getElementById('editEmail').value.trim(),
               phone: document.getElementById('editPhone').value.trim(),
               emergency_contact_name: document.getElementById('editEmergencyName').value.trim(),

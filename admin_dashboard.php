@@ -2117,31 +2117,44 @@ try {
             <!-- Sub-Tab 1: Account Information -->
             <div id="paneAccountInfo" class="profile-tab-pane active-pane">
               <div>
-                <!-- Top Row: Avatar + Name / Username -->
-                <div class="tararent-settings-header">
-                  <!-- Hidden profile picture form -->
-                  <form id="profilePictureForm" method="POST" action="api/profile_api.php" enctype="multipart/form-data" style="display: none;">
-                    <input type="hidden" name="action" value="upload_profile_picture">
-                    <input type="hidden" name="user_id" value="<?= (int)($user['id'] ?? 0) ?>">
-                    <input type="file" id="profile_picture" name="profile_picture" accept="image/*" onchange="previewProfilePicture(event)">
-                  </form>
+                <!-- Top Row: Avatar + Name / Username + Role -->
+                <div class="tararent-settings-header" style="justify-content: space-between; flex-wrap: wrap; gap: 16px;">
+                  <div style="display: flex; align-items: center; gap: 18px;">
+                    <!-- Hidden profile picture form -->
+                    <form id="profilePictureForm" method="POST" action="api/profile_api.php" enctype="multipart/form-data" style="display: none;">
+                      <input type="hidden" name="action" value="upload_profile_picture">
+                      <input type="hidden" name="user_id" value="<?= (int)($user['id'] ?? 0) ?>">
+                      <input type="file" id="profile_picture" name="profile_picture" accept="image/*" onchange="previewProfilePicture(event)">
+                    </form>
 
-                  <!-- Circular Avatar with "change profile" -->
-                  <div class="tararent-settings-avatar-wrap" onclick="triggerProfilePictureInput()" title="Click to change profile picture">
-                    <?php if (!empty($userAvatarUrl)): ?>
-                      <img id="avatarPreviewImg" src="<?= htmlspecialchars($userAvatarUrl) ?>" alt="Profile Photo">
-                      <span class="tararent-settings-change-link" style="position: absolute; bottom: 4px; background: rgba(255,255,255,0.85); width: 100%; padding: 2px 0;">change<br>profile</span>
-                    <?php else: ?>
-                      <div id="avatarFallbackInitial" style="display: none;"><?= htmlspecialchars($userInitial) ?></div>
-                      <img id="avatarPreviewImg" src="" alt="Profile Photo" style="display: none;">
-                      <span class="tararent-settings-change-link">change<br>profile</span>
-                    <?php endif; ?>
-                  </div>
+                    <!-- Circular Avatar Column with Change Profile Label Below (Fits properly, no overlap) -->
+                    <div class="tararent-avatar-column">
+                      <div class="tararent-settings-avatar-wrap" onclick="triggerProfilePictureInput()" title="Click to change profile picture" role="button" tabindex="0">
+                        <?php if (!empty($userAvatarUrl)): ?>
+                          <img id="avatarPreviewImg" src="<?= htmlspecialchars($userAvatarUrl) ?>" alt="Profile Photo" class="tararent-avatar-img">
+                          <div id="avatarFallbackInitial" class="tararent-avatar-initial" style="display: none !important;"></div>
+                        <?php else: ?>
+                          <div id="avatarFallbackInitial" class="tararent-avatar-initial"><?= htmlspecialchars($userInitial) ?></div>
+                          <img id="avatarPreviewImg" src="" alt="Profile Photo" class="tararent-avatar-img" style="display: none !important;">
+                        <?php endif; ?>
+                        <div class="tararent-avatar-hover-overlay" title="Change Profile Picture">
+                          <i data-lucide="camera" class="w-5 h-5 text-white"></i>
+                        </div>
+                      </div>
 
-                  <!-- Name and Handle -->
-                  <div class="tararent-settings-title-group">
-                    <h2 class="tararent-settings-user-name" id="profileFullName"><?= htmlspecialchars($user['name'] ?? 'Admin') ?></h2>
-                    <div class="tararent-settings-user-handle">@<?= htmlspecialchars($user['username'] ?? 'admin') ?></div>
+                      <button type="button" class="tararent-change-profile-link" onclick="triggerProfilePictureInput()" title="Change Profile Picture">
+                        <i data-lucide="camera" class="w-3 h-3"></i> Change Profile
+                      </button>
+                    </div>
+
+                    <!-- Name and Handle -->
+                    <div class="tararent-settings-title-group">
+                      <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                        <h2 class="tararent-settings-user-name" id="profileFullName" style="margin: 0;"><?= htmlspecialchars($user['name'] ?? 'Admin') ?></h2>
+                        <span style="font-size: 11px; font-weight: 800; background: #5E3F12; color: #FFFDF8; border-radius: 9999px; padding: 2px 10px; text-transform: uppercase; letter-spacing: 0.04em;">Administrator</span>
+                      </div>
+                      <div class="tararent-settings-user-handle">@<?= htmlspecialchars($user['username'] ?? 'admin') ?></div>
+                    </div>
                   </div>
                 </div>
 
@@ -2151,35 +2164,94 @@ try {
                   <button type="button" class="tararent-settings-save-btn" id="btnCancelAvatar" onclick="cancelProfilePictureSelection()" style="padding: 6px 14px; font-size: 12.5px; background: #EFE7DA;">Cancel</button>
                 </div>
 
-                <!-- Two-Column Information Grid -->
-                <div class="tararent-settings-info-grid">
-                  <div class="tararent-settings-info-item">
-                    <span class="tararent-settings-info-label">Full Name:</span>
-                    <span class="tararent-settings-info-val"><?= htmlspecialchars($user['name'] ?? 'Admin') ?></span>
+                <!-- 1. ADMINISTRATOR PERSONAL INFORMATION SUBCARD -->
+                <div class="tararent-settings-subcard">
+                  <div class="tararent-subcard-header">
+                    <h3 class="tararent-subcard-title">
+                      <i data-lucide="user-check" class="w-4 h-4"></i> Administrator Personal Information
+                    </h3>
                   </div>
-                  <div class="tararent-settings-info-item">
-                    <span class="tararent-settings-info-label">username:</span>
-                    <span class="tararent-settings-info-val"><?= htmlspecialchars($user['username'] ?? 'admin') ?></span>
-                  </div>
-                  <div class="tararent-settings-info-item">
-                    <span class="tararent-settings-info-label">Residential Address:</span>
-                    <span class="tararent-settings-info-val"><?= htmlspecialchars($user['address'] ?? 'TaraRent Residences, Batangas') ?></span>
-                  </div>
-                  <div class="tararent-settings-info-item">
-                    <span class="tararent-settings-info-label">phone no.:</span>
-                    <span class="tararent-settings-info-val"><?= htmlspecialchars($user['phone'] ?? '+63 912 345 6789') ?></span>
-                  </div>
-                  <div class="tararent-settings-info-item">
-                    <span class="tararent-settings-info-label">email address:</span>
-                    <span class="tararent-settings-info-val"><?= htmlspecialchars($user['email'] ?? 'admin@tararent.ph') ?></span>
+                  <div class="tararent-subcard-grid">
+                    <div class="tararent-info-field">
+                      <span class="tararent-field-label">Full Name</span>
+                      <span class="tararent-field-value"><?= htmlspecialchars($user['name'] ?? 'Admin') ?></span>
+                    </div>
+                    <div class="tararent-info-field">
+                      <span class="tararent-field-label">Username</span>
+                      <span class="tararent-field-value font-mono">@<?= htmlspecialchars($user['username'] ?? 'admin') ?></span>
+                    </div>
+                    <div class="tararent-info-field">
+                      <span class="tararent-field-label">Residential Address</span>
+                      <span class="tararent-field-value"><?= htmlspecialchars($user['address'] ?? 'TaraRent Residences, Batangas') ?></span>
+                    </div>
+                    <div class="tararent-info-field">
+                      <span class="tararent-field-label">Phone Number</span>
+                      <span class="tararent-field-value"><?= htmlspecialchars($user['phone'] ?? '+63 912 345 6789') ?></span>
+                    </div>
+                    <div class="tararent-info-field">
+                      <span class="tararent-field-label">Email Address</span>
+                      <span class="tararent-field-value"><?= htmlspecialchars($user['email'] ?? 'admin@tararent.ph') ?></span>
+                    </div>
                   </div>
                 </div>
-              </div>
 
-              <!-- Bottom Center: Valid Identification -->
-              <div class="tararent-settings-id-box">
-                <span class="tararent-settings-id-label">Valid Identification</span>
-                <button type="button" class="tararent-settings-id-link" onclick="openAdminIdModal()">view photo</button>
+                <!-- 2. PROPERTY & ADMINISTRATIVE DETAILS SUBCARD -->
+                <div class="tararent-settings-subcard">
+                  <div class="tararent-subcard-header">
+                    <h3 class="tararent-subcard-title">
+                      <i data-lucide="building-2" class="w-4 h-4"></i> Property &amp; Management Details
+                    </h3>
+                  </div>
+                  <div class="tararent-subcard-grid">
+                    <div class="tararent-info-field">
+                      <span class="tararent-field-label">Managed Property</span>
+                      <span class="tararent-field-value font-black text-[#56380E]">TaraRent Residences</span>
+                    </div>
+                    <div class="tararent-info-field">
+                      <span class="tararent-field-label">Units Managed</span>
+                      <span class="tararent-field-value">3 Apartment Units (Units 1 - 3)</span>
+                    </div>
+                    <div class="tararent-info-field">
+                      <span class="tararent-field-label">System Role</span>
+                      <span class="tararent-field-value font-bold text-[#302313]">Property Administrator</span>
+                    </div>
+                    <div class="tararent-info-field">
+                      <span class="tararent-field-label">Administrative Access Level</span>
+                      <div>
+                        <span style="display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 900; background: #D1FAE5; color: #065F46; border: 1px solid #A7F3D0; border-radius: 9999px; padding: 2px 10px; text-transform: uppercase;">
+                          <i data-lucide="shield-check" class="w-3 h-3"></i> Full Access
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 3. ADMINISTRATOR IDENTIFICATION SUBCARD -->
+                <div class="tararent-settings-subcard">
+                  <div class="tararent-subcard-header">
+                    <h3 class="tararent-subcard-title">
+                      <i data-lucide="badge-check" class="w-4 h-4"></i> Administrator Identification
+                    </h3>
+                    <button type="button" class="tararent-btn-view-id" onclick="openAdminIdModal()" title="View Administrator Identification">
+                      <i data-lucide="eye" class="w-3.5 h-3.5"></i> View Identification
+                    </button>
+                  </div>
+                  <div class="tararent-subcard-grid">
+                    <div class="tararent-info-field">
+                      <span class="tararent-field-label">Identification Status</span>
+                      <div>
+                        <span style="display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 900; background: #D1FAE5; color: #065F46; border: 1px solid #A7F3D0; border-radius: 9999px; padding: 2px 10px; text-transform: uppercase;">
+                          <i data-lucide="check-circle-2" class="w-3 h-3"></i> Verified Property Administrator
+                        </span>
+                      </div>
+                    </div>
+                    <div class="tararent-info-field">
+                      <span class="tararent-field-label">Clearance Level</span>
+                      <span class="tararent-field-value">Authorized System Manager</span>
+                    </div>
+                  </div>
+                </div>
+
               </div>
             </div>
 
@@ -2218,11 +2290,11 @@ try {
         </div>
 
         <!-- Admin ID Viewing Modal -->
-        <div id="modalAdminProfileId" class="clay-modal" style="display: none;" onclick="if(event.target === this) this.style.display='none'">
+        <div id="modalAdminProfileId" class="clay-modal" style="display: none;" onclick="if(event.target === this) closeModal('modalAdminProfileId')">
           <div class="clay-modal-content" style="max-width: 480px; background: #FAF3E7; border-radius: 20px; padding: 24px; border: 1.5px solid #8C6D43; box-shadow: 0 10px 30px rgba(0,0,0,0.25);">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
               <h3 style="font-weight: 900; color: #1E160E; margin: 0; font-size: 17px; text-transform: uppercase;">Administrator Identification</h3>
-              <button type="button" onclick="document.getElementById('modalAdminProfileId').style.display='none'" style="background: none; border: none; font-size: 20px; cursor: pointer; color: #1E160E; font-weight: bold; line-height: 1;">✕</button>
+              <button type="button" onclick="closeModal('modalAdminProfileId')" style="background: none; border: none; font-size: 20px; cursor: pointer; color: #1E160E; font-weight: bold; line-height: 1;">✕</button>
             </div>
             <div style="text-align: center; padding: 24px 16px; background: #DECBB3; border-radius: 14px;">
               <?php if (!empty($user['id_photo_filename']) && file_exists(__DIR__ . '/uploads/id_verifications/' . $user['id_photo_filename'])): ?>
@@ -3878,9 +3950,10 @@ try {
       const modal = typeof modalId === 'string' ? document.getElementById(modalId) : modalId;
       if (!modal) return;
       modal.classList.remove('hidden');
-      modal.classList.add('open');
+      modal.classList.add('open', 'active');
       modal.style.display = 'flex';
       modal.style.pointerEvents = 'auto';
+      document.body.style.overflow = 'hidden';
       if (window.lucide && typeof window.lucide.createIcons === 'function') {
         window.lucide.createIcons();
       }
@@ -3909,6 +3982,7 @@ try {
       else if (id === 'ownerDeleteConfirmModal' && typeof closeOwnerDeleteConfirmModal === 'function') closeOwnerDeleteConfirmModal(true);
       else if (id === 'moveOutConfirmModal' && typeof closeMoveOutConfirmModal === 'function') closeMoveOutConfirmModal(true);
       else if (id === 'announcementModal' && typeof closeAnnouncementModal === 'function') closeAnnouncementModal(true);
+      else if (id === 'modalAdminProfileId' && typeof closeAdminIdModal === 'function') closeAdminIdModal(true);
     }
     window.closeModal = closeModal;
 
@@ -4085,6 +4159,9 @@ try {
       if (updateUrl && window.history && window.history.replaceState) {
         history.replaceState(null, '', `admin_dashboard.php?section=sectionProfile&tab=${tabName}`);
       }
+      if (window.lucide && typeof window.lucide.createIcons === 'function') {
+        window.lucide.createIcons();
+      }
     }
 
     // =========================================================================
@@ -4095,8 +4172,21 @@ try {
     let pendingAvatarFile = null;
 
     function openAdminIdModal() {
+      openModal('modalAdminProfileId');
+    }
+
+    function closeAdminIdModal(fromCloseModal = false) {
       const m = document.getElementById('modalAdminProfileId');
-      if (m) m.style.display = 'flex';
+      if (m) {
+        m.classList.add('hidden');
+        m.classList.remove('open', 'active');
+        m.style.display = 'none';
+        m.style.pointerEvents = 'none';
+        document.body.style.overflow = '';
+      }
+      if (!fromCloseModal && typeof closeModal === 'function') {
+        closeModal('modalAdminProfileId');
+      }
     }
 
     function previewProfilePicture(e) {
@@ -4241,7 +4331,10 @@ try {
             previewImg.style.display = 'block';
           }
           const fallbackInit = document.getElementById('avatarFallbackInitial');
-          if (fallbackInit) fallbackInit.style.display = 'none';
+          if (fallbackInit) {
+            fallbackInit.style.setProperty('display', 'none', 'important');
+            fallbackInit.textContent = '';
+          }
 
           if (window.lucide && typeof window.lucide.createIcons === 'function') window.lucide.createIcons();
           showToast('Profile picture updated successfully!', 'success');
@@ -4648,13 +4741,23 @@ try {
       initMoveInDatePicker();
       calculateTotalOccupants();
       updateRegistrationRentPreview();
-      document.getElementById('addTenantModal').classList.add('open');
+      openModal('addTenantModal');
     }
 
-    function closeAddTenantModal() {
-      if (isSubmittingTenant) return; // Prevent closing during active processing
-      document.getElementById('addTenantModal').classList.remove('open');
+    function closeAddTenantModal(fromCloseModal = false) {
+      if (isSubmittingTenant && !fromCloseModal) return; // Prevent closing during active processing
+      const modal = document.getElementById('addTenantModal');
+      if (modal) {
+        modal.classList.add('hidden');
+        modal.classList.remove('open', 'active');
+        modal.style.display = 'none';
+        modal.style.pointerEvents = 'none';
+        document.body.style.overflow = '';
+      }
       resetAddTenantModalState();
+      if (!fromCloseModal && typeof closeModal === 'function') {
+        closeModal('addTenantModal');
+      }
     }
 
     // Auto-Calculate Occupants (Vanilla JS)
@@ -4989,11 +5092,18 @@ try {
       document.getElementById('credUnitNumber').textContent = creds.unit_number;
       document.getElementById('credUsername').textContent = creds.username;
       document.getElementById('credPassword').textContent = creds.password;
-      document.getElementById('tenantCredentialsModal').classList.add('open');
+      openModal('tenantCredentialsModal');
     }
 
     function closeCredentialsModalAndReload() {
-      document.getElementById('tenantCredentialsModal').classList.remove('open');
+      const modal = document.getElementById('tenantCredentialsModal');
+      if (modal) {
+        modal.classList.add('hidden');
+        modal.classList.remove('open', 'active');
+        modal.style.display = 'none';
+        modal.style.pointerEvents = 'none';
+        document.body.style.overflow = '';
+      }
       const uId = currentGeneratedCreds && currentGeneratedCreds.unit_id ? currentGeneratedCreds.unit_id : null;
       if (uId) {
         window.location.href = `admin_dashboard.php?section=sectionDirectory&unit_id=${uId}`;
@@ -5544,7 +5654,7 @@ try {
         if (confirmBtn) confirmBtn.innerHTML = `<span style="display:inline-flex;align-items:center;gap:6px;">${window.rcIcon('trash-2', 'w-4 h-4')} Confirm Delete</span>`;
       }
 
-      modal.classList.add('open', 'active');
+      openModal('ownerDeleteConfirmModal');
       setTimeout(() => {
         if (pwInput) pwInput.focus();
       }, 120);
@@ -5568,7 +5678,14 @@ try {
       pendingOwnerDeleteContext = null;
 
       if (modal) {
+        modal.classList.add('hidden');
         modal.classList.remove('open', 'active');
+        modal.style.display = 'none';
+        modal.style.pointerEvents = 'none';
+        document.body.style.overflow = '';
+      }
+      if (!force && typeof closeModal === 'function') {
+        closeModal('ownerDeleteConfirmModal');
       }
     }
 
@@ -5806,7 +5923,7 @@ try {
         confirmBtn.style.opacity = '0.7';
       }
 
-      modal.classList.add('open', 'active');
+      openModal('moveOutConfirmModal');
 
       try {
         const res = await fetch(`api/tenant_directory_api.php?action=check_settlement&tenant_id=${encodeURIComponent(tenantId)}`);
@@ -5868,6 +5985,10 @@ try {
         modal.classList.remove('open', 'active');
         modal.style.display = 'none';
         modal.style.pointerEvents = 'none';
+        document.body.style.overflow = '';
+      }
+      if (!force && typeof closeModal === 'function') {
+        closeModal('moveOutConfirmModal');
       }
     }
 
@@ -6503,11 +6624,7 @@ try {
       const contentEl = document.getElementById('archivedModalBodyContent');
 
       // Unhide modal immediately and show spinner
-      modal.classList.remove('hidden');
-      modal.classList.add('open');
-      modal.style.display = 'flex';
-      modal.style.pointerEvents = 'auto';
-      document.body.style.overflow = 'hidden';
+      openModal('archivedTenantModal');
 
       if (loadingEl) loadingEl.style.display = 'block';
       if (errorEl) errorEl.style.display = 'none';
@@ -6747,8 +6864,7 @@ try {
       if (tenantIdInput) tenantIdInput.value = tenantId;
 
       // Animate modal open & lock body scroll
-      modal.classList.add('open', 'active');
-      document.body.style.overflow = 'hidden';
+      openModal('archivedTenantDetailsModal');
 
       // Reset loading state for payments and maintenance tickets
       const payList = document.getElementById('archivedPaymentsList');
@@ -6940,11 +7056,17 @@ try {
       }
     }
 
-    function closeArchivedTenantModal() {
+    function closeArchivedTenantModal(fromCloseModal = false) {
       const modal = document.getElementById('archivedTenantDetailsModal');
       if (modal) {
+        modal.classList.add('hidden');
         modal.classList.remove('open', 'active');
+        modal.style.display = 'none';
+        modal.style.pointerEvents = 'none';
         document.body.style.overflow = '';
+      }
+      if (!fromCloseModal && typeof closeModal === 'function') {
+        closeModal('archivedTenantDetailsModal');
       }
     }
 
@@ -7539,18 +7661,20 @@ try {
       }
 
       // 9. Open Modal with Animation & Lock Body Scroll
-      const modal = document.getElementById('ticketDetailsModal');
-      if (modal) {
-        modal.classList.add('open', 'active');
-        document.body.style.overflow = 'hidden';
-      }
+      openModal('ticketDetailsModal');
     }
 
-    function closeTicketDetailsModal() {
+    function closeTicketDetailsModal(fromCloseModal = false) {
       const modal = document.getElementById('ticketDetailsModal');
       if (modal) {
+        modal.classList.add('hidden');
         modal.classList.remove('open', 'active');
+        modal.style.display = 'none';
+        modal.style.pointerEvents = 'none';
         document.body.style.overflow = '';
+      }
+      if (!fromCloseModal && typeof closeModal === 'function') {
+        closeModal('ticketDetailsModal');
       }
     }
 
@@ -7887,19 +8011,20 @@ try {
         revMeta.textContent = 'Not yet reviewed';
       }
 
-      modal.style.display = 'flex';
-      modal.classList.add('open');
-      modal.classList.add('active');
-      document.body.style.overflow = 'hidden';
+      openModal('reportDetailsModal');
     }
 
-    function closeReportDetailsModal() {
+    function closeReportDetailsModal(fromCloseModal = false) {
       const modal = document.getElementById('reportDetailsModal');
       if (modal) {
-        modal.classList.remove('open');
-        modal.classList.remove('active');
+        modal.classList.add('hidden');
+        modal.classList.remove('open', 'active');
         modal.style.display = 'none';
+        modal.style.pointerEvents = 'none';
         document.body.style.overflow = '';
+      }
+      if (!fromCloseModal && typeof closeModal === 'function') {
+        closeModal('reportDetailsModal');
       }
     }
 
@@ -8008,11 +8133,21 @@ try {
     function openAnnouncementModal() {
       document.getElementById('announcementForm').reset();
       document.getElementById('announcementUnitsContainer').style.display = 'none';
-      document.getElementById('announcementModal').classList.add('active');
+      openModal('announcementModal');
     }
 
-    function closeAnnouncementModal() {
-      document.getElementById('announcementModal').classList.remove('active');
+    function closeAnnouncementModal(fromCloseModal = false) {
+      const modal = document.getElementById('announcementModal');
+      if (modal) {
+        modal.classList.add('hidden');
+        modal.classList.remove('open', 'active');
+        modal.style.display = 'none';
+        modal.style.pointerEvents = 'none';
+        document.body.style.overflow = '';
+      }
+      if (!fromCloseModal && typeof closeModal === 'function') {
+        closeModal('announcementModal');
+      }
     }
 
     function toggleAnnouncementUnitSelector(val) {
@@ -8341,12 +8476,21 @@ try {
       document.getElementById('btnPdReject').disabled = false;
 
       // Open Modal
-      document.getElementById('paymentDetailsModal').classList.add('open');
+      openModal('paymentDetailsModal');
     }
 
-    function closePaymentDetailsModal() {
+    function closePaymentDetailsModal(fromCloseModal = false) {
       const m = document.getElementById('paymentDetailsModal');
-      if (m) m.classList.remove('open');
+      if (m) {
+        m.classList.add('hidden');
+        m.classList.remove('open', 'active');
+        m.style.display = 'none';
+        m.style.pointerEvents = 'none';
+        document.body.style.overflow = '';
+      }
+      if (!fromCloseModal && typeof closeModal === 'function') {
+        closeModal('paymentDetailsModal');
+      }
     }
 
     // Trigger Configure Rent modal directly from details view
@@ -8504,11 +8648,21 @@ try {
         }
       };
 
-      document.getElementById('configureRentModal').classList.add('open');
+      openModal('configureRentModal');
     }
 
-    function closeConfigureRentModal() {
-      document.getElementById('configureRentModal').classList.remove('open');
+    function closeConfigureRentModal(fromCloseModal = false) {
+      const m = document.getElementById('configureRentModal');
+      if (m) {
+        m.classList.add('hidden');
+        m.classList.remove('open', 'active');
+        m.style.display = 'none';
+        m.style.pointerEvents = 'none';
+        document.body.style.overflow = '';
+      }
+      if (!fromCloseModal && typeof closeModal === 'function') {
+        closeModal('configureRentModal');
+      }
     }
 
     async function submitConfigureRent() {

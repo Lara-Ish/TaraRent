@@ -9,6 +9,8 @@
 
 declare(strict_types=1);
 
+date_default_timezone_set('Asia/Manila');
+
 require_once __DIR__ . '/config/auth.php';
 require_once __DIR__ . '/includes/email_service.php';
 require_once __DIR__ . '/includes/notification_service.php';
@@ -69,10 +71,16 @@ if ($tokenMode) {
             $errorMessage = 'This password setup link is invalid or does not exist.';
         } elseif (!empty($resetRecord['used_at'])) {
             $errorMessage = 'This password setup link has already been used.';
-        } elseif (strtotime($resetRecord['expires_at']) < time()) {
-            $errorMessage = 'This password setup link has expired. Please request a new link.';
         } else {
-            $tokenValid = true;
+            $rawExp = trim((string)($resetRecord['expires_at'] ?? ''));
+            $tokenExpiresUnix = !preg_match('/[Z\+\-]\d{2}(:\d{2})?$/i', $rawExp)
+                ? strtotime($rawExp . ' UTC')
+                : strtotime($rawExp);
+            if ($tokenExpiresUnix < time()) {
+                $errorMessage = 'This password setup link has expired. Please request a new link.';
+            } else {
+                $tokenValid = true;
+            }
         }
     }
 
@@ -83,49 +91,70 @@ if ($tokenMode) {
         if (empty($newPassword) || strlen($newPassword) < 6) {
             $errorMessage = 'Password must be at least 6 characters long.';
         } elseif ($newPassword !== $confirmPassword) {
-            $errorMessage = 'The two passwords do not match. Please try again.';
+            $errorMessage = 'Passwords do not match.';
         } else {
-            try {
-                $pdo->beginTransaction();
+            $userId = (int)$resetRecord['user_id'];
+            $userCheckStmt = $pdo->prepare("SELECT password_hash FROM users WHERE id = :id LIMIT 1");
+            $userCheckStmt->execute([':id' => $userId]);
+            $currentHash = $userCheckStmt->fetchColumn();
 
-                $userId = (int)$resetRecord['user_id'];
-                $resetId = (int)$resetRecord['id'];
-                $newHash = password_hash($newPassword, PASSWORD_BCRYPT);
+            if (!empty($currentHash) && password_verify($newPassword, (string)$currentHash)) {
+                $errorMessage = 'You cannot use your previous password as your new password.';
+            } else {
+                try {
+                    $pdo->beginTransaction();
 
-                $updateUser = $pdo->prepare("UPDATE users SET password_hash = :hash, updated_at = NOW() WHERE id = :id");
-                $updateUser->execute([':hash' => $newHash, ':id' => $userId]);
+                    $resetId = (int)$resetRecord['id'];
+                    $newHash = password_hash($newPassword, PASSWORD_DEFAULT);
 
-                $markUsed = $pdo->prepare("UPDATE password_resets SET used_at = NOW() WHERE id = :id");
-                $markUsed->execute([':id' => $resetId]);
+                    $updateUser = $pdo->prepare("UPDATE users SET password_hash = :hash, updated_at = NOW() WHERE id = :id");
+                    $updateUser->execute([':hash' => $newHash, ':id' => $userId]);
 
-                $invalidateOther = $pdo->prepare("UPDATE password_resets SET used_at = NOW() WHERE user_id = :uid AND used_at IS NULL");
-                $invalidateOther->execute([':uid' => $userId]);
+                    $markUsed = $pdo->prepare("UPDATE password_resets SET used_at = NOW() WHERE id = :id");
+                    $markUsed->execute([':id' => $resetId]);
 
-                $pdo->commit();
+                    $invalidateOther = $pdo->prepare("UPDATE password_resets SET used_at = NOW() WHERE user_id = :uid AND used_at IS NULL");
+                    $invalidateOther->execute([':uid' => $userId]);
 
-                // Send confirmation email
-                EmailService::notifyPasswordResetSuccess($pdo, $resetRecord['email'], $resetRecord['name'], $userId);
-
-                // In-App Notification
-                NotificationService::create(
-                    $pdo,
-                    $userId,
-                    $resetRecord['role'],
-                    'account',
-                    'Password Set Successfully',
-                    'Your account password was updated successfully. You can now log in securely.',
-                    'sectionProfile',
-                    $userId,
-                    'password_reset'
-                );
-
-                $successMessage = 'Your password has been successfully configured! You can now log in using your new credentials.';
-                $tokenValid = false;
-            } catch (Throwable $e) {
-                if ($pdo->inTransaction()) {
-                    $pdo->rollBack();
+                    $pdo->commit();
+                    $dbCommitted = true;
+                } catch (Throwable $e) {
+                    if ($pdo->inTransaction()) {
+                        $pdo->rollBack();
+                    }
+                    error_log("[Password Reset Mode1 DB Error]: " . $e->getMessage());
+                    $errorMessage = 'Unable to update password. Please try again later.';
                 }
-                $errorMessage = 'Unable to update password. Please try again later.';
+
+                if (!empty($dbCommitted)) {
+                    // Send confirmation email
+                    try {
+                        EmailService::notifyPasswordResetSuccess($pdo, $resetRecord['email'], $resetRecord['name'], $userId);
+                    } catch (Throwable $mailEx) {
+                        error_log("[Password Reset Mode1 Email Error]: " . $mailEx->getMessage());
+                    }
+
+                    // In-App Notification
+                    try {
+                        NotificationService::create(
+                            $pdo,
+                            $userId,
+                            (string)($resetRecord['role'] ?? 'tenant'),
+                            'account',
+                            'Password Set Successfully',
+                            'Your account password was updated successfully. You can now log in securely.',
+                            'sectionProfile',
+                            $userId,
+                            'password_reset',
+                            false
+                        );
+                    } catch (Throwable $notifEx) {
+                        error_log("[Password Reset Mode1 Notification Error]: " . $notifEx->getMessage());
+                    }
+
+                    $successMessage = 'Password successfully updated! You can now log in.';
+                    $tokenValid = false;
+                }
             }
         }
     }
@@ -147,9 +176,9 @@ if (!$tokenMode && $_SERVER['REQUEST_METHOD'] === 'POST') {
     } elseif (empty($code) || !preg_match('/^[0-9]{6}$/', $code)) {
         $errorMessage = 'Please enter the 6-digit numeric verification code sent to your email.';
     } elseif (empty($newPassword) || strlen($newPassword) < 6) {
-        $errorMessage = 'New password must be at least 6 characters long.';
+        $errorMessage = 'Password must be at least 6 characters long.';
     } elseif ($newPassword !== $confirmPassword) {
-        $errorMessage = 'The new passwords do not match. Please verify and re-type.';
+        $errorMessage = 'Passwords do not match.';
     } else {
         // Find latest active code for this email
         $stmt = $pdo->prepare("
@@ -165,11 +194,14 @@ if (!$tokenMode && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute([':email' => $email]);
         $record = $stmt->fetch(PDO::FETCH_ASSOC);
 
+        $rawExp = trim((string)($record['expires_at'] ?? ''));
+        $expUnix = !preg_match('/[Z\+\-]\d{2}(:\d{2})?$/i', $rawExp) ? strtotime($rawExp . ' UTC') : strtotime($rawExp);
+
         if (!$record) {
             $errorMessage = 'No active verification code found for this email. Please request a new code.';
         } elseif ((int)$record['attempts'] >= (int)$record['max_attempts']) {
             $errorMessage = 'Too many failed verification attempts. For your security, this code is no longer valid. Please request a new code.';
-        } elseif (strtotime($record['expires_at']) < time()) {
+        } elseif ($expUnix < time()) {
             $errorMessage = 'This verification code has expired. Codes are only valid for 5 minutes. Please request a new code.';
         } else {
             $submittedHash = hash('sha256', $code);
@@ -182,50 +214,71 @@ if (!$tokenMode && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 $remaining = max(0, (int)$record['max_attempts'] - ((int)$record['attempts'] + 1));
                 $errorMessage = "Invalid verification code. Please check your email. ({$remaining} attempts remaining)";
             } else {
-                // Verification successful! Update password
-                try {
-                    $pdo->beginTransaction();
+                $userId = (int)$record['user_id'];
+                $userCheckStmt = $pdo->prepare("SELECT password_hash FROM users WHERE id = :id LIMIT 1");
+                $userCheckStmt->execute([':id' => $userId]);
+                $currentHash = $userCheckStmt->fetchColumn();
 
-                    $userId = (int)$record['user_id'];
-                    $resetId = (int)$record['id'];
-                    $newHash = password_hash($newPassword, PASSWORD_BCRYPT);
+                if (!empty($currentHash) && password_verify($newPassword, (string)$currentHash)) {
+                    $errorMessage = 'You cannot use your previous password as your new password.';
+                } else {
+                    // Verification successful! Update password
+                    try {
+                        $pdo->beginTransaction();
 
-                    // Update user credentials
-                    $updateUser = $pdo->prepare("UPDATE users SET password_hash = :hash, updated_at = NOW() WHERE id = :id");
-                    $updateUser->execute([':hash' => $newHash, ':id' => $userId]);
+                        $resetId = (int)$record['id'];
+                        $newHash = password_hash($newPassword, PASSWORD_DEFAULT);
 
-                    // Invalidate the used verification code
-                    $markUsed = $pdo->prepare("UPDATE password_resets SET used_at = NOW() WHERE id = :id");
-                    $markUsed->execute([':id' => $resetId]);
+                        // Update user credentials
+                        $updateUser = $pdo->prepare("UPDATE users SET password_hash = :hash, updated_at = NOW() WHERE id = :id");
+                        $updateUser->execute([':hash' => $newHash, ':id' => $userId]);
 
-                    // Invalidate other active codes for user
-                    $invalidateOther = $pdo->prepare("UPDATE password_resets SET used_at = NOW() WHERE user_id = :uid AND used_at IS NULL");
-                    $invalidateOther->execute([':uid' => $userId]);
+                        // Invalidate the used verification code
+                        $markUsed = $pdo->prepare("UPDATE password_resets SET used_at = NOW() WHERE id = :id");
+                        $markUsed->execute([':id' => $resetId]);
 
-                    $pdo->commit();
+                        // Invalidate other active codes for user
+                        $invalidateOther = $pdo->prepare("UPDATE password_resets SET used_at = NOW() WHERE user_id = :uid AND used_at IS NULL");
+                        $invalidateOther->execute([':uid' => $userId]);
 
-                    // Send security confirmation email
-                    EmailService::notifyPasswordResetSuccess($pdo, $record['email'], $record['name'], $userId);
-
-                    // Create in-app notification
-                    NotificationService::create(
-                        $pdo,
-                        $userId,
-                        $record['role'],
-                        'account',
-                        'Password Reset Successfully',
-                        'Your account password was updated successfully. If this wasn\'t you, contact management immediately.',
-                        'sectionProfile',
-                        $userId,
-                        'password_reset'
-                    );
-
-                    $successMessage = 'Your password has been successfully reset! You can now log in using your new credentials.';
-                } catch (Throwable $e) {
-                    if ($pdo->inTransaction()) {
-                        $pdo->rollBack();
+                        $pdo->commit();
+                        $dbCommitted = true;
+                    } catch (Throwable $e) {
+                        if ($pdo->inTransaction()) {
+                            $pdo->rollBack();
+                        }
+                        error_log("[Password Reset Mode2 DB Error]: " . $e->getMessage());
+                        $errorMessage = 'Unable to reset password. Please try again later.';
                     }
-                    $errorMessage = 'Unable to reset password. Please try again later.';
+
+                    if (!empty($dbCommitted)) {
+                        // Send security confirmation email
+                        try {
+                            EmailService::notifyPasswordResetSuccess($pdo, $record['email'], $record['name'], $userId);
+                        } catch (Throwable $mailEx) {
+                            error_log("[Password Reset Mode2 Email Error]: " . $mailEx->getMessage());
+                        }
+
+                        // Create in-app notification
+                        try {
+                            NotificationService::create(
+                                $pdo,
+                                $userId,
+                                (string)($record['role'] ?? 'tenant'),
+                                'account',
+                                'Password Reset Successfully',
+                                'Your account password was updated successfully. If this wasn\'t you, contact management immediately.',
+                                'sectionProfile',
+                                $userId,
+                                'password_reset',
+                                false
+                            );
+                        } catch (Throwable $notifEx) {
+                            error_log("[Password Reset Mode2 Notification Error]: " . $notifEx->getMessage());
+                        }
+
+                        $successMessage = 'Password successfully updated! You can now log in.';
+                    }
                 }
             }
         }
