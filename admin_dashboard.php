@@ -2473,7 +2473,7 @@ try {
           <textarea id="pdVerificationNotes" class="clay-textarea" placeholder="Enter verification feedback or explanation (e.g. Bank transfer reference confirmed, or Payment proof was blurry/partial amount)..." rows="3"></textarea>
         </div>
 
-        <!-- Verification Action Buttons -->
+        <!-- Verification Action Buttons (Pending state) -->
         <div id="pdActionButtonsRow" style="display: flex; gap: 12px;">
           <button type="button" id="btnPdReject" class="btn-verify-reject" style="flex: 1; padding: 12px; font-size: 13.5px; font-weight: 800; display: inline-flex; align-items: center; justify-content: center; gap: 6px;" onclick="handlePaymentVerificationDecision('rejected')">
             <i data-lucide="x" class="w-4 h-4" aria-hidden="true"></i> Reject Payment
@@ -2481,6 +2481,11 @@ try {
           <button type="button" id="btnPdApprove" class="btn-verify-approve" style="flex: 1; padding: 12px; font-size: 13.5px; font-weight: 800; display: inline-flex; align-items: center; justify-content: center; gap: 6px;" onclick="handlePaymentVerificationDecision('approved')">
             <i data-lucide="check" class="w-4 h-4" aria-hidden="true"></i> Approve Payment
           </button>
+        </div>
+
+        <!-- Read-Only Processed State Action (Approved / Rejected / Verified history) -->
+        <div id="pdProcessedActionsRow" style="display: none; justify-content: flex-end; margin-top: 6px;">
+          <button type="button" id="btnPdCloseOnly" class="clay-btn clay-btn-secondary" style="padding: 10px 24px; font-size: 13.5px; font-weight: 700; min-width: 100px;" onclick="closePaymentDetailsModal()">Close</button>
         </div>
 
         <!-- Special Action for Placeholder Rent Setup -->
@@ -2858,7 +2863,8 @@ try {
         <!-- 4. Dedicated Status Update Section Inside the Modal -->
         <div style="background: #ffffff; border: 1.5px solid rgba(181, 143, 83, 0.45); border-radius: var(--radius-md, 12px); padding: 16px; box-shadow: 0 4px 14px rgba(86, 56, 14, 0.08);">
           <div style="font-size: 13px; font-weight: 800; color: #0f172a; margin-bottom: 12px; display: flex; align-items: center; gap: 6px;">
-            <i data-lucide="settings" class="w-4 h-4" aria-hidden="true"></i> Update Maintenance Status
+            <i id="mdlStatusHeadingIcon" data-lucide="settings" class="w-4 h-4" aria-hidden="true"></i>
+            <span id="mdlStatusHeadingText">Update Maintenance Status</span>
           </div>
           <form id="formModalStatusUpdate" onsubmit="event.preventDefault(); submitModalStatusUpdate();">
             <input type="hidden" id="mdlTicketId" value="">
@@ -2883,11 +2889,17 @@ try {
               <textarea id="mdlResolutionNotes" class="clay-textarea" rows="3" placeholder="Add instructions, contractor notes, or an update for the tenant..." style="font-size: 13px;"></textarea>
             </div>
 
-            <div style="display: flex; gap: 10px; justify-content: flex-end;">
-              <button type="button" class="clay-btn clay-btn-secondary" onclick="closeTicketDetailsModal()" style="padding: 9px 16px; font-size: 13px;">Cancel</button>
+            <!-- Active / Editable Buttons: Cancel + Save Changes -->
+            <div id="mdlActiveActions" style="display: flex; gap: 10px; justify-content: flex-end;">
+              <button type="button" id="btnModalCancel" class="clay-btn clay-btn-secondary" onclick="closeTicketDetailsModal()" style="padding: 9px 16px; font-size: 13px;">Cancel</button>
               <button type="submit" id="btnModalSubmitStatus" class="clay-btn clay-btn-primary" style="padding: 9px 20px; font-size: 13px; font-weight: 800;">
                 <span style="display:inline-flex;align-items:center;gap:6px;"><i data-lucide="save" class="w-4 h-4" aria-hidden="true"></i> Save Changes</span>
               </button>
+            </div>
+
+            <!-- Read-Only Completed Button: Single Neutral Close Button -->
+            <div id="mdlCompletedActions" style="display: none; justify-content: flex-end;">
+              <button type="button" id="btnModalCloseOnly" class="clay-btn clay-btn-secondary" onclick="closeTicketDetailsModal()" style="padding: 9px 24px; font-size: 13px; font-weight: 700; min-width: 90px;">Close</button>
             </div>
           </form>
         </div>
@@ -2949,10 +2961,16 @@ try {
         </div>
         <textarea id="mdlReportRemarks" class="clay-input" rows="3" placeholder="Write approval conditions, lease addendum notes, or reason for rejection..." style="width: 100%; resize: vertical; font-size: 13.5px; padding: 10px 12px;"></textarea>
 
-        <div class="report-decision-actions">
+        <!-- Action Buttons Row (Active / Pending Review State) -->
+        <div id="mdlReportActionButtons" class="report-decision-actions">
           <button type="button" id="btnReportApprove" class="report-action-btn report-action-btn--approve" onclick="handleReportDecision('Approved')" style="display:inline-flex;align-items:center;justify-content:center;gap:5px;"><i data-lucide="check" class="w-4 h-4" aria-hidden="true"></i> Approve</button>
           <button type="button" id="btnReportAcknowledge" class="report-action-btn report-action-btn--acknowledge" onclick="handleReportDecision('Acknowledged')" style="display:inline-flex;align-items:center;justify-content:center;gap:5px;"><i data-lucide="eye" class="w-4 h-4" aria-hidden="true"></i> Acknowledge</button>
           <button type="button" id="btnReportReject" class="report-action-btn report-action-btn--reject" onclick="handleReportDecision('Rejected')" style="display:inline-flex;align-items:center;justify-content:center;gap:5px;"><i data-lucide="x" class="w-4 h-4" aria-hidden="true"></i> Reject</button>
+        </div>
+
+        <!-- Read-Only Reviewed Actions: Single Neutral Close Button -->
+        <div id="mdlReportReviewedActions" style="display: none; justify-content: flex-end; margin-top: 14px;">
+          <button type="button" id="btnReportCloseOnly" class="clay-btn clay-btn-secondary" onclick="closeReportDetailsModal()" style="padding: 9px 24px; font-size: 13px; font-weight: 700; min-width: 90px;">Close</button>
         </div>
       </div>
     </div>
@@ -7178,8 +7196,8 @@ try {
     const maintenanceScrollMemory = { windowY: null, boxTop: 0 };
 
     function normalizeTicketStatus(statusVal) {
-      const st = String(statusVal || '').toLowerCase();
-      if (st === 'done' || st === 'resolved' || st === 'closed') return 'Done';
+      const st = String(statusVal || '').toLowerCase().trim();
+      if (st === 'done' || st === 'resolved' || st === 'closed' || st === 'completed') return 'Done';
       if (st === 'on-going' || st === 'ongoing' || st === 'in_progress') return 'On-Going';
       return 'Pending';
     }
@@ -7582,15 +7600,25 @@ try {
       }
 
       // 4. Status Badge & Select
-      const normStatus = (tk.status === 'Done' || tk.status === 'resolved' || tk.status === 'closed')
+      const rawStatus = String(tk.status || '').toLowerCase().trim();
+      const isCompleted = (rawStatus === 'done' || rawStatus === 'completed' || rawStatus === 'resolved' || rawStatus === 'closed');
+      const normStatus = isCompleted
         ? 'Done'
-        : ((tk.status === 'On-Going' || tk.status === 'in_progress') ? 'On-Going' : 'Pending');
-      const isDone = normStatus === 'Done';
+        : ((rawStatus === 'on-going' || rawStatus === 'ongoing' || rawStatus === 'in_progress') ? 'On-Going' : 'Pending');
 
       const statusBadge = document.getElementById('mdlStatusBadge');
       if (statusBadge) {
-        statusBadge.textContent = 'Status: ' + normStatus;
-        statusBadge.className = 'clay-badge ' + (normStatus === 'Done' ? 'badge-done' : (normStatus === 'On-Going' ? 'badge-ongoing' : 'badge-pending'));
+        statusBadge.textContent = 'Status: ' + (isCompleted ? 'Completed' : normStatus);
+        statusBadge.className = 'clay-badge ' + (isCompleted ? 'badge-done' : (normStatus === 'On-Going' ? 'badge-ongoing' : 'badge-pending'));
+      }
+
+      const headingIcon = document.getElementById('mdlStatusHeadingIcon');
+      const headingText = document.getElementById('mdlStatusHeadingText');
+      if (headingText) {
+        headingText.textContent = isCompleted ? 'Maintenance Status & Remarks' : 'Update Maintenance Status';
+      }
+      if (headingIcon) {
+        headingIcon.setAttribute('data-lucide', isCompleted ? 'check-circle-2' : 'settings');
       }
 
       const selStatus = document.getElementById('mdlSelectStatus');
@@ -7598,18 +7626,20 @@ try {
       const statusLockedNotice = document.getElementById('mdlStatusLockedNotice');
       if (selStatus) {
         selStatus.value = normStatus;
-        selStatus.disabled = isDone;
-        if (isDone) {
+        selStatus.disabled = isCompleted;
+        if (isCompleted) {
           selStatus.classList.add('opacity-60', 'cursor-not-allowed');
+          selStatus.setAttribute('aria-readonly', 'true');
         } else {
           selStatus.classList.remove('opacity-60', 'cursor-not-allowed');
+          selStatus.removeAttribute('aria-readonly');
         }
       }
       if (statusHelpText) {
-        statusHelpText.style.display = isDone ? 'none' : 'block';
+        statusHelpText.style.display = isCompleted ? 'none' : 'block';
       }
       if (statusLockedNotice) {
-        statusLockedNotice.style.display = isDone ? 'flex' : 'none';
+        statusLockedNotice.style.display = isCompleted ? 'flex' : 'none';
       }
 
       // 5. Tenant Info
@@ -7626,9 +7656,51 @@ try {
       const descEl = document.getElementById('mdlDescription');
       if (descEl) descEl.textContent = tk.description || tk.title || 'No additional description provided.';
 
-      // 7. Resolution Notes
+      // 7. Resolution Notes (Owner Remarks / Instructions)
       const notesEl = document.getElementById('mdlResolutionNotes');
-      if (notesEl) notesEl.value = tk.resolution_notes || '';
+      if (notesEl) {
+        const rawNotes = (tk.resolution_notes || '').trim();
+        if (isCompleted) {
+          notesEl.value = rawNotes;
+          notesEl.readOnly = true;
+          notesEl.disabled = true;
+          notesEl.placeholder = rawNotes ? '' : 'No owner remarks provided.';
+          notesEl.classList.add('opacity-75', 'cursor-not-allowed');
+          notesEl.style.backgroundColor = '#f8fafc';
+          notesEl.style.color = rawNotes ? '#1e293b' : '#64748b';
+          notesEl.style.borderColor = 'rgba(166, 180, 204, 0.4)';
+        } else {
+          notesEl.value = rawNotes;
+          notesEl.readOnly = false;
+          notesEl.disabled = false;
+          notesEl.placeholder = 'Add instructions, contractor notes, or an update for the tenant...';
+          notesEl.classList.remove('opacity-75', 'cursor-not-allowed');
+          notesEl.style.backgroundColor = '';
+          notesEl.style.color = '';
+          notesEl.style.borderColor = '';
+        }
+      }
+
+      // 8. Action Buttons (Read-Only Close for Completed, Cancel + Save for Active)
+      const activeActions = document.getElementById('mdlActiveActions');
+      const completedActions = document.getElementById('mdlCompletedActions');
+      const btnSave = document.getElementById('btnModalSubmitStatus');
+      const btnCancel = document.getElementById('btnModalCancel');
+      const btnCloseOnly = document.getElementById('btnModalCloseOnly');
+
+      if (isCompleted) {
+        if (activeActions) activeActions.style.display = 'none';
+        if (btnSave) btnSave.style.display = 'none';
+        if (btnCancel) btnCancel.style.display = 'none';
+        if (completedActions) completedActions.style.display = 'flex';
+        if (btnCloseOnly) btnCloseOnly.style.display = 'inline-flex';
+      } else {
+        if (activeActions) activeActions.style.display = 'flex';
+        if (btnSave) btnSave.style.display = 'inline-flex';
+        if (btnCancel) btnCancel.style.display = 'inline-flex';
+        if (completedActions) completedActions.style.display = 'none';
+        if (btnCloseOnly) btnCloseOnly.style.display = 'none';
+      }
 
       // 8. Attached Photos Gallery
       const photosContainer = document.getElementById('mdlPhotosContainer');
@@ -7715,9 +7787,12 @@ try {
       if (!id) return;
 
       const cachedTk = (window.allTicketsData || []).find(t => parseInt(t.id, 10) === parseInt(id, 10));
-      const wasDone = cachedTk && normalizeTicketStatus(cachedTk.status) === 'Done';
-      if (wasDone && status !== 'Done') {
-        showToast('Ticket status is permanently locked as Done and cannot be modified.', 'warning');
+      const wasDone = cachedTk && (
+        normalizeTicketStatus(cachedTk.status) === 'Done' ||
+        ['done', 'completed', 'resolved', 'closed'].includes(String(cachedTk.status || '').toLowerCase().trim())
+      );
+      if (wasDone) {
+        showToast('Completed maintenance requests are read-only and cannot be modified.', 'warning');
         return;
       }
 
@@ -7947,9 +8022,12 @@ try {
     function openReportDetailsModal(rep) {
       const modal = document.getElementById('reportDetailsModal');
       if (!modal || !rep) return;
+      window.currentViewingReport = rep;
 
       const st = String(rep.status || 'Pending');
-      const stSlug = st.toLowerCase();
+      const stSlug = st.toLowerCase().trim();
+      const isReviewed = (stSlug !== 'pending' && stSlug !== 'open') || Boolean(rep.reviewed_at && String(rep.reviewed_at).trim() !== '');
+
       document.getElementById('mdlReportId').value = rep.id || '';
       document.getElementById('mdlReportIdBadge').textContent = `#GR-${String(rep.id || 0).padStart(4, '0')}`;
       document.getElementById('mdlReportCategory').textContent = rep.category || 'General Inquiry';
@@ -8002,7 +8080,43 @@ try {
         attSec.style.display = 'none';
       }
 
-      document.getElementById('mdlReportRemarks').value = rep.owner_remarks || '';
+      // Owner Remarks & Conditional Action Buttons
+      const remarksEl = document.getElementById('mdlReportRemarks');
+      const actionBtns = document.getElementById('mdlReportActionButtons');
+      const reviewedActions = document.getElementById('mdlReportReviewedActions');
+      const btnCloseOnly = document.getElementById('btnReportCloseOnly');
+      const rawRemarks = String(rep.owner_remarks || '').trim();
+
+      if (isReviewed) {
+        if (actionBtns) actionBtns.style.display = 'none';
+        if (reviewedActions) reviewedActions.style.display = 'flex';
+        if (btnCloseOnly) btnCloseOnly.style.display = 'inline-flex';
+        if (remarksEl) {
+          remarksEl.value = rawRemarks;
+          remarksEl.readOnly = true;
+          remarksEl.disabled = true;
+          remarksEl.placeholder = rawRemarks ? '' : 'No owner remarks provided.';
+          remarksEl.style.backgroundColor = '#f8fafc';
+          remarksEl.style.cursor = 'default';
+          remarksEl.style.color = rawRemarks ? '#1e293b' : '#64748b';
+          remarksEl.style.borderColor = 'rgba(166, 180, 204, 0.4)';
+        }
+      } else {
+        if (actionBtns) actionBtns.style.display = '';
+        if (reviewedActions) reviewedActions.style.display = 'none';
+        if (btnCloseOnly) btnCloseOnly.style.display = 'none';
+        if (remarksEl) {
+          remarksEl.value = rawRemarks;
+          remarksEl.readOnly = false;
+          remarksEl.disabled = false;
+          remarksEl.placeholder = 'Write approval conditions, lease addendum notes, or reason for rejection...';
+          remarksEl.style.backgroundColor = '';
+          remarksEl.style.cursor = '';
+          remarksEl.style.color = '';
+          remarksEl.style.borderColor = '';
+        }
+      }
+
       const revMeta = document.getElementById('mdlReportReviewedMeta');
       if (rep.reviewed_at) {
         const revFmt = new Date(String(rep.reviewed_at).replace(' ', 'T')).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
@@ -8035,6 +8149,14 @@ try {
     }
 
     async function handleReportDecision(decision) {
+      if (window.currentViewingReport) {
+        const curSt = String(window.currentViewingReport.status || 'Pending').toLowerCase().trim();
+        const curIsReviewed = (curSt !== 'pending' && curSt !== 'open') || Boolean(window.currentViewingReport.reviewed_at && String(window.currentViewingReport.reviewed_at).trim() !== '');
+        if (curIsReviewed) {
+          showToast('This report has already been reviewed and cannot be modified.', 'warning');
+          return;
+        }
+      }
       const id = document.getElementById('mdlReportId').value;
       const remarks = document.getElementById('mdlReportRemarks').value.trim();
       if (!id) return;
@@ -8441,6 +8563,8 @@ try {
       const notesReqLabel = document.getElementById('pdNotesRequiredLabel');
       const setupRow = document.getElementById('pdSetupActionRow');
       const actionRow = document.getElementById('pdActionButtonsRow');
+      const processedRow = document.getElementById('pdProcessedActionsRow');
+      const closeOnlyBtn = document.getElementById('btnPdCloseOnly');
       const processingIndicator = document.getElementById('pdProcessingIndicator');
       const verifiedMeta = document.getElementById('pdVerifiedMeta');
 
@@ -8451,29 +8575,60 @@ try {
         verifiedMeta.textContent = p.verified_at ? ((p.verified_by_landlord ? 'Verified on ' : 'Audited on ') + p.verified_at) : '';
       }
 
-      if (defaultDecision === 'approved') {
-        notesField.value = 'Payment receipt verified and approved.';
-      } else if (defaultDecision === 'rejected') {
-        notesField.value = 'Payment proof rejected: ';
-        if (notesReqLabel) notesReqLabel.style.display = 'inline';
-      } else if (p.verification_notes) {
-        notesField.value = p.verification_notes;
-      } else {
-        notesField.value = '';
-      }
+      const pStatusNorm = String(p.status || '').toLowerCase().trim();
+      const isAlreadyProcessed = (pStatusNorm !== 'pending' && pStatusNorm !== 'pending_setup') || Boolean(p.verified_at && String(p.verified_at).trim() !== '' && pStatusNorm !== 'pending');
 
-      if (p.status === 'pending_setup') {
+      if (isAlreadyProcessed) {
+        // Read-only state for processed / verified payment history
+        if (setupRow) setupRow.style.display = 'none';
+        if (actionRow) actionRow.style.display = 'none';
+        if (processedRow) processedRow.style.display = 'flex';
+        if (closeOnlyBtn) closeOnlyBtn.style.display = 'inline-flex';
+        notesField.value = p.verification_notes || '';
+        notesField.readOnly = true;
+        notesField.disabled = true;
+        notesField.style.backgroundColor = '#f8fafc';
+        notesField.style.cursor = 'default';
+        notesField.style.color = (p.verification_notes && p.verification_notes.trim()) ? '#1e293b' : '#64748b';
+        notesField.style.borderColor = 'rgba(166, 180, 204, 0.4)';
+        notesField.placeholder = (p.verification_notes && p.verification_notes.trim()) ? '' : 'No decision remarks provided.';
+      } else if (p.status === 'pending_setup') {
         if (setupRow) setupRow.style.display = 'block';
         if (actionRow) actionRow.style.display = 'none';
+        if (processedRow) processedRow.style.display = 'none';
+        notesField.value = p.verification_notes || '';
+        notesField.readOnly = false;
         notesField.disabled = true;
+        notesField.style.backgroundColor = '';
+        notesField.style.cursor = '';
+        notesField.style.color = '';
+        notesField.style.borderColor = '';
+        notesField.placeholder = 'Enter verification feedback or explanation (e.g. Bank transfer reference confirmed, or Payment proof was blurry/partial amount)...';
       } else {
+        // Active pending payment review
         if (setupRow) setupRow.style.display = 'none';
         if (actionRow) actionRow.style.display = 'flex';
+        if (processedRow) processedRow.style.display = 'none';
+        notesField.readOnly = false;
         notesField.disabled = false;
+        notesField.style.backgroundColor = '';
+        notesField.style.cursor = '';
+        notesField.style.color = '';
+        notesField.style.borderColor = '';
+        if (defaultDecision === 'approved') {
+          notesField.value = 'Payment receipt verified and approved.';
+        } else if (defaultDecision === 'rejected') {
+          notesField.value = 'Payment proof rejected: ';
+          if (notesReqLabel) notesReqLabel.style.display = 'inline';
+        } else if (p.verification_notes) {
+          notesField.value = p.verification_notes;
+        } else {
+          notesField.value = '';
+        }
+        notesField.placeholder = 'Enter verification feedback or explanation (e.g. Bank transfer reference confirmed, or Payment proof was blurry/partial amount)...';
+        document.getElementById('btnPdApprove').disabled = false;
+        document.getElementById('btnPdReject').disabled = false;
       }
-
-      document.getElementById('btnPdApprove').disabled = false;
-      document.getElementById('btnPdReject').disabled = false;
 
       // Open Modal
       openModal('paymentDetailsModal');
@@ -8510,6 +8665,15 @@ try {
     // Handle Approve / Reject Decision with double-click protection & feedback
     async function handlePaymentVerificationDecision(decision) {
       if (isPaymentVerificationInProgress) return;
+
+      if (currentViewingPayment) {
+        const pStatusNorm = String(currentViewingPayment.status || '').toLowerCase().trim();
+        const isAlreadyProcessed = (pStatusNorm !== 'pending' && pStatusNorm !== 'pending_setup') || Boolean(currentViewingPayment.verified_at && String(currentViewingPayment.verified_at).trim() !== '' && pStatusNorm !== 'pending');
+        if (isAlreadyProcessed) {
+          showToast('This payment has already been verified and cannot be modified.', 'warning');
+          return;
+        }
+      }
 
       const paymentId = document.getElementById('pdPaymentId').value;
       const notes = document.getElementById('pdVerificationNotes').value.trim();

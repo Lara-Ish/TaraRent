@@ -1091,6 +1091,29 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
       animation: verifyCardPulse 1.1s ease 2;
       border-radius: var(--radius-lg);
     }
+
+    /* =========================================================================
+       PAYMENT TRACKER INTERACTIVE CARDS
+       ========================================================================= */
+    .payment-tracker-card {
+      cursor: pointer !important;
+      transition: transform 0.16s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.16s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.16s ease, background-color 0.16s ease !important;
+      outline: none;
+    }
+    .payment-tracker-card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 20px rgba(62, 39, 35, 0.12), 0 2px 6px rgba(86, 56, 14, 0.08) !important;
+      border-color: #8C6D43 !important;
+      background-color: #ffffff !important;
+    }
+    .payment-tracker-card:focus-visible {
+      outline: 2px solid #56380E;
+      outline-offset: 2px;
+      box-shadow: 0 0 0 4px rgba(184, 155, 114, 0.3) !important;
+    }
+    .payment-tracker-card:active {
+      transform: translateY(0);
+    }
   </style>
   <script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
   <script src="assets/js/lucide_init.js?v=20261112"></script>
@@ -1919,11 +1942,35 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
                       } elseif (!empty($py['id'])) {
                           $refDisplay = sprintf('0839488574%05d', $py['id']);
                       }
+                      $dueDateFmt = !empty($py['due_date']) ? date('M j, Y', strtotime($py['due_date'])) : 'N/A';
+                      $pyPayload = [
+                          'id' => (int)($py['id'] ?? 0),
+                          'purpose' => $cycleText . ' ' . $payType,
+                          'payment_type' => $payType,
+                          'billing_cycle' => $py['billing_cycle'] ?? '',
+                          'billing_cycle_fmt' => $cycleText,
+                          'amount_paid' => (float)($py['amount_paid'] ?? 0),
+                          'amount_due' => (float)($py['amount_due'] ?? 0),
+                          'display_amount' => $displayAmount,
+                          'due_date' => $dueDateFmt,
+                          'payment_date' => $submitDate,
+                          'ref_number' => $refDisplay,
+                          'status' => $py['status'] ?? 'pending',
+                          'receipt_filename' => $py['receipt_filename'] ?? '',
+                          'verification_notes' => $py['verification_notes'] ?? '',
+                          'verified_at' => !empty($py['verified_at']) ? date('M j, Y g:i A', strtotime($py['verified_at'])) : '',
+                          'payment_method' => $py['payment_method'] ?? 'GCash / Bank Transfer',
+                      ];
                       ?>
-                      <!-- Tracker Row Card (60% Dominant Light Beige Fill bg-[#F5F0E6]) -->
-                      <div class="flex items-center justify-between p-4 md:p-5 bg-[#F5F0E6] rounded-xl border border-[#8C6D43]/40 shadow-sm hover:bg-white transition-colors">
+                      <!-- Tracker Row Card (Clickable, Interactive Hover State) -->
+                      <div class="payment-tracker-card flex items-center justify-between p-4 md:p-5 bg-[#F5F0E6] rounded-xl border border-[#8C6D43]/40 shadow-sm hover:bg-white transition-all cursor-pointer group"
+                           role="button"
+                           tabindex="0"
+                           onclick="openTenantPaymentDetailsModal(<?= htmlspecialchars(json_encode($pyPayload), ENT_QUOTES, 'UTF-8') ?>)"
+                           onkeydown="if(event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openTenantPaymentDetailsModal(<?= htmlspecialchars(json_encode($pyPayload), ENT_QUOTES, 'UTF-8') ?>); }"
+                           title="Click to view payment details and receipt">
                         <div>
-                          <div class="font-bold text-base md:text-lg text-[#3E2723]">
+                          <div class="font-bold text-base md:text-lg text-[#3E2723] group-hover:text-[#2A1810] transition-colors">
                             <?= $itemNum++ ?>. <?= htmlspecialchars($cycleText) ?> <?= htmlspecialchars($payType) ?>
                           </div>
                           <div class="text-xs text-[#7A6245] mt-1 font-medium">
@@ -1933,23 +1980,31 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
                             Ref No.: <?= htmlspecialchars($refDisplay) ?>
                           </div>
                         </div>
-                        <div class="text-right">
-                          <div class="font-black text-base md:text-lg text-[#3E2723]">
-                            PHP <?= number_format($displayAmount, 2) ?>
+                        <div class="flex items-center gap-3 sm:gap-4">
+                          <div class="text-right">
+                            <div class="font-black text-base md:text-lg text-[#3E2723]">
+                              PHP <?= number_format($displayAmount, 2) ?>
+                            </div>
+                            <div>
+                              <!-- Status Badges (10% Accent Layer) -->
+                              <?php if ($statusLower === 'approved'): ?>
+                                <span class="inline-block mt-2 px-3.5 py-1 bg-[#22c55e] text-white font-black text-xs uppercase rounded shadow-sm">Verified</span>
+                              <?php elseif ($statusLower === 'pending'): ?>
+                                <span class="inline-block mt-2 px-3.5 py-1 bg-[#f59e0b] text-white font-black text-xs uppercase rounded shadow-sm">Pending</span>
+                              <?php elseif ($statusLower === 'overdue'): ?>
+                                <span class="inline-block mt-2 px-3.5 py-1 bg-[#ef4444] text-white font-black text-xs uppercase rounded shadow-sm">Overdue</span>
+                              <?php elseif ($statusLower === 'rejected'): ?>
+                                <span class="inline-block mt-2 px-3.5 py-1 bg-[#ef4444] text-white font-black text-xs uppercase rounded shadow-sm">Rejected</span>
+                              <?php else: ?>
+                                <span class="inline-block mt-2 px-3.5 py-1 bg-[#ef4444] text-white font-black text-xs uppercase rounded shadow-sm">Unpaid</span>
+                              <?php endif; ?>
+                            </div>
                           </div>
-                          <div>
-                            <!-- Status Badges (10% Accent Layer) -->
-                            <?php if ($statusLower === 'approved'): ?>
-                              <span class="inline-block mt-2 px-4 py-1 bg-[#22c55e] text-white font-black text-xs uppercase rounded shadow-sm">Verified</span>
-                            <?php elseif ($statusLower === 'pending'): ?>
-                              <span class="inline-block mt-2 px-4 py-1 bg-[#f59e0b] text-white font-black text-xs uppercase rounded shadow-sm">Pending</span>
-                            <?php elseif ($statusLower === 'overdue'): ?>
-                              <span class="inline-block mt-2 px-4 py-1 bg-[#ef4444] text-white font-black text-xs uppercase rounded shadow-sm">Overdue</span>
-                            <?php elseif ($statusLower === 'rejected'): ?>
-                              <span class="inline-block mt-2 px-4 py-1 bg-[#ef4444] text-white font-black text-xs uppercase rounded shadow-sm">Rejected</span>
-                            <?php else: ?>
-                              <span class="inline-block mt-2 px-4 py-1 bg-[#ef4444] text-white font-black text-xs uppercase rounded shadow-sm">Unpaid</span>
-                            <?php endif; ?>
+                          <!-- Subtle Chevron / View Details Arrow -->
+                          <div class="text-[#8C6D43] group-hover:text-[#4A3728] group-hover:translate-x-1 transition-all flex items-center justify-center pl-1" aria-hidden="true" title="View Details">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7" />
+                            </svg>
                           </div>
                         </div>
                       </div>
@@ -2990,6 +3045,99 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
   </div>
 
   <!-- =====================================================================
+       MODAL: TENANT VIEW PAYMENT DETAILS & RECEIPT (STRICTLY VIEW-ONLY)
+       ===================================================================== -->
+  <div class="modal-backdrop" id="tenantPaymentDetailsModal" style="display: none; pointer-events: none; align-items: center; justify-content: center; z-index: 10025;" onclick="if(event.target === this) closeTenantPaymentDetailsModal()">
+    <div class="clay-modal bg-[#FCFBF9] border-2 border-[#B89B72] rounded-2xl p-6 sm:p-8 shadow-2xl" style="max-width: 580px; width: 95%; max-height: 90vh; overflow-y: auto;" onclick="event.stopPropagation()">
+      
+      <!-- Modal Header -->
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; border-bottom: 1px dashed rgba(140, 109, 67, 0.3); padding-bottom: 14px;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <span class="clay-badge" id="tpdModalBadge" style="background: #F5F0E6; color: #4A3728; border: 1px solid #B89B72; font-weight: 800; font-size: 13px;">#PAY-0000</span>
+          <div>
+            <h2 style="font-size: 19px; font-weight: 800; color: #3E2723; margin: 0;" id="tpdModalTitle">Payment Details</h2>
+            <p style="font-size: 12px; color: #7A6245; margin: 2px 0 0 0;">Transaction details, verification status, and proof receipt</p>
+          </div>
+        </div>
+        <button type="button" class="modal-close-btn text-[#4A3728] hover:text-[#382618] p-1.5 rounded-lg hover:bg-[#4A3728]/10 transition-colors cursor-pointer" onclick="closeTenantPaymentDetailsModal()" title="Close" aria-label="Close">
+          <i data-lucide="x" class="w-5 h-5" aria-hidden="true"></i>
+        </button>
+      </div>
+
+      <!-- Financial & Status Highlight Banner -->
+      <div style="background: #F5F0E6; border: 1px solid #B89B72; border-radius: var(--radius-md, 12px); padding: 14px 16px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+        <div>
+          <div style="font-size: 11px; font-weight: 700; color: #7A6245; text-transform: uppercase; letter-spacing: 0.5px;">Amount Paid / Due</div>
+          <div id="tpdModalAmount" style="font-size: 22px; font-weight: 900; color: #3E2723; margin-top: 2px;">PHP 0.00</div>
+        </div>
+        <div style="text-align: right;">
+          <div style="font-size: 11px; font-weight: 700; color: #7A6245; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;">Verification Status</div>
+          <span id="tpdModalStatusBadge" class="inline-block px-3.5 py-1 font-black text-xs uppercase rounded shadow-sm" style="background: #22c55e; color: #ffffff;">VERIFIED</span>
+        </div>
+      </div>
+
+      <!-- Key Details Grid -->
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; font-size: 13px; margin-bottom: 16px;">
+        <div style="background: #FAF7F2; padding: 10px 12px; border-radius: 8px; border: 1px solid rgba(184, 155, 114, 0.35);">
+          <span style="display: block; font-size: 11px; font-weight: 700; color: #7A6245; text-transform: uppercase;">Payment Purpose</span>
+          <strong id="tpdModalPurpose" style="color: #3E2723; font-size: 13.5px; display: block; margin-top: 2px;">-</strong>
+        </div>
+        <div style="background: #FAF7F2; padding: 10px 12px; border-radius: 8px; border: 1px solid rgba(184, 155, 114, 0.35);">
+          <span style="display: block; font-size: 11px; font-weight: 700; color: #7A6245; text-transform: uppercase;">Payment Due Date</span>
+          <strong id="tpdModalDueDate" style="color: #3E2723; font-size: 13.5px; display: block; margin-top: 2px;">-</strong>
+        </div>
+        <div style="background: #FAF7F2; padding: 10px 12px; border-radius: 8px; border: 1px solid rgba(184, 155, 114, 0.35);">
+          <span style="display: block; font-size: 11px; font-weight: 700; color: #7A6245; text-transform: uppercase;">Reference Number</span>
+          <strong id="tpdModalRefNo" style="color: #56380E; font-size: 13px; font-family: monospace; display: block; margin-top: 2px;">-</strong>
+        </div>
+        <div style="background: #FAF7F2; padding: 10px 12px; border-radius: 8px; border: 1px solid rgba(184, 155, 114, 0.35);">
+          <span style="display: block; font-size: 11px; font-weight: 700; color: #7A6245; text-transform: uppercase;">Date Submitted</span>
+          <strong id="tpdModalDateSubmitted" style="color: #3E2723; font-size: 13.5px; display: block; margin-top: 2px;">-</strong>
+        </div>
+      </div>
+
+      <!-- Uploaded Proof of Payment Section -->
+      <div style="margin-bottom: 16px;">
+        <div style="font-size: 11px; font-weight: 700; color: #7A6245; text-transform: uppercase; margin-bottom: 6px;">Proof of Payment</div>
+        <div id="tpdModalReceiptContainer" style="background: #F5F0E6; border: 1px solid #B89B72; border-radius: var(--radius-md, 12px); padding: 14px; text-align: center;">
+          <!-- Placeholder if no receipt -->
+          <div id="tpdModalNoReceipt" style="font-size: 13px; color: #7A6245; padding: 10px 0;">
+            No proof receipt uploaded for this record.
+          </div>
+          <!-- Receipt Image Preview & Action -->
+          <div id="tpdModalReceiptWrapper" style="display: none;">
+            <div style="margin-bottom: 10px; display: flex; justify-content: center; gap: 10px;">
+              <a id="tpdModalInspectBtn" href="#" target="_blank" rel="noopener" class="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-bold bg-[#4A3728] hover:bg-[#382618] text-white shadow transition-colors cursor-pointer" style="text-decoration: none;">
+                <i data-lucide="external-link" class="w-4 h-4" aria-hidden="true"></i> View Full Image in New Tab
+              </a>
+            </div>
+            <div id="tpdModalImageWrapper" style="display: flex; justify-content: center; background: rgba(62, 39, 35, 0.04); border-radius: 8px; padding: 8px; border: 1px solid rgba(184, 155, 114, 0.4);">
+              <img id="tpdModalReceiptImg" src="" alt="Payment Proof Receipt" style="max-height: 240px; max-width: 100%; object-fit: contain; border-radius: 6px; cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,0.08);" onclick="window.open(this.src, '_blank')" title="Click to view full size in new tab">
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Admin / Owner Remarks -->
+      <div style="margin-bottom: 18px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+          <div style="font-size: 11px; font-weight: 700; color: #7A6245; text-transform: uppercase;">Admin / Owner Remarks</div>
+          <span id="tpdModalVerifiedMeta" style="font-size: 11px; color: #7A6245; font-weight: 600;"></span>
+        </div>
+        <div id="tpdModalRemarksBox" style="background: #FFF9EE; border: 1.5px solid rgba(181, 143, 83, 0.35); border-radius: var(--radius-md, 12px); padding: 12px 14px; color: #4A3214; font-size: 13.5px; line-height: 1.5;">
+          <span id="tpdModalRemarksText">No remarks provided yet.</span>
+        </div>
+      </div>
+
+      <!-- Modal Footer (Close Button Only) -->
+      <div style="display: flex; justify-content: flex-end; border-top: 1px dashed rgba(140, 109, 67, 0.3); padding-top: 14px;">
+        <button type="button" class="py-2.5 px-6 rounded-xl font-black text-sm bg-[#4A3728] hover:bg-[#382618] text-white border border-[#382618] shadow-md transition-colors cursor-pointer" onclick="closeTenantPaymentDetailsModal()">Close</button>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- =====================================================================
        MODAL: TENANT VIEW MAINTENANCE TICKET DETAILS & OWNER RESPONSE
        ===================================================================== -->
   <div class="modal-backdrop" id="tenantTicketModal" style="display: none; pointer-events: none;">
@@ -3696,9 +3844,156 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
         closeTenantIdModal(true);
       } else if (id === 'profileAdjustmentModal' && typeof closeProfileAdjustmentModal === 'function') {
         closeProfileAdjustmentModal(true);
+      } else if (id === 'tenantPaymentDetailsModal' && typeof closeTenantPaymentDetailsModal === 'function') {
+        closeTenantPaymentDetailsModal(true);
       }
     }
     window.closeModal = closeModal;
+
+    // =========================================================================
+    // TENANT VIEW PAYMENT DETAILS & RECEIPT MODAL
+    // =========================================================================
+    function openTenantPaymentDetailsModal(payment) {
+      if (!payment) return;
+
+      const modal = document.getElementById('tenantPaymentDetailsModal');
+      if (!modal) return;
+
+      // 1. Badge & Header
+      const badgeEl = document.getElementById('tpdModalBadge');
+      if (badgeEl) {
+        badgeEl.textContent = payment.id ? `#PAY-${String(payment.id).padStart(4, '0')}` : '#PAY-HIST';
+      }
+
+      const titleEl = document.getElementById('tpdModalTitle');
+      if (titleEl) {
+        titleEl.textContent = payment.purpose || 'Payment Details';
+      }
+
+      // 2. Amount
+      const amtEl = document.getElementById('tpdModalAmount');
+      if (amtEl) {
+        const val = parseFloat(payment.display_amount || payment.amount_paid || payment.amount_due || 0);
+        amtEl.textContent = 'PHP ' + val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      }
+
+      // 3. Status Badge
+      const stBadge = document.getElementById('tpdModalStatusBadge');
+      if (stBadge) {
+        const stLower = String(payment.status || 'unpaid').toLowerCase().trim();
+        if (stLower === 'approved') {
+          stBadge.textContent = 'VERIFIED';
+          stBadge.style.background = '#22c55e';
+          stBadge.style.color = '#ffffff';
+        } else if (stLower === 'pending') {
+          stBadge.textContent = 'PENDING';
+          stBadge.style.background = '#f59e0b';
+          stBadge.style.color = '#ffffff';
+        } else if (stLower === 'rejected') {
+          stBadge.textContent = 'REJECTED';
+          stBadge.style.background = '#ef4444';
+          stBadge.style.color = '#ffffff';
+        } else if (stLower === 'overdue') {
+          stBadge.textContent = 'OVERDUE';
+          stBadge.style.background = '#ef4444';
+          stBadge.style.color = '#ffffff';
+        } else {
+          stBadge.textContent = 'UNPAID';
+          stBadge.style.background = '#ef4444';
+          stBadge.style.color = '#ffffff';
+        }
+      }
+
+      // 4. Details Grid: Purpose, Due Date, Reference Number, Date Submitted
+      const purpEl = document.getElementById('tpdModalPurpose');
+      if (purpEl) purpEl.textContent = payment.purpose || 'Rent';
+
+      const dueEl = document.getElementById('tpdModalDueDate');
+      if (dueEl) dueEl.textContent = payment.due_date || 'N/A';
+
+      const refEl = document.getElementById('tpdModalRefNo');
+      if (refEl) refEl.textContent = payment.ref_number || 'N/A';
+
+      const dateSubEl = document.getElementById('tpdModalDateSubmitted');
+      if (dateSubEl) dateSubEl.textContent = payment.payment_date || '-';
+
+      // 5. Uploaded Proof of Payment Handling
+      const noReceiptEl = document.getElementById('tpdModalNoReceipt');
+      const receiptWrapEl = document.getElementById('tpdModalReceiptWrapper');
+      const receiptImgEl = document.getElementById('tpdModalReceiptImg');
+      const inspectBtnEl = document.getElementById('tpdModalInspectBtn');
+      const imgWrapper = document.getElementById('tpdModalImageWrapper');
+
+      const rf = payment.receipt_filename ? String(payment.receipt_filename).trim() : '';
+      if (rf && rf !== '') {
+        const fileUrl = (rf.startsWith('http://') || rf.startsWith('https://'))
+          ? rf
+          : ('uploads/receipts/' + encodeURIComponent(rf));
+
+        if (noReceiptEl) noReceiptEl.style.display = 'none';
+        if (receiptWrapEl) receiptWrapEl.style.display = 'block';
+
+        const isPdf = rf.toLowerCase().split('?')[0].endsWith('.pdf');
+        if (inspectBtnEl) {
+          inspectBtnEl.href = fileUrl;
+          inspectBtnEl.innerHTML = isPdf
+            ? `${window.rcIcon ? window.rcIcon('file-text', 'w-4 h-4') : ''} Open PDF Receipt in New Tab`
+            : `${window.rcIcon ? window.rcIcon('external-link', 'w-4 h-4') : ''} View Full Image in New Tab`;
+        }
+
+        if (isPdf) {
+          if (imgWrapper) imgWrapper.style.display = 'none';
+          if (receiptImgEl) receiptImgEl.src = '';
+        } else {
+          if (imgWrapper) imgWrapper.style.display = 'flex';
+          if (receiptImgEl) receiptImgEl.src = fileUrl;
+        }
+      } else {
+        if (noReceiptEl) noReceiptEl.style.display = 'block';
+        if (receiptWrapEl) receiptWrapEl.style.display = 'none';
+        if (receiptImgEl) receiptImgEl.src = '';
+      }
+
+      // 6. Admin / Owner Remarks & Verification Timestamp
+      const remarksTextEl = document.getElementById('tpdModalRemarksText');
+      const verifiedMetaEl = document.getElementById('tpdModalVerifiedMeta');
+
+      const rawRemarks = payment.verification_notes ? String(payment.verification_notes).trim() : '';
+      if (remarksTextEl) {
+        if (rawRemarks) {
+          remarksTextEl.textContent = rawRemarks;
+          remarksTextEl.style.fontStyle = 'normal';
+          remarksTextEl.style.color = '#3E2723';
+        } else {
+          remarksTextEl.textContent = 'No remarks provided yet.';
+          remarksTextEl.style.fontStyle = 'italic';
+          remarksTextEl.style.color = '#7A6245';
+        }
+      }
+
+      if (verifiedMetaEl) {
+        verifiedMetaEl.textContent = payment.verified_at ? ('Verified on ' + payment.verified_at) : '';
+      }
+
+      // 7. Open modal via controller
+      openModal('tenantPaymentDetailsModal');
+    }
+
+    function closeTenantPaymentDetailsModal(fromCloseModal = false) {
+      const modal = document.getElementById('tenantPaymentDetailsModal');
+      if (modal) {
+        modal.classList.add('hidden');
+        modal.classList.remove('open', 'active');
+        modal.style.display = 'none';
+        modal.style.pointerEvents = 'none';
+        document.body.style.overflow = '';
+      }
+      if (!fromCloseModal && typeof closeModal === 'function') {
+        closeModal('tenantPaymentDetailsModal');
+      }
+    }
+    window.openTenantPaymentDetailsModal = openTenantPaymentDetailsModal;
+    window.closeTenantPaymentDetailsModal = closeTenantPaymentDetailsModal;
 
     // Universal Close Button Click Listener (Capturing phase guarantees all "X" buttons work)
     document.addEventListener('click', function(e) {
@@ -4597,7 +4892,33 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
               title: `${pType} · ${cycleLabel}`,
               sub: pay.status === 'pending_setup' ? 'Rent setup pending' : `₱${amt} • ${statusLabel}${ref ? ' • Ref: ' + ref : ''}`,
               tag: 'Payment',
-              onSelect: () => switchTenantSection('tenantPayments', document.getElementById('navTenantPayments')),
+              onSelect: () => {
+                switchTenantSection('tenantPayments', document.getElementById('navTenantPayments'));
+                if (typeof switchPaymentTab === 'function') switchPaymentTab('tracker');
+                if (typeof openTenantPaymentDetailsModal === 'function' && pay.raw) {
+                  const raw = pay.raw;
+                  const cycleText = raw.billing_cycle ? new Date(raw.billing_cycle.includes('T') ? raw.billing_cycle : raw.billing_cycle + 'T00:00:00').toLocaleDateString('en-US', { month: 'long', year: 'numeric' }) : 'Current';
+                  const dispAmt = Number(raw.amount_paid > 0 ? raw.amount_paid : (raw.amount_due || 3000));
+                  openTenantPaymentDetailsModal({
+                    id: raw.id,
+                    purpose: cycleText + ' ' + (raw.payment_type || 'Rent'),
+                    payment_type: raw.payment_type || 'Rent',
+                    billing_cycle: raw.billing_cycle || '',
+                    billing_cycle_fmt: cycleText,
+                    amount_paid: Number(raw.amount_paid || 0),
+                    amount_due: Number(raw.amount_due || 0),
+                    display_amount: dispAmt,
+                    due_date: raw.due_date ? new Date(raw.due_date.includes('T') ? raw.due_date : raw.due_date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'N/A',
+                    payment_date: raw.payment_date || raw.created_at || '-',
+                    ref_number: ref || ('PAY-' + String(raw.id || 0).padStart(5, '0')),
+                    status: raw.status || 'pending',
+                    receipt_filename: raw.receipt_filename || '',
+                    verification_notes: raw.verification_notes || '',
+                    verified_at: raw.verified_at || '',
+                    payment_method: raw.payment_method || 'GCash / Bank Transfer'
+                  });
+                }
+              },
             });
           }
         });
@@ -6510,6 +6831,9 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
         btnUpload.className = 'maintenance-folder-tab';
         btnTracker.setAttribute('aria-selected', 'true');
         btnUpload.setAttribute('aria-selected', 'false');
+      }
+      if (window.lucide && typeof window.lucide.createIcons === 'function') {
+        window.lucide.createIcons();
       }
     }
 

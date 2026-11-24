@@ -49,6 +49,17 @@ if (!$ticketRow) {
     exit;
 }
 
+// Completed maintenance requests are read-only and immutable
+$existingStatusNorm = strtolower(trim((string)($ticketRow['status'] ?? '')));
+if (in_array($existingStatusNorm, ['completed', 'done', 'resolved', 'closed'], true)) {
+    if (PHP_SAPI !== 'cli') {
+        header('Content-Type: application/json; charset=UTF-8');
+        http_response_code(403);
+    }
+    echo json_encode(['status' => 'error', 'message' => 'Completed maintenance requests are read-only and cannot be modified.']);
+    exit;
+}
+
 // Normalize status
 $statusMap = [
     'pending'     => 'Pending',
