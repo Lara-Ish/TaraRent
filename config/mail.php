@@ -111,6 +111,7 @@ class MailConfig
             'webhook_url'    => $webhookUrl,
             'webhook_secret' => $webhookSecret,
             'has_webhook'    => $hasWebhook,
+            'has_smtp'       => $hasSmtp,
             'is_configured'  => $isConfigured,
             'mock_mode'      => !$isConfigured || filter_var(getenv('MAIL_MOCK') ?: ($_ENV['MAIL_MOCK'] ?? false), FILTER_VALIDATE_BOOLEAN),
         ];

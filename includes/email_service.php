@@ -47,6 +47,7 @@ if (!function_exists('sendViaHttpWebhook')) {
             CURLOPT_FOLLOWLOCATION => true, // Follow Google's 302 redirect as GET (do NOT set CURLOPT_POSTREDIR)
             CURLOPT_MAXREDIRS      => 5,
             CURLOPT_TIMEOUT        => 20,
+            CURLOPT_SSL_VERIFYPEER => false,
             CURLOPT_HTTPHEADER     => [
                 'Content-Type: application/json',
                 'Content-Length: ' . strlen((string)$payload),
@@ -72,6 +73,122 @@ if (!function_exists('sendViaHttpWebhook')) {
             : "HTTP {$httpCode} - " . substr(strip_tags((string)$response), 0, 200);
 
         return ['success' => false, 'error' => "Webhook Error: {$apiError}"];
+    }
+}
+
+if (!function_exists('sendViaPhpMailerSmtp')) {
+    /**
+     * Send email via PHPMailer SMTP with automatic TLS (587) -> SSL (465) fallback for Gmail.
+     *
+     * @return array{success: bool, error: ?string}
+     */
+    function sendViaPhpMailerSmtp(array $config, string $toEmail, string $toName, string $subject, string $htmlBody, string $altBody = ''): array
+    {
+        if (empty($config['username']) || empty($config['password'])) {
+            return ['success' => false, 'error' => 'SMTP credentials are not configured.'];
+        }
+
+        $primaryEnc = ($config['encryption'] === 'ssl' || $config['encryption'] === 'smtps')
+            ? PHPMailer::ENCRYPTION_SMTPS
+            : PHPMailer::ENCRYPTION_STARTTLS;
+        $primaryPort = (int)($config['port'] ?? 587);
+
+        $attempts = [
+            ['port' => $primaryPort, 'encryption' => $primaryEnc],
+        ];
+        if (stripos((string)$config['host'], 'gmail.com') !== false && $primaryPort !== 465) {
+            $attempts[] = ['port' => 465, 'encryption' => PHPMailer::ENCRYPTION_SMTPS];
+        }
+
+        $plainText = $altBody !== ''
+            ? $altBody
+            : strip_tags(str_replace(['<br>', '<br/>', '<p>', '</p>'], ["\n", "\n", "\n\n", ''], $htmlBody));
+
+        $lastError = 'Unknown SMTP error.';
+
+        foreach ($attempts as $attempt) {
+            $mail = new PHPMailer(true);
+            try {
+                $mail->isSMTP();
+                $mail->Host       = $config['host'];
+                $mail->SMTPAuth   = $config['auth'];
+                $mail->Username   = $config['username'];
+                $mail->Password   = $config['password'];
+                $mail->SMTPSecure = $attempt['encryption'];
+                $mail->Port       = $attempt['port'];
+                $mail->CharSet    = 'UTF-8';
+                $mail->Timeout    = 15;
+
+                // Windows / XAMPP SSL stream options to ensure reliable TLS handshake
+                $mail->SMTPOptions = [
+                    'ssl' => [
+                        'verify_peer'       => false,
+                        'verify_peer_name'  => false,
+                        'allow_self_signed' => true,
+                    ]
+                ];
+
+                $mail->setFrom($config['from_email'], $config['from_name']);
+                $mail->addAddress($toEmail, $toName !== '' ? $toName : $toEmail);
+                $mail->addReplyTo($config['from_email'], $config['from_name']);
+
+                $mail->isHTML(true);
+                $mail->Subject = $subject;
+                $mail->Body    = $htmlBody;
+                $mail->AltBody = $plainText;
+
+                $mail->send();
+                return ['success' => true, 'error' => null];
+            } catch (PHPMailerException $e) {
+                $lastError = 'PHPMailer Error: ' . ($mail->ErrorInfo ?: $e->getMessage());
+            } catch (Throwable $e) {
+                $lastError = 'System Error: ' . $e->getMessage();
+            }
+        }
+
+        return ['success' => false, 'error' => $lastError];
+    }
+}
+
+if (!function_exists('dispatchConfiguredEmail')) {
+    /**
+     * Route outbound email across SMTP and HTTP webhook with automatic fallback.
+     *
+     * @return array{success: bool, error: ?string}
+     */
+    function dispatchConfiguredEmail(array $config, string $toEmail, string $toName, string $subject, string $htmlBody, string $altBody = ''): array
+    {
+        $hasWebhook = !empty($config['has_webhook']);
+        $hasSmtp = !empty($config['has_smtp']) || (!empty($config['username']) && !empty($config['password']));
+        $isRender = (bool)getenv('RENDER');
+
+        $transports = $isRender ? ['webhook', 'smtp'] : ['smtp', 'webhook'];
+        $errors = [];
+
+        foreach ($transports as $transport) {
+            if ($transport === 'smtp' && $hasSmtp) {
+                $res = sendViaPhpMailerSmtp($config, $toEmail, $toName, $subject, $htmlBody, $altBody);
+                if (!empty($res['success'])) {
+                    return $res;
+                }
+                if (!empty($res['error'])) {
+                    $errors[] = $res['error'];
+                }
+            } elseif ($transport === 'webhook' && $hasWebhook) {
+                $res = sendViaHttpWebhook($config, $toEmail, $subject, $htmlBody, $altBody);
+                if (!empty($res['success'])) {
+                    return $res;
+                }
+                if (!empty($res['error'])) {
+                    $errors[] = $res['error'];
+                }
+            }
+        }
+
+        return [
+            'success' => false,
+            'error'   => !empty($errors) ? implode(' | ', $errors) : 'No working email transport configured.'
+        ];
     }
 }
 
@@ -109,80 +226,20 @@ if (!function_exists('sendEmail')) {
             return true;
         }
 
-        if (!empty($config['has_webhook'])) {
-            $res = sendViaHttpWebhook($config, $recipientEmail, $subject, $message);
-            if ($res['success']) {
-                if ($pdo !== null) {
-                    EmailService::logEmail($pdo, $recipientEmail, '', $subject, 'general', null, null, 'sent', null, $recipientUserId);
-                }
-                return true;
-            }
-            if ($pdo !== null) {
-                EmailService::logEmail($pdo, $recipientEmail, '', $subject, 'general', null, null, 'failed', $res['error'], $recipientUserId);
-            }
-            error_log("[TaraRent Mail] Failed to send email to {$recipientEmail}: {$res['error']}");
-            throw new Exception($res['error']);
-        }
-
-        $mail = new PHPMailer(true);
-
-        try {
-            // Configure Gmail SMTP using environment variables
-            $mail->isSMTP();
-            $mail->Host       = $config['host'];
-            $mail->SMTPAuth   = $config['auth'];
-            $mail->Username   = $config['username'];
-            $mail->Password   = $config['password'];
-            $mail->SMTPSecure = ($config['encryption'] === 'ssl' || $config['encryption'] === 'smtps')
-                ? PHPMailer::ENCRYPTION_SMTPS
-                : PHPMailer::ENCRYPTION_STARTTLS;
-            $mail->Port       = $config['port'];
-            $mail->CharSet    = 'UTF-8';
-            $mail->Timeout    = 10;
-
-            // Windows / XAMPP SSL stream options to ensure reliable TLS handshake
-            $mail->SMTPOptions = [
-                'ssl' => [
-                    'verify_peer' => false,
-                    'verify_peer_name' => false,
-                    'allow_self_signed' => true
-                ]
-            ];
-
-            // Set sender using configured SMTP credentials
-            $mail->setFrom($config['from_email'], $config['from_name']);
-            $mail->addAddress($recipientEmail);
-            $mail->addReplyTo($config['from_email'], $config['from_name']);
-
-            // Set subject and message body
-            $mail->Subject = $subject;
-            $mail->Body    = $message;
-            $mail->AltBody = strip_tags(str_replace(['<br>', '<br/>', '<p>', '</p>'], ["\n", "\n", "\n\n", ''], $message));
-            $mail->isHTML(true);
-
-            $result = $mail->send();
-
+        $res = dispatchConfiguredEmail($config, $recipientEmail, '', $subject, $message);
+        if (!empty($res['success'])) {
             if ($pdo !== null) {
                 EmailService::logEmail($pdo, $recipientEmail, '', $subject, 'general', null, null, 'sent', null, $recipientUserId);
             }
-
-            return (bool)$result;
-
-        } catch (PHPMailerException $e) {
-            $err = "PHPMailer Error: " . $mail->ErrorInfo;
-            if ($pdo !== null) {
-                EmailService::logEmail($pdo, $recipientEmail, '', $subject, 'general', null, null, 'failed', $err, $recipientUserId);
-            }
-            error_log("[TaraRent Mail] Failed to send email to {$recipientEmail}: {$err}");
-            throw new Exception($err, (int)$e->getCode(), $e);
-        } catch (Throwable $e) {
-            $err = "System Error: " . $e->getMessage();
-            if ($pdo !== null) {
-                EmailService::logEmail($pdo, $recipientEmail, '', $subject, 'general', null, null, 'failed', $err, $recipientUserId);
-            }
-            error_log("[TaraRent Mail] Exception sending email to {$recipientEmail}: {$err}");
-            throw new Exception($err, (int)$e->getCode(), $e);
+            return true;
         }
+
+        $err = (string)($res['error'] ?? 'Failed to dispatch email.');
+        if ($pdo !== null) {
+            EmailService::logEmail($pdo, $recipientEmail, '', $subject, 'general', null, null, 'failed', $err, $recipientUserId);
+        }
+        error_log("[TaraRent Mail] Failed to send email to {$recipientEmail}: {$err}");
+        throw new Exception($err);
     }
 }
 
@@ -319,69 +376,16 @@ class EmailService
             return true;
         }
 
-        if (!empty($config['has_webhook'])) {
-            $res = sendViaHttpWebhook($config, $toEmail, $subject, $htmlBody, (string)($altBody ?? ''));
-            if ($res['success']) {
-                self::logEmail($pdo, $toEmail, $toName, $subject, $templateType, $referenceId, $referenceType, 'sent', null, $recipientUserId);
-                return true;
-            }
-            self::logEmail($pdo, $toEmail, $toName, $subject, $templateType, $referenceId, $referenceType, 'failed', $res['error'], $recipientUserId);
-            error_log("[TaraRent Mail] Failed to send email to {$toEmail}: {$res['error']}");
-            return false;
-        }
-
-        $mail = new PHPMailer(true);
-
-        try {
-            // Server Settings
-            $mail->isSMTP();
-            $mail->Host       = $config['host'];
-            $mail->SMTPAuth   = $config['auth'];
-            $mail->Username   = $config['username'];
-            $mail->Password   = $config['password'];
-            $mail->SMTPSecure = ($config['encryption'] === 'ssl' || $config['encryption'] === 'smtps')
-                ? PHPMailer::ENCRYPTION_SMTPS
-                : PHPMailer::ENCRYPTION_STARTTLS;
-            $mail->Port       = $config['port'];
-            $mail->CharSet    = 'UTF-8';
-            $mail->Timeout    = 10; // Keep timeout short so web requests aren't held up
-
-            // Windows / XAMPP SSL stream options to ensure reliable TLS handshake
-            $mail->SMTPOptions = [
-                'ssl' => [
-                    'verify_peer' => false,
-                    'verify_peer_name' => false,
-                    'allow_self_signed' => true
-                ]
-            ];
-
-            // Sender and Recipient
-            $mail->setFrom($config['from_email'], $config['from_name']);
-            $mail->addAddress($toEmail, $toName ?: $toEmail);
-            $mail->addReplyTo($config['from_email'], $config['from_name']);
-
-            // Content
-            $mail->isHTML(true);
-            $mail->Subject = $subject;
-            $mail->Body    = $htmlBody;
-            $mail->AltBody = $altBody ?: strip_tags(str_replace(['<br>', '<br/>', '<p>', '</p>'], ["\n", "\n", "\n\n", ''], $htmlBody));
-
-            $mail->send();
-
+        $res = dispatchConfiguredEmail($config, $toEmail, $toName, $subject, $htmlBody, (string)($altBody ?? ''));
+        if (!empty($res['success'])) {
             self::logEmail($pdo, $toEmail, $toName, $subject, $templateType, $referenceId, $referenceType, 'sent', null, $recipientUserId);
             return true;
-
-        } catch (PHPMailerException $e) {
-            $errorMsg = "PHPMailer Error: " . $mail->ErrorInfo;
-            self::logEmail($pdo, $toEmail, $toName, $subject, $templateType, $referenceId, $referenceType, 'failed', $errorMsg, $recipientUserId);
-            error_log("[TaraRent Mail] Failed to send email to {$toEmail}: {$errorMsg}");
-            return false;
-        } catch (Throwable $e) {
-            $errorMsg = "System Error: " . $e->getMessage();
-            self::logEmail($pdo, $toEmail, $toName, $subject, $templateType, $referenceId, $referenceType, 'failed', $errorMsg, $recipientUserId);
-            error_log("[TaraRent Mail] Exception sending email to {$toEmail}: {$errorMsg}");
-            return false;
         }
+
+        $errorMsg = (string)($res['error'] ?? 'Failed to send email.');
+        self::logEmail($pdo, $toEmail, $toName, $subject, $templateType, $referenceId, $referenceType, 'failed', $errorMsg, $recipientUserId);
+        error_log("[TaraRent Mail] Failed to send email to {$toEmail}: {$errorMsg}");
+        return false;
     }
 
     /**
@@ -749,11 +753,12 @@ class EmailService
     public static function testSmtpConnection(): array
     {
         $config = MailConfig::get(true);
-        if (!empty($config['has_webhook'])) {
+        if (!empty($config['has_webhook']) && (getenv('RENDER') || empty($config['username']) || empty($config['password']))) {
             $ch = curl_init($config['webhook_url']);
             curl_setopt_array($ch, [
                 CURLOPT_RETURNTRANSFER => true,
                 CURLOPT_FOLLOWLOCATION => true,
+                CURLOPT_SSL_VERIFYPEER => false,
                 CURLOPT_TIMEOUT        => 10,
             ]);
             $resp = curl_exec($ch);
@@ -769,11 +774,13 @@ class EmailService
                     'details' => 'Ready to send emails on Render Free Tier.'
                 ];
             }
-            return [
-                'success' => false,
-                'message' => 'HTTP Email Webhook test failed: ' . ($err ?: "HTTP {$code} (Ensure Apps Script access is set to Anyone)"),
-                'details' => substr(strip_tags((string)$resp), 0, 200)
-            ];
+            if (empty($config['username']) || empty($config['password'])) {
+                return [
+                    'success' => false,
+                    'message' => 'HTTP Email Webhook test failed: ' . ($err ?: "HTTP {$code} (Ensure Apps Script access is set to Anyone)"),
+                    'details' => substr(strip_tags((string)$resp), 0, 200)
+                ];
+            }
         }
 
         if (empty($config['username']) || empty($config['password'])) {
