@@ -104,10 +104,10 @@ if (empty($registrationSpaces)) {
     ];
 }
 
-// Fetch All Active Tenants (Strictly active, non-archived residents)
+// Fetch All Active Tenants (Strictly active, non-archived residents, deduplicated by u.id)
 $tenantsStmt = $pdo->query("
-    SELECT u.id, u.unit_id, u.username, u.name, u.email, u.phone, 
-           u.verification_status, u.id_type, u.id_photo_filename, u.verification_notes, u.id_submitted_at,
+    SELECT DISTINCT u.id, u.unit_id, u.username, u.name, u.email, u.phone, u.profile_picture,
+           u.verification_status, u.is_verified, u.id_type, u.id_photo_filename, u.verification_notes, u.id_submitted_at,
            u.birthday, u.emergency_contact, u.emergency_contact_name,
            u.emergency_contact_relationship, u.emergency_contact_phone,
            u.move_in_date, u.move_out_date, u.rental_status, u.total_occupants, u.adults_count, u.kids_count, u.created_at,
@@ -119,7 +119,7 @@ $tenantsStmt = $pdo->query("
       AND u.is_active = TRUE
       AND (u.is_archived = FALSE OR u.is_archived IS NULL)
       AND u.deleted_at IS NULL
-    ORDER BY un.unit_number ASC, u.name ASC
+    ORDER BY unit_number ASC, u.name ASC
 ");
 $allTenants = $tenantsStmt->fetchAll();
 
@@ -140,6 +140,26 @@ foreach ($allTenants as $t) {
     $settlement = TenantService::checkTenantSettlement($pdo, $tId);
     $t['settlement'] = $settlement;
     $t['is_paid_up'] = (bool)($settlement['is_settled'] ?? false);
+
+    $rawVStatus = strtolower(trim((string)($t['verification_status'] ?? 'unverified')));
+    $t['is_verified'] = (filter_var($t['is_verified'] ?? false, FILTER_VALIDATE_BOOLEAN) && $rawVStatus === 'verified') ? 1 : 0;
+
+    $resolvedAvatar = '';
+    $rawPic = trim((string)($t['profile_picture'] ?? ''));
+    if ($rawPic !== '') {
+        if (str_starts_with($rawPic, 'http://') || str_starts_with($rawPic, 'https://')) {
+            $resolvedAvatar = $rawPic;
+        } else {
+            $cleanPic = ltrim(str_replace('\\', '/', $rawPic), '/');
+            if ($cleanPic !== '' && is_file(__DIR__ . '/' . $cleanPic)) {
+                $resolvedAvatar = $cleanPic;
+            } elseif (is_file(__DIR__ . '/uploads/avatars/' . basename($cleanPic))) {
+                $resolvedAvatar = 'uploads/avatars/' . basename($cleanPic);
+            }
+        }
+    }
+    $t['avatar_url'] = $resolvedAvatar;
+
     if ($uId > 0 && ($t['rental_status'] ?? 'active') !== 'moved_out' && isset($unitsWithTenants[$uId])) {
         $unitsWithTenants[$uId]['tenants'][] = $t;
     }
@@ -162,9 +182,9 @@ foreach ($unitsWithTenants as &$uItem) {
 }
 unset($uItem);
 
-// Fetch Maintenance Tickets
+// Fetch Maintenance Tickets (deduplicated)
 $tickets = $pdo->query("
-    SELECT mt.*, u.name AS tenant_name, u.email AS tenant_email, u.phone AS tenant_phone, un.unit_number
+    SELECT DISTINCT mt.*, u.name AS tenant_name, u.email AS tenant_email, u.phone AS tenant_phone, un.unit_number
     FROM maintenance_tickets mt
     JOIN users u ON mt.tenant_id = u.id
     JOIN units un ON mt.unit_id = un.id
@@ -189,9 +209,9 @@ $activeTickets = array_values(array_filter($tickets, fn($t) => in_array($t['stat
 $completedTickets = array_values(array_filter($tickets, fn($t) => $t['status'] === 'Done'));
 
 
-// Fetch General Tenant Reports (strictly separated from maintenance_tickets)
+// Fetch General Tenant Reports (strictly separated from maintenance_tickets, deduplicated)
 $tenantReports = $pdo->query("
-    SELECT tr.*, u.name AS tenant_name, u.email AS tenant_email, u.phone AS tenant_phone, un.unit_number, rv.name AS reviewer_name
+    SELECT DISTINCT tr.*, u.name AS tenant_name, u.email AS tenant_email, u.phone AS tenant_phone, un.unit_number, rv.name AS reviewer_name
     FROM tenant_reports tr
     JOIN users u ON tr.tenant_id = u.id
     LEFT JOIN units un ON tr.unit_id = un.id
@@ -201,9 +221,9 @@ $tenantReports = $pdo->query("
 $pendingReports = array_values(array_filter($tenantReports, fn($r) => ($r['status'] ?? 'Pending') === 'Pending'));
 $reviewedReports = array_values(array_filter($tenantReports, fn($r) => ($r['status'] ?? 'Pending') !== 'Pending'));
 
-// Fetch Payments Ledger & Pending Reviews (Strictly active, non-archived tenants)
+// Fetch Payments Ledger & Pending Reviews (Strictly active, non-archived tenants, deduplicated)
 $payments = $pdo->query("
-    SELECT p.*, u.name AS tenant_name, u.username AS tenant_username, u.move_in_date, u.rental_status, un.unit_number
+    SELECT DISTINCT p.*, u.name AS tenant_name, u.username AS tenant_username, u.move_in_date, u.rental_status, un.unit_number
     FROM payments p
     JOIN users u ON p.tenant_id = u.id
     JOIN units un ON p.unit_id = un.id
@@ -233,12 +253,12 @@ rsort($availablePaymentYears);
 $pendingReviewPayments = array_values(array_filter($payments, fn($p) => $p['status'] === 'pending' && !empty($p['receipt_filename'])));
 $pendingReviewCount = count($pendingReviewPayments);
 
-// Initial Live Financial, Maintenance & Portfolio Metrics (No Hardcoded Sample Data)
+// Initial Live Financial & Portfolio Metrics (Rental Collections Only — Zero Expense Deductions)
 $finInitStmt = $pdo->query("
     SELECT
         COALESCE(SUM(CASE WHEN status != 'pending_setup' THEN amount_due ELSE 0 END), 0) AS total_billed,
         COALESCE(SUM(CASE WHEN status = 'approved' THEN amount_paid ELSE 0 END), 0) AS total_collected,
-        COALESCE(SUM(CASE WHEN status NOT IN ('approved', 'pending_setup') AND amount_due IS NOT NULL THEN (amount_due - amount_paid) ELSE 0 END), 0) AS total_unpaid
+        COALESCE(SUM(CASE WHEN status NOT IN ('approved', 'pending_setup') AND amount_due IS NOT NULL THEN GREATEST(0, amount_due - COALESCE(amount_paid, 0)) ELSE 0 END), 0) AS total_unpaid
     FROM payments
 ");
 $finInit = $finInitStmt->fetch() ?: [];
@@ -247,18 +267,10 @@ $initRentCollected = (float)($finInit['total_collected'] ?? 0);
 $initUnpaidRent = (float)($finInit['total_unpaid'] ?? 0);
 $initCollectionRate = $initTotalBilled > 0 ? round(($initRentCollected / $initTotalBilled) * 100, 1) : 0.0;
 
-$maintInitStmt = $pdo->query("
-    SELECT COALESCE(SUM(actual_cost), 0) AS total_expenses, COUNT(*) AS total_tickets
-    FROM maintenance_tickets
-");
-$maintInit = $maintInitStmt->fetch() ?: [];
-$initRepairExpenses = (float)($maintInit['total_expenses'] ?? 0);
-$initTotalTicketsCount = (int)($maintInit['total_tickets'] ?? 0);
-
 $occupiedUnitsCount = count(array_filter($unitsWithTenants, fn($u) => count($u['tenants']) > 0));
 $availableUnitsCount = max(0, count($units) - $occupiedUnitsCount);
 $archivedTenantsCount = (int)$pdo->query("
-    SELECT COUNT(*) FROM users
+    SELECT COUNT(DISTINCT id) FROM users
     WHERE role = 'tenant' AND (is_archived = TRUE OR deleted_at IS NOT NULL)
 ")->fetchColumn();
 
@@ -266,7 +278,7 @@ $archivedTenantsCount = (int)$pdo->query("
 $archivedTenantsList = [];
 try {
     $archivedTenantsStmt = $pdo->query("
-        SELECT u.id, u.id AS tenant_id, u.name, u.username, u.email, u.phone, u.birthday, 
+        SELECT DISTINCT u.id, u.id AS tenant_id, u.name, u.username, u.email, u.phone, u.birthday, 
                u.archived_unit_number, u.archived_monthly_rent, u.archived_spaces_text,
                u.rental_status, u.move_in_date, u.move_out_date, u.deleted_at, u.created_at, u.profile_picture,
                un.unit_number AS current_unit_number
@@ -1099,14 +1111,46 @@ try {
         <!-- Right Controls: Notification Bell + Owner Profile & Name -->
         <div class="top-nav-right">
           <!-- Notification Bell Trigger and Dropdown Panel -->
-          <div class="header-notification-container" style="position: relative;">
-            <button type="button" class="header-notification-btn" id="headerNotificationBtn" onclick="toggleNotificationPanel(event)" title="Notifications" aria-label="Notifications">
-              <i data-lucide="bell"></i>
+          <div class="header-notification-container" style="position: relative; z-index: 1250;">
+            <style>
+              .top-nav-bar:has(#notificationDropdown.show) { z-index: 1250 !important; }
+              #headerNotificationBtn {
+                position: relative !important;
+                z-index: 1255 !important;
+                cursor: pointer !important;
+                pointer-events: auto !important;
+                touch-action: manipulation;
+              }
+              #headerNotificationBtn i,
+              #headerNotificationBtn svg,
+              #headerNotificationBtn .notification-badge {
+                pointer-events: none !important;
+                cursor: pointer !important;
+              }
+              #notificationDropdown.notification-dropdown-panel {
+                z-index: 1260 !important;
+                pointer-events: auto !important;
+              }
+              #notificationDropdown.notification-dropdown-panel.show {
+                display: flex !important;
+                flex-direction: column;
+              }
+            </style>
+            <button type="button"
+                    class="header-notification-btn"
+                    id="headerNotificationBtn"
+                    onclick="toggleNotificationPanel(event)"
+                    title="Notifications"
+                    aria-label="Notifications"
+                    aria-haspopup="true"
+                    aria-expanded="false"
+                    aria-controls="notificationDropdown">
+              <i data-lucide="bell" aria-hidden="true"></i>
               <span class="notification-badge" id="notificationBadge" style="display: none;">0</span>
             </button>
 
             <!-- Notification Dropdown Panel -->
-            <div class="clay-settings-dropdown notification-dropdown-panel" id="notificationDropdown">
+            <div class="clay-settings-dropdown notification-dropdown-panel" id="notificationDropdown" role="region" aria-label="Notifications">
               <div class="notification-panel-header">
                 <div class="notification-title-group" style="display: flex; align-items: center; gap: 8px;">
                   <h3 class="notification-heading">Notifications</h3>
@@ -1118,8 +1162,10 @@ try {
               </div>
 
               <div class="notification-items-scroll" id="notificationListContainer">
-                <div class="notification-loading-state" id="notificationLoading" style="padding: 24px; text-align: center; color: var(--text-muted); font-size: 13px;">
-                  <span>Loading notifications...</span>
+                <div class="notification-empty-state" id="notificationEmptyFallback">
+                  <div class="empty-icon"><i data-lucide="bell-off" aria-hidden="true"></i></div>
+                  <h4>No Notifications Yet</h4>
+                  <p>You're all caught up! No new notifications at this time.</p>
                 </div>
               </div>
             </div>
@@ -1187,142 +1233,746 @@ try {
       <!-- Uniform Content Wrapper Shared Across All Owner Modules -->
       <div class="admin-content-container">
 
-      <!-- SECTION 1: LANDLORD DASHBOARD (ANALYTICS VIEW) -->
+      <!-- SECTION 1: OWNER DASHBOARD & BUSINESS ANALYTICS (60-30-10 CLAYMORPHIC THEME) -->
       <section id="sectionAnalytics" class="app-view-section active-section">
 
-        <!-- Hero Top Row: 2x2 Summary Cards Grid + Aligned Right Overview Panel -->
-        <div class="dashboard-top-grid">
-          <div class="kpi-grid">
-            <div class="kpi-card">
-              <div class="kpi-value" id="kpiRevenue">₱<?= number_format($initRentCollected, 2) ?></div>
-              <div class="kpi-label">Total Rent Collected</div>
-              <div class="kpi-subtitle">Verified approved payments</div>
-            </div>
+        <?php
+          $currentMonthPrefix = date('Y-m');
+          $thisMonthCollectedInit = 0.0;
+          foreach ($payments as $payItem) {
+              $payStatus = strtolower((string)($payItem['status'] ?? ''));
+              $payCycle = (string)($payItem['billing_cycle'] ?? '');
+              $payDate = (string)($payItem['payment_date'] ?? '');
+              if ($payStatus === 'approved') {
+                  if (str_starts_with($payCycle, $currentMonthPrefix) || str_starts_with($payDate, $currentMonthPrefix)) {
+                      $thisMonthCollectedInit += (float)($payItem['amount_paid'] ?? 0);
+                  }
+              }
+          }
+          $totalUnitsCountInit = count($units);
+          $activeTicketsCountInit = count($activeTickets);
+        ?>
 
-            <div class="kpi-card">
-              <div class="kpi-value" id="kpiOutstanding">₱<?= number_format($initUnpaidRent, 2) ?></div>
-              <div class="kpi-label">Unpaid Rent</div>
-              <div class="kpi-subtitle">Outstanding receivables</div>
-            </div>
+        <style>
+          /* Scoped 60-30-10 Warm Claymorphic Owner & BA Styles (#sectionAnalytics only) */
+          #sectionAnalytics .owner-welcome-bar {
+            display: block;
+            margin-bottom: 20px;
+          }
+          #sectionAnalytics .owner-welcome-title {
+            margin: 0;
+            font-size: clamp(1.45rem, 2.2vw, 1.9rem);
+            font-weight: 800;
+            color: #4A3728;
+            letter-spacing: -0.02em;
+          }
+          #sectionAnalytics .owner-welcome-sub {
+            margin: 4px 0 0 0;
+            font-size: 13.5px;
+            font-weight: 500;
+            color: #8C6D43;
+          }
 
-            <div class="kpi-card">
-              <div class="kpi-value" id="kpiMaintenance">₱<?= number_format($initRepairExpenses, 2) ?></div>
-              <div class="kpi-label">Repair Expenses</div>
-              <div class="kpi-subtitle" id="kpiTicketsCountLabel"><?= $initTotalTicketsCount ?> logged request<?= $initTotalTicketsCount === 1 ? '' : 's' ?></div>
-            </div>
+          /* Pillar 4: Recommended Actions for Today Banner */
+          #sectionAnalytics .ba-insights-banner {
+            background: linear-gradient(145deg, #F5F0E6 0%, #E8D8B0 100%);
+            border: 1.5px solid rgba(140, 109, 67, 0.36);
+            border-radius: 22px;
+            box-shadow: 0 14px 28px -8px rgba(74, 55, 40, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.78);
+            padding: 20px 24px;
+            margin-bottom: 24px;
+          }
+          #sectionAnalytics .ba-insights-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 12px;
+            margin-bottom: 14px;
+          }
+          #sectionAnalytics .ba-insights-title-wrap {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+          }
+          #sectionAnalytics .ba-insights-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 12px;
+            background: #4A3728;
+            color: #F5F0E6;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 6px 14px rgba(74, 55, 40, 0.25);
+            flex-shrink: 0;
+          }
+          #sectionAnalytics .ba-insights-title {
+            margin: 0;
+            font-size: 17px;
+            font-weight: 800;
+            color: #4A3728;
+          }
+          #sectionAnalytics .ba-insights-sub {
+            margin: 2px 0 0 0;
+            font-size: 12.5px;
+            font-weight: 600;
+            color: #8C6D43;
+          }
+          #sectionAnalytics .ba-pillar-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 5px 13px;
+            border-radius: 9999px;
+            font-size: 11px;
+            font-weight: 800;
+            letter-spacing: 0.03em;
+            background: #4A3728;
+            color: #F5F0E6;
+          }
+          #sectionAnalytics .ba-insights-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
+            gap: 14px;
+          }
+          #sectionAnalytics .ba-insight-item {
+            background: rgba(245, 240, 230, 0.94);
+            border: 1px solid rgba(140, 109, 67, 0.28);
+            border-left: 5px solid #8C6D43;
+            border-radius: 14px;
+            padding: 14px 16px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            gap: 10px;
+            box-shadow: 0 6px 14px -4px rgba(74, 55, 40, 0.14);
+            transition: transform 0.16s ease;
+          }
+          #sectionAnalytics .ba-insight-item:hover {
+            transform: translateY(-2px);
+          }
+          #sectionAnalytics .ba-insight-item.sev-urgent {
+            border-left-color: #4A3728;
+          }
+          #sectionAnalytics .ba-insight-top {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            flex-wrap: wrap;
+          }
+          #sectionAnalytics .ba-insight-badge {
+            font-size: 10.5px;
+            font-weight: 800;
+            padding: 3px 9px;
+            border-radius: 9999px;
+            background: #E8D8B0;
+            color: #4A3728;
+          }
+          #sectionAnalytics .ba-insight-item.sev-urgent .ba-insight-badge {
+            background: #4A3728;
+            color: #F5F0E6;
+          }
+          #sectionAnalytics .ba-insight-metric {
+            font-size: 11.5px;
+            font-weight: 800;
+            color: #8C6D43;
+          }
+          #sectionAnalytics .ba-insight-item h4 {
+            margin: 6px 0 4px 0;
+            font-size: 13.5px;
+            font-weight: 800;
+            color: #4A3728;
+            line-height: 1.3;
+          }
+          #sectionAnalytics .ba-insight-item p {
+            margin: 0;
+            font-size: 12.2px;
+            font-weight: 500;
+            color: #6E5330;
+            line-height: 1.42;
+          }
+          #sectionAnalytics .ba-insight-action-btn {
+            align-self: flex-start;
+            background: #B89B72;
+            color: #F5F0E6;
+            border: 1px solid #8C6D43;
+            border-radius: 10px;
+            padding: 6px 12px;
+            font-size: 11.5px;
+            font-weight: 700;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            transition: background 0.16s ease;
+          }
+          #sectionAnalytics .ba-insight-action-btn:hover {
+            background: #4A3728;
+          }
 
-            <div class="kpi-card">
-              <div class="kpi-value" id="kpiEfficiency"><?= number_format($initCollectionRate, 1) ?>%</div>
-              <div class="kpi-label">Rent Collection Rate</div>
-              <div class="kpi-subtitle">Collected vs. billed total</div>
+          /* Clickable Priority KPI Cards */
+          #sectionAnalytics .kpi-card.clickable-kpi {
+            cursor: pointer;
+            position: relative;
+            justify-content: space-between;
+          }
+          #sectionAnalytics .kpi-card-top-row {
+            width: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            margin-bottom: 8px;
+          }
+          #sectionAnalytics .kpi-pill-tag {
+            font-size: 10.5px;
+            font-weight: 800;
+            padding: 3px 10px;
+            border-radius: 9999px;
+            background: rgba(245, 240, 230, 0.88);
+            color: #4A3728;
+            border: 1px solid rgba(140, 109, 67, 0.25);
+          }
+          #sectionAnalytics .kpi-pill-tag.accent {
+            background: #4A3728;
+            color: #F5F0E6;
+          }
+          #sectionAnalytics .kpi-action-hint {
+            margin-top: 10px;
+            font-size: 11.5px;
+            font-weight: 800;
+            color: #4A3728;
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+          }
+
+          /* Pillar 1: Descriptive BA Metrics Strip */
+          #sectionAnalytics .ba-descriptive-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 20px;
+            margin-bottom: 28px;
+          }
+          #sectionAnalytics .ba-metric-card {
+            background: linear-gradient(160deg, #F5F0E6 0%, #E8D8B0 100%);
+            border: 1px solid rgba(140, 109, 67, 0.28);
+            border-radius: 20px;
+            box-shadow: 0 12px 24px -8px rgba(74, 55, 40, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.72);
+            padding: 20px 22px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            gap: 8px;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+          }
+          #sectionAnalytics .ba-metric-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 16px 28px -8px rgba(74, 55, 40, 0.28);
+          }
+          #sectionAnalytics .ba-metric-top {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            flex-wrap: wrap;
+          }
+          #sectionAnalytics .ba-metric-title {
+            font-size: 12px;
+            font-weight: 800;
+            letter-spacing: 0.02em;
+            color: #4A3728;
+          }
+          #sectionAnalytics .ba-status-chip {
+            font-size: 10.5px;
+            font-weight: 800;
+            padding: 3px 10px;
+            border-radius: 9999px;
+            background: rgba(184, 155, 114, 0.28);
+            color: #4A3728;
+            border: 1px solid rgba(140, 109, 67, 0.25);
+          }
+          #sectionAnalytics .ba-status-chip.accent {
+            background: #4A3728;
+            color: #F5F0E6;
+          }
+          #sectionAnalytics .ba-metric-val {
+            font-size: clamp(1.5rem, 2.2vw, 2rem);
+            font-weight: 800;
+            color: #4A3728;
+            letter-spacing: -0.025em;
+            line-height: 1.1;
+          }
+          #sectionAnalytics .ba-metric-sub {
+            font-size: 12px;
+            font-weight: 600;
+            color: #8C6D43;
+            line-height: 1.35;
+          }
+
+          /* Pillar 2 & 3 Two-Column Grids */
+          #sectionAnalytics .ba-two-col-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 24px;
+            margin-bottom: 28px;
+          }
+          #sectionAnalytics .ba-two-col-grid > * {
+            min-width: 0;
+          }
+          #sectionAnalytics .ba-card {
+            background: #F5F0E6;
+            border: 1.5px solid rgba(140, 109, 67, 0.3);
+            border-radius: 24px;
+            box-shadow: 0 14px 28px -8px rgba(74, 55, 40, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.7);
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+          }
+          #sectionAnalytics .ba-card-head {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 10px;
+          }
+          #sectionAnalytics .ba-card-title {
+            margin: 0;
+            font-size: 17px;
+            font-weight: 800;
+            color: #4A3728;
+          }
+          #sectionAnalytics .ba-card-sub {
+            margin: 3px 0 0 0;
+            font-size: 12.5px;
+            font-weight: 500;
+            color: #8C6D43;
+          }
+
+          /* Forecast Hero Strip */
+          #sectionAnalytics .ba-forecast-hero {
+            background: linear-gradient(135deg, #E8D8B0 0%, #B89B72 100%);
+            border: 1px solid rgba(74, 55, 40, 0.22);
+            border-radius: 16px;
+            padding: 16px 18px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 12px;
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5);
+          }
+          #sectionAnalytics .ba-forecast-amount {
+            font-size: 1.75rem;
+            font-weight: 900;
+            color: #4A3728;
+            line-height: 1.1;
+          }
+          #sectionAnalytics .ba-forecast-breakdown {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 10px;
+          }
+          #sectionAnalytics .ba-mini-stat {
+            background: rgba(245, 240, 230, 0.85);
+            border: 1px solid rgba(140, 109, 67, 0.22);
+            border-radius: 12px;
+            padding: 10px 12px;
+          }
+          #sectionAnalytics .ba-mini-stat-label {
+            font-size: 11px;
+            font-weight: 700;
+            color: #8C6D43;
+            letter-spacing: 0.02em;
+          }
+          #sectionAnalytics .ba-mini-stat-val {
+            font-size: 14px;
+            font-weight: 800;
+            color: #4A3728;
+            margin-top: 2px;
+          }
+          #sectionAnalytics .ba-chart-box {
+            position: relative;
+            width: 100%;
+            height: 225px;
+          }
+
+          /* Readable Tables (Risk & Pareto Breakdown) */
+          #sectionAnalytics .ba-risk-pills {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+          }
+          #sectionAnalytics .ba-risk-pill {
+            font-size: 11px;
+            font-weight: 800;
+            padding: 4px 11px;
+            border-radius: 9999px;
+            background: #E8D8B0;
+            color: #4A3728;
+            border: 1px solid rgba(140, 109, 67, 0.25);
+          }
+          #sectionAnalytics .ba-risk-pill.high {
+            background: #4A3728;
+            color: #F5F0E6;
+          }
+          #sectionAnalytics .ba-table-wrap {
+            overflow-x: auto;
+            border-radius: 14px;
+            border: 1px solid rgba(140, 109, 67, 0.24);
+            background: rgba(245, 240, 230, 0.72);
+          }
+          #sectionAnalytics .ba-data-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12.2px;
+          }
+          #sectionAnalytics .ba-data-table th {
+            text-align: left;
+            font-size: 10.5px;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            color: #4A3728;
+            background: #E8D8B0;
+            padding: 10px 11px;
+            border-bottom: 1.5px solid rgba(140, 109, 67, 0.28);
+            white-space: nowrap;
+          }
+          #sectionAnalytics .ba-data-table td {
+            padding: 10px 11px;
+            color: #4A3728;
+            font-weight: 600;
+            border-bottom: 1px solid rgba(140, 109, 67, 0.14);
+            vertical-align: middle;
+          }
+          #sectionAnalytics .ba-risk-bar-track {
+            width: 72px;
+            height: 7px;
+            border-radius: 9999px;
+            background: rgba(140, 109, 67, 0.2);
+            overflow: hidden;
+            display: inline-block;
+            vertical-align: middle;
+            margin-right: 6px;
+          }
+          #sectionAnalytics .ba-risk-bar-fill {
+            height: 100%;
+            border-radius: 9999px;
+          }
+
+          /* Toggle & Unit Watchlist */
+          #sectionAnalytics .ba-toggle-group {
+            display: inline-flex;
+            background: #E8D8B0;
+            padding: 3px;
+            border-radius: 10px;
+            border: 1px solid rgba(140, 109, 67, 0.25);
+            gap: 3px;
+          }
+          #sectionAnalytics .ba-toggle-btn {
+            border: none;
+            background: transparent;
+            color: #8C6D43;
+            font-size: 11.5px;
+            font-weight: 700;
+            padding: 5px 10px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+          }
+          #sectionAnalytics .ba-toggle-btn.active {
+            background: #4A3728;
+            color: #F5F0E6;
+          }
+          #sectionAnalytics .ba-unit-health-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+          }
+          #sectionAnalytics .ba-unit-health-row {
+            background: rgba(232, 216, 176, 0.35);
+            border: 1px solid rgba(140, 109, 67, 0.22);
+            border-radius: 14px;
+            padding: 11px 14px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            flex-wrap: wrap;
+          }
+          #sectionAnalytics .ba-empty-box {
+            background: rgba(232, 216, 176, 0.35);
+            border: 1px dashed rgba(140, 109, 67, 0.4);
+            border-radius: 14px;
+            padding: 20px 16px;
+            text-align: center;
+            color: #8C6D43;
+            font-size: 12.5px;
+            font-weight: 600;
+          }
+
+          /* Unified 6-Card Non-Redundant KPI Grid (3x2 Desktop, 2x3 Tablet, 1-Col Mobile) */
+          #sectionAnalytics .ba-unified-kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 20px;
+            margin-bottom: 26px;
+          }
+          #sectionAnalytics .ba-unified-kpi-grid > * {
+            min-width: 0;
+          }
+          @media (max-width: 1024px) {
+            #sectionAnalytics .ba-unified-kpi-grid {
+              grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+            #sectionAnalytics .ba-two-col-grid {
+              grid-template-columns: 1fr;
+            }
+          }
+          @media (max-width: 640px) {
+            #sectionAnalytics .ba-unified-kpi-grid,
+            #sectionAnalytics .ba-forecast-breakdown {
+              grid-template-columns: 1fr;
+            }
+          }
+        </style>
+
+        <!-- Clean Header (No Duplicate Shortcut Buttons) -->
+        <div class="owner-welcome-bar">
+          <h1 class="owner-welcome-title">Owner Dashboard &amp; Business Analytics</h1>
+          <p class="owner-welcome-sub">A single, uncluttered view of rent collections, occupancy, cash flow projections, and tenant reliability.</p>
+        </div>
+
+        <!-- PILLAR 4 (PRESCRIPTIVE): RECOMMENDED ACTIONS FOR TODAY -->
+        <div class="ba-insights-banner" id="recommendedActionsCard">
+          <div class="ba-insights-header">
+            <div class="ba-insights-title-wrap">
+              <div class="ba-insights-icon"><i data-lucide="sparkles"></i></div>
+              <div>
+                <h2 class="ba-insights-title">Recommended Actions for Today</h2>
+                <p class="ba-insights-sub">Practical suggestions based on tenant payment reliability, approvals, and unit activity</p>
+              </div>
+            </div>
+            <span class="ba-pillar-pill" id="smartInsightsBadge">Decision Support</span>
+          </div>
+          <div class="ba-insights-grid" id="smartInsightsList">
+            <div class="ba-empty-box">Reviewing your latest property activity...</div>
+          </div>
+        </div>
+
+        <!-- UNIFIED DEDUPLICATED 6-CARD KPI GRID (EVERY METRIC APPEARS ONCE) -->
+        <div class="ba-unified-kpi-grid">
+          <!-- 1. Total Rent Collected -->
+          <div class="kpi-card">
+            <div class="kpi-card-top-row">
+              <span class="kpi-label" style="margin:0;">Total Rent Collected</span>
+              <span class="kpi-pill-tag" id="kpiPaidTag"><?= number_format($initCollectionRate, 1) ?>% Paid</span>
+            </div>
+            <div>
+              <div class="kpi-value" id="kpiRevenue">₱<?= number_format($thisMonthCollectedInit > 0 ? $thisMonthCollectedInit : $initRentCollected, 2) ?></div>
+              <div class="kpi-subtitle" id="kpiRevenueSubtitle">
+                <?= $thisMonthCollectedInit > 0 ? 'This month (' . date('M Y') . ') · All-time: ₱' . number_format($initRentCollected, 2) : 'Approved rent collected (zero deductions)' ?>
+              </div>
             </div>
           </div>
 
-          <!-- Right-Side Tall Overview Panel -->
-          <aside class="overview-panel" aria-label="Property Overview">
-            <div class="overview-panel-header">
-              <span class="overview-panel-title">overview</span>
-              <span class="overview-live-pill">
-                <span class="overview-live-dot" aria-hidden="true"></span>
-                Live Data
+          <!-- 2. Pending & Unpaid Rent -->
+          <div class="kpi-card">
+            <div class="kpi-card-top-row">
+              <span class="kpi-label" style="margin:0;">Pending &amp; Unpaid Rent</span>
+              <span class="kpi-pill-tag <?= $pendingReviewCount > 0 ? 'accent' : '' ?>" id="kpiPendingApprovalTag">
+                <?= $pendingReviewCount > 0 ? $pendingReviewCount . ' Waiting for Approval' : 'Up to Date' ?>
               </span>
             </div>
-
-            <div class="overview-stats-list">
-              <button type="button" class="overview-stat-row" onclick="switchSection('sectionDirectory', document.getElementById('navTenantDirectory'))">
-                <span class="overview-stat-left">
-                  <span class="overview-stat-icon"><i data-lucide="users"></i></span>
-                  <span class="overview-stat-label">Active Residents</span>
-                </span>
-                <span class="overview-stat-val" id="tenantSummaryText"><?= count($allTenants) ?></span>
-              </button>
-
-              <button type="button" class="overview-stat-row" onclick="switchSection('sectionDirectory', document.getElementById('navTenantDirectory'))">
-                <span class="overview-stat-left">
-                  <span class="overview-stat-icon"><i data-lucide="building-2"></i></span>
-                  <span class="overview-stat-label">Available Units</span>
-                </span>
-                <span class="overview-stat-val" id="overviewUnitsValue"><?= $availableUnitsCount ?> of <?= count($units) ?></span>
-              </button>
-
-              <button type="button" class="overview-stat-row" onclick="switchSection('sectionPayments', document.getElementById('navPaymentVerification'))">
-                <span class="overview-stat-left">
-                  <span class="overview-stat-icon"><i data-lucide="receipt"></i></span>
-                  <span class="overview-stat-label">Pending Receipts</span>
-                </span>
-                <span class="overview-stat-val" id="overviewPendingPayments"><?= $pendingReviewCount ?></span>
-              </button>
-
-              <button type="button" class="overview-stat-row" onclick="switchSection('sectionTickets', document.getElementById('navMaintenanceTickets'))">
-                <span class="overview-stat-left">
-                  <span class="overview-stat-icon"><i data-lucide="wrench"></i></span>
-                  <span class="overview-stat-label">Open Repairs</span>
-                </span>
-                <span class="overview-stat-val" id="overviewOpenTickets"><?= count($activeTickets) ?></span>
-              </button>
-
-              <button type="button" class="overview-stat-row" onclick="switchSection('sectionReports', document.getElementById('navTenantReports'))">
-                <span class="overview-stat-left">
-                  <span class="overview-stat-icon"><i data-lucide="file-text"></i></span>
-                  <span class="overview-stat-label">Pending Reports</span>
-                </span>
-                <span class="overview-stat-val" id="overviewPendingReports"><?= count($pendingReports) ?></span>
-              </button>
-
-              <button type="button" class="overview-stat-row" onclick="switchSection('sectionArchivedTenants')">
-                <span class="overview-stat-left">
-                  <span class="overview-stat-icon"><i data-lucide="archive"></i></span>
-                  <span class="overview-stat-label">Archived Tenants</span>
-                </span>
-                <span class="overview-stat-val" id="overviewArchivedTenants"><?= $archivedTenantsCount ?></span>
-              </button>
-            </div>
-          </aside>
-        </div>
-
-        <!-- Primary Revenue Analytics Container -->
-        <div class="revenue-analytics-card">
-          <div class="revenue-analytics-header">
             <div>
-              <h1 class="revenue-analytics-title">REVENUE ANALYTICS</h1>
-              <p class="revenue-analytics-subtitle">Monthly billed vs. collected rent &amp; collection efficiency rate (%)</p>
+              <div class="kpi-value" id="kpiOutstanding">₱<?= number_format($initUnpaidRent, 2) ?></div>
+              <div class="kpi-subtitle" id="kpiPendingPaymentsSub">
+                Unpaid rent balance across active leases
+              </div>
             </div>
-            <span class="widget-badge">Collection Timeline</span>
           </div>
-          <div class="revenue-chart-stage">
-            <canvas id="chartCollectionEfficiency"></canvas>
-            <div id="revenueChartEmptyState" class="chart-empty-overlay">
-              <i data-lucide="bar-chart-3" style="width: 34px; height: 34px; color: var(--tr-golden-brown); margin-bottom: 10px;"></i>
-              <div style="font-size: 14.5px; font-weight: 800; color: var(--tr-dark-brown);">No Monthly Billing Cycles Yet</div>
-              <p style="font-size: 12.5px; color: var(--tr-text-muted); margin-top: 4px; max-width: 360px;">
-                Configure rent schedules in Payment Verification or record tenant payments to visualize monthly revenue analytics.
-              </p>
+
+          <!-- 3. Unit Occupancy -->
+          <div class="kpi-card">
+            <div class="kpi-card-top-row">
+              <span class="kpi-label" style="margin:0;">Unit Occupancy</span>
+              <span class="kpi-pill-tag" id="kpiUnitsAvailabilityTag">
+                <?= $availableUnitsCount > 0 ? $availableUnitsCount . ' Available' : 'Fully Rented' ?>
+              </span>
+            </div>
+            <div>
+              <div class="kpi-value" id="kpiUnitsRentedSummary"><?= $occupiedUnitsCount ?> of <?= $totalUnitsCountInit ?> Units Rented</div>
+              <div class="kpi-subtitle" id="kpiUnitsRentedSub">
+                <?= count($allTenants) ?> Active Tenant<?= count($allTenants) === 1 ? '' : 's' ?> · <?= $archivedTenantsCount ?> Past
+              </div>
+            </div>
+          </div>
+
+          <!-- 4. Open Requests (Maintenance + Tenant Requests combined once) -->
+          <div class="kpi-card">
+            <div class="kpi-card-top-row">
+              <span class="kpi-label" style="margin:0;">Open Requests</span>
+              <span class="kpi-pill-tag <?= ($activeTicketsCountInit + count($pendingReports)) > 0 ? 'accent' : '' ?>" id="kpiMaintStatusTag">
+                <?= ($activeTicketsCountInit + count($pendingReports)) > 0 ? 'Needs Attention' : 'All Clear' ?>
+              </span>
+            </div>
+            <div>
+              <div class="kpi-value" id="kpiOpenRequestsCount"><?= $activeTicketsCountInit + count($pendingReports) ?></div>
+              <div class="kpi-subtitle" id="kpiOpenRequestsSub">
+                <?= $activeTicketsCountInit ?> Maintenance · <?= count($pendingReports) ?> Tenant Request<?= count($pendingReports) === 1 ? '' : 's' ?>
+              </div>
+            </div>
+          </div>
+
+          <!-- 5. Average Payment Speed (DSO) -->
+          <div class="kpi-card">
+            <div class="kpi-card-top-row">
+              <span class="kpi-label" style="margin:0;">Average Payment Speed (DSO)</span>
+              <span class="kpi-pill-tag" id="baKpiOnTimeBadge">0% Paid On Time</span>
+            </div>
+            <div>
+              <div class="kpi-value" id="baKpiDso">0.0 days</div>
+              <div class="kpi-subtitle" id="baKpiDsoSub">Average days tenants take to pay after billing</div>
+            </div>
+          </div>
+
+          <!-- 6. Next-Month Expected Cash Flow -->
+          <div class="kpi-card">
+            <div class="kpi-card-top-row">
+              <span class="kpi-label" style="margin:0;">Next-Month Expected Cash Flow</span>
+              <span class="kpi-pill-tag accent" id="baForecastConfidenceBadge">Collection Rate: 0%</span>
+            </div>
+            <div>
+              <div class="kpi-value" id="baForecastExpected">₱0.00</div>
+              <div class="kpi-subtitle" id="baForecastSub">Loading upcoming cash flow projection...</div>
             </div>
           </div>
         </div>
 
-        <!-- Secondary Analytics Grid: Category Spend Breakdown -->
-        <div class="analytics-secondary-grid single-widget">
-          <div class="clay-card chart-widget">
-            <div class="widget-header">
+        <!-- ROW 1 CHARTS: MONTHLY RENT TIMELINE & NEXT-MONTH PROJECTION -->
+        <div class="ba-two-col-grid">
+          <!-- Monthly Rent Overview Chart -->
+          <div class="ba-card">
+            <div class="ba-card-head">
               <div>
-                <h2 class="widget-title">Cost Analysis: Repair Categorization</h2>
-                <p style="font-size: 13px; color: var(--text-muted); margin-top: 2px;">
-                  Maintenance expenditure per trade discipline
-                </p>
+                <h2 class="ba-card-title">Monthly Rent Overview</h2>
+                <p class="ba-card-sub">Expected rent vs. rent actually paid each month</p>
               </div>
-              <span class="widget-badge">Category Spend</span>
+              <span class="widget-badge">Monthly Timeline</span>
             </div>
-            <div class="chart-container">
-              <canvas id="chartCategoryBreakdown"></canvas>
-              <div id="categoryChartEmptyState" class="chart-empty-overlay">
-                <i data-lucide="pie-chart" style="width: 34px; height: 34px; color: var(--tr-golden-brown); margin-bottom: 8px;"></i>
-                <div style="font-size: 14px; font-weight: 800; color: var(--tr-dark-brown);">No Maintenance Expenses Yet</div>
-                <p style="font-size: 12px; color: var(--tr-text-muted); margin-top: 4px; max-width: 260px;">
-                  Expenditure per trade discipline will appear when maintenance tickets with costs are closed.
+            <div class="revenue-chart-stage" style="height: 255px; min-height: 230px;">
+              <canvas id="chartCollectionEfficiency"></canvas>
+              <div id="revenueChartEmptyState" class="chart-empty-overlay">
+                <i data-lucide="bar-chart-3" style="width: 34px; height: 34px; color: var(--tr-golden-brown); margin-bottom: 10px;"></i>
+                <div style="font-size: 14.5px; font-weight: 800; color: var(--tr-dark-brown);">No Monthly Rent Records Yet</div>
+                <p style="font-size: 12.5px; color: var(--tr-text-muted); margin-top: 4px; max-width: 340px;">
+                  Once rent bills are created or tenants submit payments, your monthly rent summary will appear here.
                 </p>
               </div>
             </div>
+          </div>
+
+          <!-- Next-Month Cash Flow Forecast Chart -->
+          <div class="ba-card">
+            <div class="ba-card-head">
+              <div>
+                <h2 class="ba-card-title">Next-Month Cash Flow Scenarios</h2>
+                <p class="ba-card-sub">Expected inflow vs. full capacity (including vacant units &amp; add-on spaces)</p>
+              </div>
+              <span class="widget-badge" id="baForecastMonthBadge">Projection</span>
+            </div>
+
+            <div class="ba-forecast-breakdown">
+              <div class="ba-mini-stat">
+                <div class="ba-mini-stat-label">Occupied Unit Rent</div>
+                <div class="ba-mini-stat-val" id="baForecastRent">₱0.00</div>
+              </div>
+              <div class="ba-mini-stat">
+                <div class="ba-mini-stat-label">Extra Capacity (Vacant)</div>
+                <div class="ba-mini-stat-val" id="baForecastVacancy">+₱0.00</div>
+              </div>
+            </div>
+
+            <div class="ba-chart-box" style="height: 190px;">
+              <canvas id="chartCashFlowForecast"></canvas>
+            </div>
+          </div>
+        </div>
+
+        <!-- ROW 2 TABLES: PAYMENT RELIABILITY RISK & UNIT OVERVIEW (NO DUPLICATE CHARTS/LISTS) -->
+        <div class="ba-two-col-grid">
+          <!-- Payment Reliability Risk Table -->
+          <div class="ba-card">
+            <div class="ba-card-head">
+              <div>
+                <h2 class="ba-card-title">Payment Reliability Risk</h2>
+                <p class="ba-card-sub">Risk score (0–100%) per tenant from payment delays, unpaid rent &amp; rejected receipts</p>
+              </div>
+              <span class="widget-badge" id="baRiskCountBadge">Delinquency Risk</span>
+            </div>
+
+            <div class="ba-table-wrap" id="baTenantRiskTableWrap">
+              <table class="ba-data-table">
+                <thead>
+                  <tr>
+                    <th>Tenant &amp; Unit</th>
+                    <th>Risk Score</th>
+                    <th>Unpaid Rent</th>
+                    <th>Avg Delay</th>
+                    <th>Rejected</th>
+                  </tr>
+                </thead>
+                <tbody id="baTenantRiskTableBody">
+                  <tr><td colspan="5" style="text-align:center;color:#8C6D43;padding:24px;">Loading payment reliability scores...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Unit Collection & Watchlist Table -->
+          <div class="ba-card">
+            <div class="ba-card-head">
+              <div>
+                <h2 class="ba-card-title">Unit Collection &amp; Watchlist</h2>
+                <p class="ba-card-sub">Per-unit rent collected, unpaid balance, and open maintenance requests</p>
+              </div>
+              <span class="widget-badge">Unit Summary</span>
+            </div>
+
+            <div class="ba-table-wrap">
+              <table class="ba-data-table">
+                <thead>
+                  <tr>
+                    <th>Unit</th>
+                    <th>Collected</th>
+                    <th>Unpaid</th>
+                    <th>Requests</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody id="baUnitOverviewTableBody">
+                  <tr><td colspan="5" style="text-align:center;color:#8C6D43;padding:24px;">Loading unit summary...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ROW 3 DIAGNOSTIC CHART: MAINTENANCE REQUESTS BY CATEGORY (CHART ONLY — NO DUPLICATE TABLE) -->
+        <div class="ba-card" style="margin-bottom: 12px;">
+          <div class="ba-card-head">
+            <div>
+              <h2 class="ba-card-title">Maintenance Requests by Category</h2>
+              <p class="ba-card-sub">Request volume &amp; cumulative share across Plumbing, Electrical, Structural, Carpentry, and General</p>
+            </div>
+            <span class="widget-badge">Request Volume</span>
+          </div>
+          <div class="ba-chart-box" style="height: 230px;">
+            <canvas id="chartMaintenancePareto"></canvas>
           </div>
         </div>
 
@@ -1400,8 +2050,30 @@ try {
                     <div class="unit-dir-header">
                       <h2 class="unit-dir-title"><?= htmlspecialchars(strtoupper((string)$u['unit_number'])) ?></h2>
                       <div class="unit-dir-specs"><?= $brCount ?> BR | <?= htmlspecialchars($crCount) ?> CR</div>
-                      <?php if ($isOccupied && $primaryTenant): ?>
-                        <div class="unit-dir-occupant">OCCUPANT: <?= htmlspecialchars(strtoupper((string)$primaryTenant['name'])) ?></div>
+                      <?php if ($isOccupied && $primaryTenant):
+                        $primaryAvatarUrl = trim((string)($primaryTenant['avatar_url'] ?? ''));
+                        $primaryInitial = strtoupper(mb_substr(trim((string)($primaryTenant['name'] ?? 'T')), 0, 1, 'UTF-8')) ?: 'T';
+                        $primaryUsername = trim((string)($primaryTenant['username'] ?? ''));
+                      ?>
+                        <div style="display: flex; align-items: center; gap: 10px; margin-top: 2px;">
+                          <div style="width: 34px; height: 34px; border-radius: 50%; overflow: hidden; flex-shrink: 0; background: #FAF4EC; border: 2px solid rgba(255, 255, 255, 0.78); display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 6px rgba(34, 23, 9, 0.22);">
+                            <?php if ($primaryAvatarUrl !== ''): ?>
+                              <img src="<?= htmlspecialchars($primaryAvatarUrl) ?>"
+                                   alt="<?= htmlspecialchars((string)$primaryTenant['name']) ?>"
+                                   style="width: 100%; height: 100%; border-radius: 50%; object-fit: cover; display: block;"
+                                   onerror="this.style.display='none';if(this.nextElementSibling)this.nextElementSibling.style.display='flex';">
+                              <span style="display: none; width: 100%; height: 100%; align-items: center; justify-content: center; font-weight: 900; font-size: 13px; color: #1E160E;"><?= htmlspecialchars($primaryInitial) ?></span>
+                            <?php else: ?>
+                              <span style="font-weight: 900; font-size: 13px; color: #1E160E;"><?= htmlspecialchars($primaryInitial) ?></span>
+                            <?php endif; ?>
+                          </div>
+                          <div style="min-width: 0;">
+                            <div class="unit-dir-occupant" style="padding-left: 0;">OCCUPANT: <?= htmlspecialchars(strtoupper((string)$primaryTenant['name'])) ?></div>
+                            <?php if ($primaryUsername !== ''): ?>
+                              <div style="font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace; font-size: 11px; font-weight: 700; color: rgba(246, 241, 229, 0.82); letter-spacing: 0.04em;"><?= htmlspecialchars(strtoupper($primaryUsername)) ?></div>
+                            <?php endif; ?>
+                          </div>
+                        </div>
                         <?php if ($isMovedOutPending): ?>
                           <span class="unit-dir-movedout-tag">Moved Out (Pending Settlement)</span>
                         <?php endif; ?>
@@ -1541,8 +2213,8 @@ try {
 
         <div class="dashboard-header-bar">
           <div class="dashboard-title-group">
-            <h1>Maintenance Tickets</h1>
-            <p>Track, manage, and dispatch maintenance and repair requests across all units</p>
+            <h1>Maintenance Requests</h1>
+            <p>See and manage fixes needed across your rental units</p>
           </div>
         </div>
 
@@ -1556,7 +2228,7 @@ try {
                     aria-selected="true"
                     aria-controls="paneActiveTickets"
                     onclick="switchTicketTab('active')">
-              <span>Active/On-going maintenance</span>
+              <span>Fixes Needed</span>
               <span id="activeTicketCountBadge" class="folder-tab-count"><?= count($activeTickets) ?></span>
             </button>
             <button type="button"
@@ -1566,7 +2238,7 @@ try {
                     aria-selected="false"
                     aria-controls="paneCompletedTickets"
                     onclick="switchTicketTab('completed')">
-              <span>Completed maintenance</span>
+              <span>Completed Fixes</span>
               <span id="completedTicketCountBadge" class="folder-tab-count"><?= count($completedTickets) ?></span>
             </button>
           </div>
@@ -1576,7 +2248,7 @@ try {
             <div id="paneActiveTickets" role="tabpanel" aria-labelledby="btnTabActiveTickets" style="display: block;">
               <div class="kanban-toolbar">
                 <div class="kanban-toolbar-hint">
-                  <span id="kanbanCategoryStateLabel">All Active Maintenance</span>
+                  <span id="kanbanCategoryStateLabel">All Fixes Needed</span>
                 </div>
                 <div class="kanban-filter-wrap">
                   <select id="activeStatusDropdown"
@@ -1677,8 +2349,8 @@ try {
 
         <div class="dashboard-header-bar">
           <div class="dashboard-title-group">
-            <h1>Tenant Reports</h1>
-            <p>Review general tenant requests for additional occupants, pets, unit customizations, and inquiries</p>
+            <h1>Tenant Requests</h1>
+            <p>Review tenant requests for extra occupants, pets, unit changes, and general questions</p>
           </div>
         </div>
 
@@ -1692,7 +2364,7 @@ try {
                     aria-selected="true"
                     aria-controls="panePendingReports"
                     onclick="switchReportTab('pending')">
-              <span>Pending Review</span>
+              <span>Waiting for Review</span>
               <span id="pendingReportsCountBadge" class="folder-tab-count"><?= count($pendingReports) ?></span>
             </button>
             <button type="button"
@@ -1702,7 +2374,7 @@ try {
                     aria-selected="false"
                     aria-controls="paneReviewedReports"
                     onclick="switchReportTab('reviewed')">
-              <span>Reviewed Reports</span>
+              <span>Reviewed Requests</span>
               <span id="reviewedReportsCountBadge" class="folder-tab-count"><?= count($reviewedReports) ?></span>
             </button>
           </div>
@@ -1746,12 +2418,12 @@ try {
 
       </section>
 
-      <!-- SECTION 4: MANUAL PAYMENT VERIFICATION & AUDIT -->
+      <!-- SECTION 4: PAYMENTS WAITING FOR APPROVAL & PAYMENT HISTORY -->
       <section id="sectionPayments" class="app-view-section">
         <div class="dashboard-header-bar">
           <div class="dashboard-title-group">
-            <h1>Rent Payment Verification &amp; Audit</h1>
-            <p>Review tenant-submitted payment receipts, inspect proof slips, and manage verified payment records</p>
+            <h1>Rent Payments &amp; Approvals</h1>
+            <p>Check tenant payment slips, approve rent payments, and view past payment records</p>
           </div>
         </div>
 
@@ -1770,7 +2442,7 @@ try {
                     aria-selected="true"
                     aria-controls="panePendingPayments"
                     onclick="switchPaymentTab('pending')">
-              <span>Payments That Need to Be Verified</span>
+              <span>Payments Waiting for Approval</span>
               <span id="pendingVerificationCountBadge" class="folder-tab-count"><?= $pendingReviewCount ?></span>
             </button>
             <button type="button"
@@ -1780,21 +2452,21 @@ try {
                     aria-selected="false"
                     aria-controls="panePaymentHistory"
                     onclick="switchPaymentTab('history')">
-              <span>Payment History &amp; Processed Records</span>
+              <span>Payment History</span>
               <span id="paymentHistoryCountBadge" class="folder-tab-count"><?= count($historyPayments) ?></span>
             </button>
           </div>
 
           <div class="maintenance-folder-body" id="paymentsFolderBody">
-            <!-- PANE 1: PAYMENTS THAT NEED TO BE VERIFIED -->
+            <!-- PANE 1: PAYMENTS WAITING FOR APPROVAL -->
             <div id="panePendingPayments" role="tabpanel" aria-labelledby="btnTabPendingPayments" style="display: block;">
               <div class="kanban-toolbar">
                 <div class="kanban-toolbar-hint">
-                  <span id="pendingVerificationToolbarLabel">Submissions Awaiting Verification</span>
+                  <span id="pendingVerificationToolbarLabel">Payments Waiting for Approval</span>
                 </div>
                 <div class="kanban-toolbar-actions">
                   <span id="pendingVerificationStatusBadge" class="clay-badge" style="background: #F3E4C6; color: #56380E; border: 1px solid rgba(181, 143, 83, 0.35); font-size: 11.5px; font-weight: 800; padding: 6px 14px; border-radius: 8px;">
-                    <?= $pendingReviewCount === 1 ? '1 submission awaiting review' : $pendingReviewCount . ' submissions awaiting review' ?>
+                    <?= $pendingReviewCount === 1 ? '1 payment waiting for approval' : $pendingReviewCount . ' payments waiting for approval' ?>
                   </span>
                 </div>
               </div>
@@ -3031,14 +3703,16 @@ try {
             <div class="td-personal-identity">
               <!-- Circular Avatar -->
               <div id="tdModalAvatarBox" class="td-avatar-box">
+                <img id="tdModalAvatarImg" src="" alt="Tenant photo" style="width: 100%; height: 100%; border-radius: 50%; object-fit: cover; display: none;" />
                 <span id="tdModalAvatarInitial" class="td-avatar-initial">T</span>
               </div>
               <div>
                 <h2 id="tdModalTenantName" class="td-tenant-name">
                   JANE DOE
                 </h2>
-                <div class="td-tenant-role">
-                  TENANT
+                <div class="td-tenant-role" style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                  <span>TENANT</span>
+                  <span id="tdModalUsername" style="font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace; font-size: 11px; font-weight: 800; padding: 2px 8px; border-radius: 999px; background: rgba(74, 55, 40, 0.12); color: #4A3728; display: none;"></span>
                 </div>
               </div>
             </div>
@@ -4530,6 +5204,19 @@ try {
       return Number.isInteger(n) ? String(n) : String(n).replace(/\.0+$/, '');
     }
 
+    function resolveTenantAvatarSrc(t) {
+      if (!t) return '';
+      if (Object.prototype.hasOwnProperty.call(t, 'avatar_url')) {
+        return String(t.avatar_url || '').trim();
+      }
+      const raw = String(t.profile_picture || '').trim();
+      if (!raw) return '';
+      if (raw.startsWith('http://') || raw.startsWith('https://') || raw.startsWith('uploads/')) {
+        return raw;
+      }
+      return '';
+    }
+
     function renderDirectoryUnitsGrid(units = window.directoryUnitsData) {
       const gridEl = document.getElementById('directoryUnitsGrid');
       const counterEl = document.getElementById('directoryActiveUnitsCounter');
@@ -4562,6 +5249,13 @@ try {
         const crCount = formatBathCount(u.bathrooms);
         const unitLabel = String(u.unit_number || ('Unit ' + uId)).toUpperCase();
         const isMovedOutPending = !!(primary && (primary.rental_status || 'active') === 'moved_out');
+        const primaryAvatar = primary ? resolveTenantAvatarSrc(primary) : '';
+        const primaryInitial = primary ? ((String(primary.name || 'T').trim().charAt(0) || 'T').toUpperCase()) : 'T';
+        const primaryUsername = primary && primary.username ? String(primary.username).trim().toUpperCase() : '';
+
+        const avatarInnerHtml = primaryAvatar
+          ? `<img src="${escapeHtml(primaryAvatar)}" alt="${escapeHtml(String(primary.name || 'Tenant'))}" style="width: 100%; height: 100%; border-radius: 50%; object-fit: cover; display: block;" onerror="this.style.display='none';if(this.nextElementSibling)this.nextElementSibling.style.display='flex';"><span style="display: none; width: 100%; height: 100%; align-items: center; justify-content: center; font-weight: 900; font-size: 13px; color: #1E160E;">${escapeHtml(primaryInitial)}</span>`
+          : `<span style="font-weight: 900; font-size: 13px; color: #1E160E;">${escapeHtml(primaryInitial)}</span>`;
 
         return `
           <article class="unit-dir-card ${cardClass}"
@@ -4577,7 +5271,15 @@ try {
               <h2 class="unit-dir-title">${escapeHtml(unitLabel)}</h2>
               <div class="unit-dir-specs">${brCount} BR | ${escapeHtml(crCount)} CR</div>
               ${isOccupied && primary ? `
-                <div class="unit-dir-occupant">OCCUPANT: ${escapeHtml(String(primary.name || 'Tenant').toUpperCase())}</div>
+                <div style="display: flex; align-items: center; gap: 10px; margin-top: 2px;">
+                  <div style="width: 34px; height: 34px; border-radius: 50%; overflow: hidden; flex-shrink: 0; background: #FAF4EC; border: 2px solid rgba(255, 255, 255, 0.78); display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 6px rgba(34, 23, 9, 0.22);">
+                    ${avatarInnerHtml}
+                  </div>
+                  <div style="min-width: 0;">
+                    <div class="unit-dir-occupant" style="padding-left: 0;">OCCUPANT: ${escapeHtml(String(primary.name || 'Tenant').toUpperCase())}</div>
+                    ${primaryUsername ? `<div style="font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace; font-size: 11px; font-weight: 700; color: rgba(246, 241, 229, 0.82); letter-spacing: 0.04em;">${escapeHtml(primaryUsername)}</div>` : ''}
+                  </div>
+                </div>
                 ${isMovedOutPending ? '<span class="unit-dir-movedout-tag">Moved Out (Pending Settlement)</span>' : ''}
               ` : ''}
             </div>
@@ -5235,12 +5937,6 @@ try {
       }
 
       // 2. Tenant Information (Profile, Contact, Emergency, Move-in Date)
-      const tNameEl = document.getElementById('tdModalTenantName');
-      if (tNameEl) tNameEl.textContent = (t.name || 'Resident').toUpperCase();
-
-      const avatarInit = document.getElementById('tdModalAvatarInitial');
-      if (avatarInit) avatarInit.textContent = (t.name || 'T').charAt(0).toUpperCase();
-
       // Format Date Helper (MM/DD/YYYY)
       const fmtDate = (dStr) => {
         if (!dStr) return '-';
@@ -5263,26 +5959,98 @@ try {
         return `${mm}/${dd}/${yy}`;
       };
 
-      const moveInDateEl = document.getElementById('tdModalMoveInDate');
-      if (moveInDateEl) moveInDateEl.textContent = fmtDate(t.move_in_date || t.created_at);
+      const syncModalTenantProfile = (profile) => {
+        if (!profile) return;
 
-      const bdayEl = document.getElementById('tdModalBirthday');
-      if (bdayEl) bdayEl.textContent = t.birthday ? fmtDate(t.birthday) : 'N/A';
+        // Assigned unit & occupancy binding
+        const pUnitId = parseInt(profile.unit_id || uId || 0, 10);
+        const pUnitNum = profile.unit_number || (unitObj && unitObj.unit_number) || unitNumber || ('UNIT ' + (pUnitId || '1'));
+        const pUnitHeading = pUnitNum.toLowerCase().startsWith('unit') ? pUnitNum.toUpperCase() : ('UNIT ' + pUnitNum.toUpperCase());
+        if (uNumEl) uNumEl.textContent = pUnitHeading;
+        const pBr = parseInt(profile.bedrooms || (unitObj && unitObj.bedrooms) || 1, 10) || 1;
+        const pCr = formatBathCount(profile.bathrooms ?? (unitObj && unitObj.bathrooms) ?? 1);
+        if (uDetEl) uDetEl.textContent = `${pBr} BR | ${pCr} CR`;
 
-      const phoneEl = document.getElementById('tdModalPhone');
-      if (phoneEl) phoneEl.textContent = t.phone || 'N/A';
+        const pMovedOut = (profile.rental_status === 'moved_out');
+        if (occBadge) {
+          occBadge.style.backgroundColor = '';
+          occBadge.style.color = '';
+          if (!pMovedOut) {
+            occBadge.textContent = 'OCCUPIED';
+            occBadge.className = 'td-badge-pill td-badge-success';
+          } else {
+            occBadge.textContent = 'MOVED OUT';
+            occBadge.className = 'td-badge-pill td-badge-warning';
+          }
+        }
 
-      const emailEl = document.getElementById('tdModalEmail');
-      if (emailEl) emailEl.textContent = t.email || 'N/A';
+        // Name & Username/Code
+        const tNameEl = document.getElementById('tdModalTenantName');
+        if (tNameEl) tNameEl.textContent = (profile.name || 'Resident').toUpperCase();
 
-      const emNameEl = document.getElementById('tdModalEmergencyName');
-      if (emNameEl) emNameEl.textContent = t.emergency_contact_name || t.emergency_contact || 'None listed';
+        const usernameEl = document.getElementById('tdModalUsername');
+        const uname = String(profile.username || '').trim();
+        if (usernameEl) {
+          if (uname) {
+            usernameEl.textContent = uname.toUpperCase();
+            usernameEl.style.display = 'inline-block';
+          } else {
+            usernameEl.textContent = '';
+            usernameEl.style.display = 'none';
+          }
+        }
 
-      const emRelEl = document.getElementById('tdModalEmergencyRel');
-      if (emRelEl) emRelEl.textContent = t.emergency_contact_relationship || 'N/A';
+        // Circular Avatar Photo or Fallback Initial
+        const avatarImg = document.getElementById('tdModalAvatarImg');
+        const avatarInit = document.getElementById('tdModalAvatarInitial');
+        const initialChar = (String(profile.name || 'T').trim().charAt(0) || 'T').toUpperCase();
+        if (avatarInit) avatarInit.textContent = initialChar;
 
-      const emPhoneEl = document.getElementById('tdModalEmergencyPhone');
-      if (emPhoneEl) emPhoneEl.textContent = t.emergency_contact_phone || 'N/A';
+        const avatarSrc = resolveTenantAvatarSrc(profile);
+        if (avatarImg && avatarInit) {
+          if (avatarSrc) {
+            avatarImg.onerror = () => {
+              avatarImg.style.display = 'none';
+              avatarInit.style.display = '';
+            };
+            avatarImg.alt = profile.name ? `${profile.name} profile photo` : 'Tenant profile photo';
+            avatarImg.src = avatarSrc;
+            avatarImg.style.display = 'block';
+            avatarInit.style.display = 'none';
+          } else {
+            avatarImg.onerror = null;
+            avatarImg.removeAttribute('src');
+            avatarImg.style.display = 'none';
+            avatarInit.style.display = '';
+          }
+        } else if (avatarInit) {
+          avatarInit.textContent = initialChar;
+        }
+
+        // Contact, Birthday, Move-in & Emergency Info
+        const moveInDateEl = document.getElementById('tdModalMoveInDate');
+        if (moveInDateEl) moveInDateEl.textContent = fmtDate(profile.move_in_date || profile.created_at);
+
+        const bdayEl = document.getElementById('tdModalBirthday');
+        if (bdayEl) bdayEl.textContent = profile.birthday ? fmtDate(profile.birthday) : 'N/A';
+
+        const phoneEl = document.getElementById('tdModalPhone');
+        if (phoneEl) phoneEl.textContent = profile.phone || 'N/A';
+
+        const emailEl = document.getElementById('tdModalEmail');
+        if (emailEl) emailEl.textContent = profile.email || 'N/A';
+
+        const emNameEl = document.getElementById('tdModalEmergencyName');
+        if (emNameEl) emNameEl.textContent = profile.emergency_contact_name || profile.emergency_contact || 'None listed';
+
+        const emRelEl = document.getElementById('tdModalEmergencyRel');
+        if (emRelEl) emRelEl.textContent = profile.emergency_contact_relationship || 'N/A';
+
+        const emPhoneEl = document.getElementById('tdModalEmergencyPhone');
+        if (emPhoneEl) emPhoneEl.textContent = profile.emergency_contact_phone || 'N/A';
+      };
+
+      syncModalTenantProfile(t);
 
       // 3. Tenant Identification Information & Privacy Masking
       const isVerified = (parseInt(t.is_verified, 10) === 1) && ((t.verification_status || '').toLowerCase() === 'verified');
@@ -5394,6 +6162,27 @@ try {
           .then(data => {
             if (data && data.status === 'success') {
               if (data.tenant) {
+                // Re-bind live tenant account profile (avatar, name, username, contact, birthday, unit)
+                syncModalTenantProfile(data.tenant);
+                if (Array.isArray(window.directoryUnitsData)) {
+                  let directoryNeedsRedraw = false;
+                  window.directoryUnitsData.forEach(u => {
+                    if (Array.isArray(u.tenants)) {
+                      u.tenants = u.tenants.map(cached => {
+                        if (parseInt(cached.id, 10) === parseInt(data.tenant.id, 10)) {
+                          if (cached.name !== data.tenant.name || cached.avatar_url !== data.tenant.avatar_url || cached.username !== data.tenant.username) {
+                            directoryNeedsRedraw = true;
+                          }
+                          return { ...cached, ...data.tenant };
+                        }
+                        return cached;
+                      });
+                    }
+                  });
+                  if (directoryNeedsRedraw) {
+                    renderDirectoryUnitsGrid(window.directoryUnitsData);
+                  }
+                }
                 const liveVerified = (parseInt(data.tenant.is_verified, 10) === 1) && ((data.tenant.verification_status || '').toLowerCase() === 'verified');
                 if (liveVerified && data.tenant.id_photo_filename && data.tenant.id_type) {
                   window.currentActiveTenantIdPhoto = data.tenant.id_photo_filename;
@@ -9130,83 +9919,418 @@ try {
       initGlobalOwnerSearch();
     }
 
-    // Load Charts, KPIs, Overview Panel & Diagnostics in ₱
+    let baForecastChartInstance = null;
+    let baParetoChartInstance = null;
+
+    function escapeHtmlOwnerDash(str) {
+      return String(str ?? '').replace(/[&<>"']/g, s => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[s]));
+    }
+
+    function formatPhpOwnerDash(val) {
+      return '₱' + Number(val || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+
+    function renderBusinessAnalyticsPillars(ba, monthlyCollections, kpis) {
+      if (!ba) return;
+
+      // -----------------------------------------------------------------------
+      // PILLAR 4: PRESCRIPTIVE ("RECOMMENDED ACTIONS FOR TODAY" — NO DUPLICATE NAV LINKS)
+      // -----------------------------------------------------------------------
+      const insightsContainer = document.getElementById('smartInsightsList');
+      const insightsBadge = document.getElementById('smartInsightsBadge');
+      const insights = ba.prescriptive?.smart_insights || [];
+      if (insightsBadge) {
+        insightsBadge.textContent = `${insights.length} Suggestion${insights.length === 1 ? '' : 's'} Today`;
+      }
+      if (insightsContainer) {
+        if (insights.length === 0) {
+          insightsContainer.innerHTML = '<div class="ba-empty-box">Everything looks caught up! No urgent actions recommended today.</div>';
+        } else {
+          insightsContainer.innerHTML = insights.map(item => {
+            const sevClass = item.severity === 'urgent' ? 'sev-urgent' : '';
+            return `
+              <div class="ba-insight-item ${sevClass}">
+                <div>
+                  <div class="ba-insight-top">
+                    <span class="ba-insight-badge">${escapeHtmlOwnerDash(item.badge || 'Suggestion')}</span>
+                    <span class="ba-insight-metric">${escapeHtmlOwnerDash(item.metric_highlight || '')}</span>
+                  </div>
+                  <h4>${escapeHtmlOwnerDash(item.title)}</h4>
+                  <p>${escapeHtmlOwnerDash(item.recommendation)}</p>
+                </div>
+              </div>
+            `;
+          }).join('');
+        }
+      }
+
+      // -----------------------------------------------------------------------
+      // PILLAR 1: AVERAGE PAYMENT SPEED (DSO) KPI CARD
+      // -----------------------------------------------------------------------
+      const desc = ba.descriptive || {};
+      const elDso = document.getElementById('baKpiDso');
+      const elOnTime = document.getElementById('baKpiOnTimeBadge');
+      const elDsoSub = document.getElementById('baKpiDsoSub');
+      if (elDso) {
+        elDso.textContent = desc.has_dso_data ? `${Number(desc.dso_days || 0).toFixed(1)} days` : '—';
+      }
+      if (elOnTime) {
+        elOnTime.textContent = desc.has_dso_data
+          ? `${Number(desc.on_time_collection_rate_pct || 0).toFixed(0)}% Paid On Time`
+          : 'No Paid Bills Yet';
+      }
+      if (elDsoSub) {
+        elDsoSub.textContent = desc.has_dso_data
+          ? `Across ${desc.settled_payments_count || 0} paid rent bill(s)`
+          : 'Average days tenants take to pay after billing';
+      }
+
+      // -----------------------------------------------------------------------
+      // PILLAR 3A: NEXT-MONTH EXPECTED CASH FLOW KPI + PROJECTION CHART
+      // -----------------------------------------------------------------------
+      const cf = ba.predictive?.cash_flow_forecast || {};
+      const elFcMonth = document.getElementById('baForecastMonthBadge');
+      const elFcExp = document.getElementById('baForecastExpected');
+      const elFcConf = document.getElementById('baForecastConfidenceBadge');
+      const elFcSub = document.getElementById('baForecastSub');
+      const elFcRent = document.getElementById('baForecastRent');
+      const elFcVac = document.getElementById('baForecastVacancy');
+
+      if (elFcMonth) elFcMonth.textContent = cf.forecast_month_label ? `Forecast · ${cf.forecast_month_label}` : 'Projection';
+      if (elFcExp) elFcExp.textContent = formatPhpOwnerDash(cf.expected_cash_inflow || 0);
+      if (elFcConf) {
+        const fac = Number(cf.historical_collection_factor_pct || 0).toFixed(1);
+        elFcConf.textContent = cf.has_historical_baseline ? `Collection Rate: ${fac}%` : `Baseline: ${fac}%`;
+      }
+      if (elFcSub) {
+        elFcSub.textContent = `For ${cf.forecast_month_label || 'next month'} · Parking/Add-ons: ${formatPhpOwnerDash(cf.parking_addons_potential || 0)}`;
+      }
+      if (elFcRent) elFcRent.textContent = formatPhpOwnerDash(cf.occupied_unit_rent_potential || 0);
+      if (elFcVac) {
+        const totVac = Number(cf.vacant_unit_opportunity || 0) + Number(cf.vacant_parking_opportunity || 0);
+        elFcVac.textContent = '+' + formatPhpOwnerDash(totVac);
+      }
+
+      const forecastCanvas = document.getElementById('chartCashFlowForecast');
+      if (forecastCanvas && typeof window.Chart !== 'undefined') {
+        if (baForecastChartInstance) {
+          baForecastChartInstance.destroy();
+          baForecastChartInstance = null;
+        }
+        const fullCapacityTotal = Number(cf.optimistic_cash_inflow || 0) + Number(cf.vacant_unit_opportunity || 0) + Number(cf.vacant_parking_opportunity || 0);
+        baForecastChartInstance = new Chart(forecastCanvas, {
+          type: 'bar',
+          data: {
+            labels: ['Avg Monthly Collected', `Expected (${cf.forecast_month_label || 'Next Mo'})`, 'Full Capacity Ceiling'],
+            datasets: [{
+              label: 'Cash Flow (₱)',
+              data: [
+                Number(cf.historical_avg_collected || 0),
+                Number(cf.expected_cash_inflow || 0),
+                fullCapacityTotal
+              ],
+              backgroundColor: ['#B89B72', '#4A3728', '#E8D8B0'],
+              borderColor: ['#8C6D43', '#4A3728', '#8C6D43'],
+              borderWidth: 1.5,
+              borderRadius: 10,
+              maxBarThickness: 56
+            }]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: { display: false },
+              tooltip: {
+                backgroundColor: '#F5F0E6',
+                titleColor: '#4A3728',
+                bodyColor: '#4A3728',
+                borderColor: '#B89B72',
+                borderWidth: 1,
+                callbacks: {
+                  label: ctx => ` ${formatPhpOwnerDash(ctx.parsed.y || 0)}`
+                }
+              }
+            },
+            scales: {
+              x: { grid: { display: false }, ticks: { color: '#4A3728', font: { size: 11, weight: '700' } } },
+              y: {
+                beginAtZero: true,
+                grid: { color: 'rgba(140, 109, 67, 0.14)' },
+                ticks: { color: '#8C6D43', font: { size: 11, weight: '600' }, callback: v => `₱${Number(v).toLocaleString()}` }
+              }
+            }
+          }
+        });
+      }
+
+      // -----------------------------------------------------------------------
+      // PILLAR 3B: PAYMENT RELIABILITY RISK TABLE (SINGLE SOURCE — NO REDUNDANT PILLS)
+      // -----------------------------------------------------------------------
+      const riskSummary = ba.predictive?.risk_summary || {};
+      const riskCountBadge = document.getElementById('baRiskCountBadge');
+      if (riskCountBadge) {
+        const hi = Number(riskSummary.high_count || 0);
+        const tot = Number(riskSummary.total_scored || 0);
+        riskCountBadge.textContent = hi > 0 ? `${hi} High Risk` : `${tot} Scored`;
+      }
+
+      const riskTbody = document.getElementById('baTenantRiskTableBody');
+      const riskRows = ba.predictive?.tenant_risk_scores || [];
+      if (riskTbody) {
+        if (riskRows.length === 0) {
+          riskTbody.innerHTML = `
+            <tr>
+              <td colspan="5" style="text-align:center;padding:24px;color:#8C6D43;">
+                No active tenants to score yet.
+              </td>
+            </tr>
+          `;
+        } else {
+          riskTbody.innerHTML = riskRows.map(t => {
+            const score = Number(t.risk_score || 0);
+            const tier = t.risk_tier || 'Low';
+            const barColor = tier === 'High' ? '#4A3728' : (tier === 'Medium' ? '#8C6D43' : '#B89B72');
+            const badgeStyle = tier === 'High'
+              ? 'background:#4A3728;color:#F5F0E6;'
+              : (tier === 'Medium' ? 'background:#8C6D43;color:#F5F0E6;' : 'background:#E8D8B0;color:#4A3728;');
+            return `
+              <tr>
+                <td>
+                  <div style="font-weight:800;color:#4A3728;">${escapeHtmlOwnerDash(t.tenant_name)}</div>
+                  <div style="font-size:11px;color:#8C6D43;font-weight:700;">${escapeHtmlOwnerDash(t.unit_number)}</div>
+                </td>
+                <td style="white-space:nowrap;">
+                  <div class="ba-risk-bar-track"><div class="ba-risk-bar-fill" style="width:${Math.max(5, score)}%;background:${barColor};"></div></div>
+                  <span style="font-size:10.5px;font-weight:800;padding:3px 8px;border-radius:9999px;${badgeStyle}">
+                    ${score}% · ${escapeHtmlOwnerDash(tier)}
+                  </span>
+                </td>
+                <td style="white-space:nowrap;">${formatPhpOwnerDash(t.unpaid_balance)}</td>
+                <td style="white-space:nowrap;">${Number(t.avg_days_late || 0).toFixed(1)}d <span style="color:#8C6D43;font-size:11px;">(${t.late_payments_count}/${t.total_bills})</span></td>
+                <td style="white-space:nowrap;">${Number(t.rejected_ratio_pct || 0).toFixed(0)}% <span style="color:#8C6D43;font-size:11px;">(${t.rejected_receipts_count})</span></td>
+              </tr>
+            `;
+          }).join('');
+        }
+      }
+
+      // -----------------------------------------------------------------------
+      // PILLAR 2B: UNIT COLLECTION & WATCHLIST TABLE (SINGLE TABLE — NO DUPLICATE CHART)
+      // -----------------------------------------------------------------------
+      const unitHealthRows = ba.diagnostic?.unit_health_index || [];
+      const unitTbody = document.getElementById('baUnitOverviewTableBody');
+      if (unitTbody) {
+        if (unitHealthRows.length === 0) {
+          unitTbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#8C6D43;padding:24px;">No units configured yet.</td></tr>';
+        } else {
+          unitTbody.innerHTML = unitHealthRows.map(u => {
+            const tier = u.health_tier || 'healthy';
+            const tierLabel = tier === 'problematic' ? 'Needs Inspection' : (tier === 'monitor' ? 'Watchlist' : 'Healthy');
+            const badgeStyle = tier === 'problematic'
+              ? 'background:#4A3728;color:#F5F0E6;'
+              : (tier === 'monitor' ? 'background:#8C6D43;color:#F5F0E6;' : 'background:#E8D8B0;color:#4A3728;');
+            return `
+              <tr>
+                <td><strong>${escapeHtmlOwnerDash(u.unit_number)}</strong></td>
+                <td style="white-space:nowrap;">${formatPhpOwnerDash(u.unit_collected_rent)}</td>
+                <td style="white-space:nowrap;">${formatPhpOwnerDash(u.unit_unpaid_rent)}</td>
+                <td style="white-space:nowrap;">${u.open_tickets} open <span style="color:#8C6D43;font-size:11px;">(${u.ticket_count} total)</span></td>
+                <td style="white-space:nowrap;">
+                  <span style="font-size:10.5px;font-weight:800;padding:3px 9px;border-radius:9999px;${badgeStyle}">${tierLabel}</span>
+                </td>
+              </tr>
+            `;
+          }).join('');
+        }
+      }
+
+      // -----------------------------------------------------------------------
+      // PILLAR 2A: MAINTENANCE REQUESTS BY CATEGORY (CHART ONLY — NO DUPLICATE TABLE)
+      // -----------------------------------------------------------------------
+      const paretoRows = ba.diagnostic?.pareto_maintenance || [];
+      const paretoCanvas = document.getElementById('chartMaintenancePareto');
+      if (paretoCanvas && typeof window.Chart !== 'undefined') {
+        if (baParetoChartInstance) {
+          baParetoChartInstance.destroy();
+          baParetoChartInstance = null;
+        }
+        baParetoChartInstance = new Chart(paretoCanvas, {
+          data: {
+            labels: paretoRows.map(r => r.category),
+            datasets: [
+              {
+                type: 'line',
+                label: 'Cumulative %',
+                data: paretoRows.map(r => Number(r.cumulative_pct || 0)),
+                borderColor: '#4A3728',
+                backgroundColor: '#F5F0E6',
+                borderWidth: 2.5,
+                tension: 0.25,
+                pointRadius: 4,
+                pointBackgroundColor: '#4A3728',
+                yAxisID: 'yCum',
+                order: 1
+              },
+              {
+                type: 'bar',
+                label: 'Requests',
+                data: paretoRows.map(r => Number(r.ticket_count || 0)),
+                backgroundColor: ['#8C6D43', '#B89B72', '#D4BD94', '#E8D8B0', '#C9B18B'],
+                borderRadius: 8,
+                maxBarThickness: 44,
+                yAxisID: 'yCount',
+                order: 2
+              }
+            ]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: {
+                position: 'top',
+                labels: { usePointStyle: true, pointStyle: 'circle', color: '#4A3728', font: { size: 11, weight: '700' } }
+              },
+              tooltip: {
+                backgroundColor: '#F5F0E6',
+                titleColor: '#4A3728',
+                bodyColor: '#4A3728',
+                borderColor: '#B89B72',
+                borderWidth: 1,
+                callbacks: {
+                  label: ctx => {
+                    const row = paretoRows[ctx.dataIndex];
+                    if (ctx.dataset.yAxisID === 'yCum') {
+                      return ` Cumulative Share: ${Number(ctx.parsed.y || 0).toFixed(1)}%`;
+                    }
+                    const share = row ? Number(row.request_share_percentage || 0).toFixed(1) : '0.0';
+                    return ` Requests: ${Number(ctx.parsed.y || 0)} (${share}%)`;
+                  }
+                }
+              }
+            },
+            scales: {
+              x: { grid: { display: false }, ticks: { color: '#4A3728', font: { size: 11.5, weight: '700' } } },
+              yCount: {
+                type: 'linear',
+                position: 'left',
+                beginAtZero: true,
+                grid: { color: 'rgba(140, 109, 67, 0.14)' },
+                ticks: { color: '#8C6D43', font: { size: 11 }, stepSize: 1, precision: 0 }
+              },
+              yCum: {
+                type: 'linear',
+                position: 'right',
+                min: 0,
+                max: 100,
+                grid: { display: false },
+                ticks: { color: '#4A3728', font: { size: 11, weight: '700' }, callback: v => `${v}%` }
+              }
+            }
+          }
+        });
+      }
+    }
+
+    // Load Deduplicated Owner Dashboard Overview & 4 BA Pillars
     async function loadDashboardAnalytics() {
       try {
         const res = await fetch('api/analytics_api.php');
         const data = await res.json();
         if (data.status === 'success' && data.kpis) {
-          // 1. Financial KPIs in ₱
-          const elEff = document.getElementById('kpiEfficiency');
-          if (elEff && data.kpis.financials) {
-            elEff.textContent = `${Number(data.kpis.financials.overall_collection_efficiency_pct || 0).toFixed(1)}%`;
-          }
+          const fin = data.kpis.financials || {};
+          const units = data.kpis.units || {};
+          const maint = data.kpis.maintenance || {};
+          const reports = data.kpis.reports || {};
+          const pendingApprovals = Number(data.kpis.manual_verification?.pending_receipts_count || 0);
 
-          const elOut = document.getElementById('kpiOutstanding');
-          if (elOut && data.kpis.financials) {
-            elOut.textContent = `₱${Number(data.kpis.financials.total_outstanding_balance || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
-          }
+          // 1. Total Rent Collected (Single Source)
+          const now = new Date();
+          const curMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+          const monthlyArr = Array.isArray(data.charts?.monthly_collection_efficiency)
+            ? data.charts.monthly_collection_efficiency
+            : [];
+          const curMonthRow = monthlyArr.find(m => m.month_key === curMonthKey);
+          const allTimeCollected = Number(fin.total_revenue_collected || 0);
+          const thisMonthCollected = curMonthRow ? Number(curMonthRow.collected_rent || 0) : 0;
 
           const elRev = document.getElementById('kpiRevenue');
-          if (elRev && data.kpis.financials) {
-            elRev.textContent = `₱${Number(data.kpis.financials.total_revenue_collected || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+          const elPaidTag = document.getElementById('kpiPaidTag');
+          const elRevSub = document.getElementById('kpiRevenueSubtitle');
+          if (elRev) {
+            elRev.textContent = formatPhpOwnerDash(thisMonthCollected > 0 ? thisMonthCollected : allTimeCollected);
+          }
+          if (elPaidTag) {
+            elPaidTag.textContent = `${Number(fin.overall_collection_efficiency_pct || 0).toFixed(1)}% Paid`;
+          }
+          if (elRevSub) {
+            elRevSub.textContent = thisMonthCollected > 0
+              ? `This month (${curMonthRow.month_label || curMonthKey}) · All-time: ${formatPhpOwnerDash(allTimeCollected)}`
+              : 'Approved rent collected (zero deductions)';
           }
 
-          const elMaint = document.getElementById('kpiMaintenance');
-          if (elMaint && data.kpis.maintenance) {
-            elMaint.textContent = `₱${Number(data.kpis.maintenance.total_expenditure || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+          // 2. Pending & Unpaid Rent (Single Source)
+          const elOut = document.getElementById('kpiOutstanding');
+          const elPendTag = document.getElementById('kpiPendingApprovalTag');
+          if (elOut) {
+            elOut.textContent = formatPhpOwnerDash(fin.total_outstanding_balance || 0);
+          }
+          if (elPendTag) {
+            elPendTag.textContent = pendingApprovals > 0 ? `${pendingApprovals} Waiting for Approval` : 'Up to Date';
+            elPendTag.classList.toggle('accent', pendingApprovals > 0);
           }
 
-          const ticketsCountLabel = document.getElementById('kpiTicketsCountLabel');
-          if (ticketsCountLabel && data.kpis.maintenance) {
-            const totalTicketsLogged = Number(data.kpis.maintenance.total_tickets_logged || 0);
-            ticketsCountLabel.textContent = `${totalTicketsLogged} logged request${totalTicketsLogged === 1 ? '' : 's'}`;
+          // 3. Unit Occupancy (Single Source)
+          const occUnits = Number(units.occupied_units || 0);
+          const availUnits = Number(units.available_units || 0);
+          const totUnits = Number(units.total_units || 0);
+          const activeTenants = Number(units.total_active_tenants || 0);
+          const archivedTenants = Number(units.total_archived_tenants || 0);
+          const elUnitsSum = document.getElementById('kpiUnitsRentedSummary');
+          const elUnitsTag = document.getElementById('kpiUnitsAvailabilityTag');
+          const elUnitsSub = document.getElementById('kpiUnitsRentedSub');
+          if (elUnitsSum) {
+            elUnitsSum.textContent = `${occUnits} of ${totUnits} Units Rented`;
+          }
+          if (elUnitsTag) {
+            elUnitsTag.textContent = availUnits > 0 ? `${availUnits} Available` : 'Fully Rented';
+          }
+          if (elUnitsSub) {
+            elUnitsSub.textContent = `${activeTenants} Active Tenant${activeTenants === 1 ? '' : 's'} · ${archivedTenants} Past`;
           }
 
-          // 2. Sync Overview Panel live stats cleanly
-          const totalTenants = Number(data.kpis.units?.total_active_tenants || 0);
-          const tenantSummaryEl = document.getElementById('tenantSummaryText');
-          if (tenantSummaryEl) {
-            tenantSummaryEl.textContent = String(totalTenants);
+          // 4. Open Requests (Maintenance + Tenant Requests combined once)
+          const openMaint = Number(maint.active_tickets || 0);
+          const pendReports = Number(reports.pending_reports || 0);
+          const totalOpen = openMaint + pendReports;
+          const elOpenReq = document.getElementById('kpiOpenRequestsCount');
+          const elMaintTag = document.getElementById('kpiMaintStatusTag');
+          const elOpenReqSub = document.getElementById('kpiOpenRequestsSub');
+          if (elOpenReq) elOpenReq.textContent = String(totalOpen);
+          if (elMaintTag) {
+            elMaintTag.textContent = totalOpen > 0 ? 'Needs Attention' : 'All Clear';
+            elMaintTag.classList.toggle('accent', totalOpen > 0);
           }
-
-          const pendingPaymentsEl = document.getElementById('overviewPendingPayments');
-          if (pendingPaymentsEl && data.kpis.manual_verification) {
-            pendingPaymentsEl.textContent = String(Number(data.kpis.manual_verification.pending_receipts_count || 0));
-          }
-
-          const openTicketsEl = document.getElementById('overviewOpenTickets');
-          if (openTicketsEl && data.kpis.maintenance) {
-            openTicketsEl.textContent = String(Number(data.kpis.maintenance.active_tickets || 0));
-          }
-
-          const pendingReportsEl = document.getElementById('overviewPendingReports');
-          if (pendingReportsEl && data.kpis.reports) {
-            pendingReportsEl.textContent = String(Number(data.kpis.reports.pending_reports || 0));
+          if (elOpenReqSub) {
+            elOpenReqSub.textContent = `${openMaint} Maintenance · ${pendReports} Tenant Request${pendReports === 1 ? '' : 's'}`;
           }
 
           const pendBadge = document.getElementById('pendingReportsCountBadge');
-          if (pendBadge && data.kpis.reports) {
-            pendBadge.textContent = String(Number(data.kpis.reports.pending_reports || 0));
-          }
+          if (pendBadge) pendBadge.textContent = String(pendReports);
 
-          const overviewUnitsEl = document.getElementById('overviewUnitsValue');
-          if (overviewUnitsEl && data.kpis.units) {
-            const avail = data.kpis.units.available_units ?? 0;
-            const tot = data.kpis.units.total_units ?? 3;
-            overviewUnitsEl.textContent = `${avail} of ${tot}`;
-          }
-
-          const archivedTenantsEl = document.getElementById('overviewArchivedTenants');
-          if (archivedTenantsEl && data.kpis.units && data.kpis.units.total_archived_tenants !== undefined) {
-            archivedTenantsEl.textContent = String(data.kpis.units.total_archived_tenants);
+          // 5. Hydrate all 4 Business Analytics Pillars
+          if (data.business_analytics) {
+            renderBusinessAnalyticsPillars(data.business_analytics, monthlyArr, data.kpis);
           }
 
           if (window.lucide && typeof window.lucide.createIcons === 'function') {
             window.lucide.createIcons();
           }
 
-          // 3. Render Chart.js widgets in ₱
+          // 6. Render Monthly Rent Overview Chart
           if (typeof RentConnectCharts !== 'undefined' && typeof RentConnectCharts.initCharts === 'function') {
             RentConnectCharts.initCharts(data);
           }
@@ -9230,5 +10354,208 @@ try {
   </script>
   <!-- Real-time Centralized Notification Client Handler -->
   <script src="assets/js/notifications.js"></script>
+  <script>
+    (function() {
+      let notifFetchInFlight = false;
+
+      function escNotifHtml(str) {
+        if (!str) return '';
+        return String(str)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#039;');
+      }
+
+      function getNotifIconMarkup(type) {
+        switch (type) {
+          case 'payment':
+            return '<div class="notif-icon-circle notif-icon-payment"><i data-lucide="receipt" aria-hidden="true"></i></div>';
+          case 'maintenance':
+            return '<div class="notif-icon-circle notif-icon-maintenance"><i data-lucide="wrench" aria-hidden="true"></i></div>';
+          case 'announcement':
+            return '<div class="notif-icon-circle notif-icon-announcement"><i data-lucide="bell" aria-hidden="true"></i></div>';
+          case 'account':
+          default:
+            return '<div class="notif-icon-circle notif-icon-account"><i data-lucide="user-round" aria-hidden="true"></i></div>';
+        }
+      }
+
+      function renderFriendlyEmptyState() {
+        const listContainer = document.getElementById('notificationListContainer');
+        if (!listContainer) return;
+        listContainer.innerHTML = `
+          <div class="notification-empty-state">
+            <div class="empty-icon"><i data-lucide="bell-off" aria-hidden="true"></i></div>
+            <h4>No Notifications Yet</h4>
+            <p>You're all caught up! No new notifications at this time.</p>
+          </div>
+        `;
+        if (window.lucide && typeof window.lucide.createIcons === 'function') {
+          window.lucide.createIcons();
+        }
+      }
+
+      function renderNotificationListSafe(data) {
+        const unreadCount = parseInt((data && data.unread_count) || 0, 10) || 0;
+        const badge = document.getElementById('notificationBadge');
+        const unreadPill = document.getElementById('notificationUnreadPill');
+        const listContainer = document.getElementById('notificationListContainer');
+
+        if (badge) {
+          if (unreadCount > 0) {
+            badge.textContent = unreadCount > 99 ? '99+' : String(unreadCount);
+            badge.style.display = 'flex';
+          } else {
+            badge.style.display = 'none';
+          }
+        }
+
+        if (unreadPill) {
+          if (unreadCount > 0) {
+            unreadPill.textContent = `${unreadCount} new`;
+            unreadPill.style.display = 'inline-block';
+          } else {
+            unreadPill.style.display = 'none';
+          }
+        }
+
+        if (!listContainer) return;
+        const items = (data && Array.isArray(data.notifications)) ? data.notifications : [];
+        if (items.length === 0) {
+          renderFriendlyEmptyState();
+          return;
+        }
+
+        listContainer.innerHTML = items.map(n => {
+          const isUnread = parseInt(n.is_read, 10) === 0;
+          return `
+            <div class="notification-item ${isUnread ? 'unread' : 'read'}"
+                 data-id="${n.id}"
+                 data-link="${escNotifHtml(n.link || '')}"
+                 data-ref-id="${escNotifHtml(n.reference_id || '')}"
+                 data-ref-type="${escNotifHtml(n.reference_type || '')}"
+                 data-type="${escNotifHtml(n.type || '')}"
+                 onclick="handleNotificationClick(event, ${n.id}, '${escNotifHtml(n.link || '')}', '${escNotifHtml(n.reference_id || '')}', '${escNotifHtml(n.reference_type || '')}', '${escNotifHtml(n.type || '')}')"
+                 role="button"
+                 tabindex="0">
+              ${getNotifIconMarkup(n.type)}
+              <div class="notif-content">
+                <div class="notif-title">${escNotifHtml(n.title)}</div>
+                <div class="notif-message">${escNotifHtml(n.message)}</div>
+                <div class="notif-time">${escNotifHtml(n.time_ago || '')}${n.formatted_date ? ' • ' + escNotifHtml(n.formatted_date) : ''}</div>
+              </div>
+              ${isUnread ? '<span class="notification-unread-dot" title="Unread"></span>' : ''}
+            </div>
+          `;
+        }).join('');
+
+        if (window.lucide && typeof window.lucide.createIcons === 'function') {
+          window.lucide.createIcons();
+        }
+      }
+
+      function ensureBellAlwaysInteractive() {
+        const bellBtn = document.getElementById('headerNotificationBtn');
+        if (!bellBtn) return;
+        bellBtn.disabled = false;
+        bellBtn.removeAttribute('disabled');
+        bellBtn.removeAttribute('aria-disabled');
+        bellBtn.style.pointerEvents = 'auto';
+        bellBtn.style.cursor = 'pointer';
+      }
+
+      window.loadNotifications = function(silent = false) {
+        if (notifFetchInFlight) return;
+        notifFetchInFlight = true;
+        fetch('api/notification_api.php?action=list', { cache: 'no-store' })
+          .then(res => {
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            return res.json();
+          })
+          .then(data => {
+            notifFetchInFlight = false;
+            if (data && data.status === 'success') {
+              renderNotificationListSafe(data);
+            } else {
+              renderFriendlyEmptyState();
+            }
+          })
+          .catch(err => {
+            notifFetchInFlight = false;
+            const listContainer = document.getElementById('notificationListContainer');
+            if (listContainer && !listContainer.querySelector('.notification-item')) {
+              renderFriendlyEmptyState();
+            }
+            if (!silent) console.warn('Notification load notice:', err);
+          });
+      };
+
+      window.closeNotificationPanel = function() {
+        const notifPanel = document.getElementById('notificationDropdown');
+        const bellBtn = document.getElementById('headerNotificationBtn');
+        if (notifPanel) notifPanel.classList.remove('show');
+        if (bellBtn) bellBtn.setAttribute('aria-expanded', 'false');
+      };
+
+      window.toggleNotificationPanel = function(e) {
+        if (e) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+        ensureBellAlwaysInteractive();
+
+        const settingsPanel = document.getElementById('settingsDropdown');
+        if (settingsPanel) settingsPanel.classList.remove('show');
+        if (typeof closeGlobalSearchDropdown === 'function') {
+          closeGlobalSearchDropdown();
+        }
+
+        const notifPanel = document.getElementById('notificationDropdown');
+        const bellBtn = document.getElementById('headerNotificationBtn');
+        if (!notifPanel) return;
+
+        const isShowing = notifPanel.classList.toggle('show');
+        if (bellBtn) bellBtn.setAttribute('aria-expanded', isShowing ? 'true' : 'false');
+
+        if (isShowing) {
+          const listContainer = document.getElementById('notificationListContainer');
+          if (listContainer && !listContainer.querySelector('.notification-item') && !listContainer.querySelector('.notification-empty-state')) {
+            renderFriendlyEmptyState();
+          }
+          window.loadNotifications(true);
+        }
+      };
+
+      document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') {
+          const notifPanel = document.getElementById('notificationDropdown');
+          if (notifPanel && notifPanel.classList.contains('show')) {
+            window.closeNotificationPanel();
+          }
+        }
+      });
+
+      document.addEventListener('click', function(e) {
+        const notifPanel = document.getElementById('notificationDropdown');
+        if (notifPanel && notifPanel.classList.contains('show')) {
+          if (!e.target.closest('#headerNotificationBtn') && !e.target.closest('#notificationDropdown')) {
+            window.closeNotificationPanel();
+          }
+        }
+      });
+
+      ensureBellAlwaysInteractive();
+      if (document.readyState !== 'loading') {
+        window.loadNotifications(true);
+      } else {
+        document.addEventListener('DOMContentLoaded', () => {
+          ensureBellAlwaysInteractive();
+          window.loadNotifications(true);
+        });
+      }
+    })();
+  </script>
 </body>
 </html>

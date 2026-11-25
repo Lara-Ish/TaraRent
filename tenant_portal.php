@@ -1173,14 +1173,46 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
         <!-- Upper Right: Notifications + Resident Profile Trigger with Dropdown Menu -->
         <div class="top-nav-right">
           <!-- Notification Bell Trigger and Dropdown Panel -->
-          <div class="header-notification-container" style="position: relative;">
-            <button type="button" class="header-notification-btn" id="headerNotificationBtn" onclick="toggleNotificationPanel(event)" title="Notifications" aria-label="Notifications">
+          <div class="header-notification-container" style="position: relative; z-index: 1250;">
+            <style>
+              .top-nav-bar:has(#notificationDropdown.show) { z-index: 1250 !important; }
+              #headerNotificationBtn {
+                position: relative !important;
+                z-index: 1255 !important;
+                cursor: pointer !important;
+                pointer-events: auto !important;
+                touch-action: manipulation;
+              }
+              #headerNotificationBtn i,
+              #headerNotificationBtn svg,
+              #headerNotificationBtn .notification-badge {
+                pointer-events: none !important;
+                cursor: pointer !important;
+              }
+              #notificationDropdown.notification-dropdown-panel {
+                z-index: 1260 !important;
+                pointer-events: auto !important;
+              }
+              #notificationDropdown.notification-dropdown-panel.show {
+                display: flex !important;
+                flex-direction: column;
+              }
+            </style>
+            <button type="button"
+                    class="header-notification-btn"
+                    id="headerNotificationBtn"
+                    onclick="toggleNotificationPanel(event)"
+                    title="Notifications"
+                    aria-label="Notifications"
+                    aria-haspopup="true"
+                    aria-expanded="false"
+                    aria-controls="notificationDropdown">
               <i data-lucide="bell" class="w-5 h-5" aria-hidden="true"></i>
               <span class="notification-badge" id="notificationBadge" style="display: none;">0</span>
             </button>
 
             <!-- Notification Dropdown Panel: Glassmorphism Design -->
-            <div class="clay-settings-dropdown notification-dropdown-panel" id="notificationDropdown">
+            <div class="clay-settings-dropdown notification-dropdown-panel" id="notificationDropdown" role="region" aria-label="Notifications">
               <div class="notification-panel-header">
                 <div class="notification-title-group" style="display: flex; align-items: center; gap: 8px;">
                   <h3 class="notification-heading">Notifications</h3>
@@ -1193,8 +1225,10 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
 
               <!-- Notification items container -->
               <div class="notification-items-scroll" id="notificationListContainer">
-                <div class="notification-loading-state" id="notificationLoading" style="padding: 24px; text-align: center; color: #64748b; font-size: 13px;">
-                  <span>Loading notifications...</span>
+                <div class="notification-empty-state" id="notificationEmptyFallback">
+                  <div class="empty-icon"><i data-lucide="bell-off" aria-hidden="true"></i></div>
+                  <h4>No Notifications Yet</h4>
+                  <p>You're all caught up! No new notifications at this time.</p>
                 </div>
               </div>
             </div>
@@ -1304,11 +1338,19 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
         <?php endif; ?>
 
         <!-- Dashboard Summary Cards (Horizontal Row) -->
+        <?php
+          $rentStatusCssClass = match (strtoupper((string)$rentStatusDisplay)) {
+            'OVERDUE' => 'status-overdue',
+            'PAID'    => 'status-paid',
+            'PENDING' => 'status-pending',
+            default   => 'status-unpaid',
+          };
+        ?>
         <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
           <!-- 1. Current Rent Status -->
           <div class="tenant-dash-summary-card">
             <div class="tenant-dash-card-title">CURRENT RENT STATUS</div>
-            <div class="tenant-dash-outlined-val"><?= htmlspecialchars($rentStatusDisplay) ?></div>
+            <div class="tenant-dash-outlined-val <?= $rentStatusCssClass ?>"><?= htmlspecialchars($rentStatusDisplay) ?></div>
             <div class="tenant-dash-card-bottom">
               <div>Due: <?= htmlspecialchars($shortDueDateDisplay) ?></div>
               <div>
@@ -1320,7 +1362,7 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
           <!-- 2. Active Maintenance -->
           <div class="tenant-dash-summary-card">
             <div class="tenant-dash-card-title">ACTIVE MAINTENANCE</div>
-            <div class="tenant-dash-outlined-val">( <?= (int)$activeTicketsCount ?> )</div>
+            <div class="tenant-dash-outlined-val">(<?= (int)$activeTicketsCount ?>)</div>
             <div class="tenant-dash-card-bottom">
               <button type="button" class="tenant-dash-card-link" onclick="switchTenantSection('tenantMaintenance', document.getElementById('navTenantMaintenance'))">Submit Report or Maintenance</button>
             </div>
@@ -1329,7 +1371,7 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
           <!-- 3. Resolved Repairs -->
           <div class="tenant-dash-summary-card">
             <div class="tenant-dash-card-title">RESOLVED REPAIRS</div>
-            <div class="tenant-dash-outlined-val">( <?= (int)$resolvedTicketsCount ?> )</div>
+            <div class="tenant-dash-outlined-val">(<?= (int)$resolvedTicketsCount ?>)</div>
             <div class="tenant-dash-card-bottom">
               <div>Due: <?= htmlspecialchars($shortDueDateDisplay) ?></div>
               <div>
@@ -8202,5 +8244,207 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
   </script>
   <!-- Real-time Centralized Notification Client Handler -->
   <script src="assets/js/notifications.js"></script>
+  <script>
+    (function() {
+      let notifFetchInFlight = false;
+
+      function escNotifHtml(str) {
+        if (!str) return '';
+        return String(str)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#039;');
+      }
+
+      function getNotifIconMarkup(type) {
+        switch (type) {
+          case 'payment':
+            return '<div class="notif-icon-circle notif-icon-payment"><i data-lucide="receipt" aria-hidden="true"></i></div>';
+          case 'maintenance':
+            return '<div class="notif-icon-circle notif-icon-maintenance"><i data-lucide="wrench" aria-hidden="true"></i></div>';
+          case 'announcement':
+            return '<div class="notif-icon-circle notif-icon-announcement"><i data-lucide="bell" aria-hidden="true"></i></div>';
+          case 'account':
+          default:
+            return '<div class="notif-icon-circle notif-icon-account"><i data-lucide="user-round" aria-hidden="true"></i></div>';
+        }
+      }
+
+      function renderFriendlyEmptyState() {
+        const listContainer = document.getElementById('notificationListContainer');
+        if (!listContainer) return;
+        listContainer.innerHTML = `
+          <div class="notification-empty-state">
+            <div class="empty-icon"><i data-lucide="bell-off" aria-hidden="true"></i></div>
+            <h4>No Notifications Yet</h4>
+            <p>You're all caught up! No new notifications at this time.</p>
+          </div>
+        `;
+        if (window.lucide && typeof window.lucide.createIcons === 'function') {
+          window.lucide.createIcons();
+        }
+      }
+
+      function renderNotificationListSafe(data) {
+        const unreadCount = parseInt((data && data.unread_count) || 0, 10) || 0;
+        const badge = document.getElementById('notificationBadge');
+        const unreadPill = document.getElementById('notificationUnreadPill');
+        const listContainer = document.getElementById('notificationListContainer');
+
+        if (badge) {
+          if (unreadCount > 0) {
+            badge.textContent = unreadCount > 99 ? '99+' : String(unreadCount);
+            badge.style.display = 'flex';
+          } else {
+            badge.style.display = 'none';
+          }
+        }
+
+        if (unreadPill) {
+          if (unreadCount > 0) {
+            unreadPill.textContent = `${unreadCount} new`;
+            unreadPill.style.display = 'inline-block';
+          } else {
+            unreadPill.style.display = 'none';
+          }
+        }
+
+        if (!listContainer) return;
+        const items = (data && Array.isArray(data.notifications)) ? data.notifications : [];
+        if (items.length === 0) {
+          renderFriendlyEmptyState();
+          return;
+        }
+
+        listContainer.innerHTML = items.map(n => {
+          const isUnread = parseInt(n.is_read, 10) === 0;
+          return `
+            <div class="notification-item ${isUnread ? 'unread' : 'read'}"
+                 data-id="${n.id}"
+                 data-link="${escNotifHtml(n.link || '')}"
+                 data-ref-id="${escNotifHtml(n.reference_id || '')}"
+                 data-ref-type="${escNotifHtml(n.reference_type || '')}"
+                 data-type="${escNotifHtml(n.type || '')}"
+                 onclick="handleNotificationClick(event, ${n.id}, '${escNotifHtml(n.link || '')}', '${escNotifHtml(n.reference_id || '')}', '${escNotifHtml(n.reference_type || '')}', '${escNotifHtml(n.type || '')}')"
+                 role="button"
+                 tabindex="0">
+              ${getNotifIconMarkup(n.type)}
+              <div class="notif-content">
+                <div class="notif-title">${escNotifHtml(n.title)}</div>
+                <div class="notif-message">${escNotifHtml(n.message)}</div>
+                <div class="notif-time">${escNotifHtml(n.time_ago || '')}${n.formatted_date ? ' • ' + escNotifHtml(n.formatted_date) : ''}</div>
+              </div>
+              ${isUnread ? '<span class="notification-unread-dot" title="Unread"></span>' : ''}
+            </div>
+          `;
+        }).join('');
+
+        if (window.lucide && typeof window.lucide.createIcons === 'function') {
+          window.lucide.createIcons();
+        }
+      }
+
+      function ensureBellAlwaysInteractive() {
+        const bellBtn = document.getElementById('headerNotificationBtn');
+        if (!bellBtn) return;
+        bellBtn.disabled = false;
+        bellBtn.removeAttribute('disabled');
+        bellBtn.removeAttribute('aria-disabled');
+        bellBtn.style.pointerEvents = 'auto';
+        bellBtn.style.cursor = 'pointer';
+      }
+
+      window.loadNotifications = function(silent = false) {
+        if (notifFetchInFlight) return;
+        notifFetchInFlight = true;
+        fetch('api/notification_api.php?action=list', { cache: 'no-store' })
+          .then(res => {
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            return res.json();
+          })
+          .then(data => {
+            notifFetchInFlight = false;
+            if (data && data.status === 'success') {
+              renderNotificationListSafe(data);
+            } else {
+              renderFriendlyEmptyState();
+            }
+          })
+          .catch(err => {
+            notifFetchInFlight = false;
+            const listContainer = document.getElementById('notificationListContainer');
+            if (listContainer && !listContainer.querySelector('.notification-item')) {
+              renderFriendlyEmptyState();
+            }
+            if (!silent) console.warn('Notification load notice:', err);
+          });
+      };
+
+      window.closeNotificationPanel = function() {
+        const notifPanel = document.getElementById('notificationDropdown');
+        const bellBtn = document.getElementById('headerNotificationBtn');
+        if (notifPanel) notifPanel.classList.remove('show');
+        if (bellBtn) bellBtn.setAttribute('aria-expanded', 'false');
+      };
+
+      window.toggleNotificationPanel = function(e) {
+        if (e) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+        ensureBellAlwaysInteractive();
+
+        const settingsPanel = document.getElementById('settingsDropdown');
+        if (settingsPanel) settingsPanel.classList.remove('show');
+        const tenantSearchDropdown = document.getElementById('tenantSearchDropdown');
+        if (tenantSearchDropdown) tenantSearchDropdown.classList.remove('open');
+
+        const notifPanel = document.getElementById('notificationDropdown');
+        const bellBtn = document.getElementById('headerNotificationBtn');
+        if (!notifPanel) return;
+
+        const isShowing = notifPanel.classList.toggle('show');
+        if (bellBtn) bellBtn.setAttribute('aria-expanded', isShowing ? 'true' : 'false');
+
+        if (isShowing) {
+          const listContainer = document.getElementById('notificationListContainer');
+          if (listContainer && !listContainer.querySelector('.notification-item') && !listContainer.querySelector('.notification-empty-state')) {
+            renderFriendlyEmptyState();
+          }
+          window.loadNotifications(true);
+        }
+      };
+
+      document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') {
+          const notifPanel = document.getElementById('notificationDropdown');
+          if (notifPanel && notifPanel.classList.contains('show')) {
+            window.closeNotificationPanel();
+          }
+        }
+      });
+
+      document.addEventListener('click', function(e) {
+        const notifPanel = document.getElementById('notificationDropdown');
+        if (notifPanel && notifPanel.classList.contains('show')) {
+          if (!e.target.closest('#headerNotificationBtn') && !e.target.closest('#notificationDropdown')) {
+            window.closeNotificationPanel();
+          }
+        }
+      });
+
+      ensureBellAlwaysInteractive();
+      if (document.readyState !== 'loading') {
+        window.loadNotifications(true);
+      } else {
+        document.addEventListener('DOMContentLoaded', () => {
+          ensureBellAlwaysInteractive();
+          window.loadNotifications(true);
+        });
+      }
+    })();
+  </script>
 </body>
 </html>

@@ -35,6 +35,34 @@ if (!Auth::isLandlord()) {
 
 $pdo = Database::getConnection();
 
+/**
+ * Resolve a tenant's uploaded profile picture path or URL if it exists.
+ * Returns empty string when no valid image exists so callers can render the fallback initial.
+ */
+function resolveDirectoryAvatarUrl(?string $profilePicture): string
+{
+    $pic = trim((string)($profilePicture ?? ''));
+    if ($pic === '') {
+        return '';
+    }
+    if (str_starts_with($pic, 'http://') || str_starts_with($pic, 'https://')) {
+        return $pic;
+    }
+
+    $rootDir = dirname(__DIR__);
+    $clean = ltrim(str_replace('\\', '/', $pic), '/');
+    if ($clean !== '' && is_file($rootDir . '/' . $clean)) {
+        return $clean;
+    }
+
+    $avatarRel = 'uploads/avatars/' . basename($clean);
+    if (is_file($rootDir . '/' . $avatarRel)) {
+        return $avatarRel;
+    }
+
+    return '';
+}
+
 try {
     // -------------------------------------------------------------------------
     // 1. GET: Fetch Tenants Grouped by the 3 Units OR Fetch Archived Tenants
@@ -122,6 +150,7 @@ try {
             $rawVStatus = strtolower(trim((string)($tenant['verification_status'] ?? 'unverified')));
             $isVerifiedTenant = filter_var($tenant['is_verified'] ?? false, FILTER_VALIDATE_BOOLEAN) && ($rawVStatus === 'verified');
             $tenant['is_verified'] = $isVerifiedTenant ? 1 : 0;
+            $tenant['avatar_url'] = resolveDirectoryAvatarUrl($tenant['profile_picture'] ?? null);
             if (!$isVerifiedTenant) {
                 $tenant['id_type'] = null;
                 $tenant['id_photo_filename'] = null;
@@ -240,6 +269,7 @@ try {
             $rawVStatus = strtolower(trim((string)($tenant['verification_status'] ?? 'unverified')));
             $isVerifiedTenant = filter_var($tenant['is_verified'] ?? false, FILTER_VALIDATE_BOOLEAN) && ($rawVStatus === 'verified');
             $tenant['is_verified'] = $isVerifiedTenant ? 1 : 0;
+            $tenant['avatar_url'] = resolveDirectoryAvatarUrl($tenant['profile_picture'] ?? null);
             if (!$isVerifiedTenant) {
                 $tenant['id_type'] = null;
                 $tenant['id_photo_filename'] = null;
@@ -362,7 +392,7 @@ try {
                    u.birthday, u.emergency_contact, u.emergency_contact_name,
                    u.emergency_contact_relationship, u.emergency_contact_phone,
                    u.move_in_date, u.move_out_date, u.rental_status,
-                   u.total_occupants, u.adults_count, u.kids_count, u.created_at,
+                   u.total_occupants, u.adults_count, u.kids_count, u.created_at, u.profile_picture,
                    COALESCE(un.unit_number, u.archived_unit_number, 'Moved Out') AS unit_number, 
                    COALESCE(un.monthly_rent, u.archived_monthly_rent, 0.00) AS monthly_rent
             FROM users u
@@ -433,6 +463,8 @@ try {
                 'adults_count'                   => (int)($t['adults_count'] ?? 1),
                 'kids_count'                     => (int)($t['kids_count'] ?? 0),
                 'created_at'                     => $t['created_at'],
+                'profile_picture'                => $t['profile_picture'] ?: null,
+                'avatar_url'                     => resolveDirectoryAvatarUrl($t['profile_picture'] ?? null),
                 'is_paid_up'                     => $isPaidUp,
                 'settlement'                     => $settlement
             ];
