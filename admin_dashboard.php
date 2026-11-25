@@ -160,6 +160,27 @@ foreach ($allTenants as $t) {
     }
     $t['avatar_url'] = $resolvedAvatar;
 
+    // Resolve uploaded Valid ID image path if tenant is verified
+    $resolvedIdUrl = '';
+    if ($t['is_verified'] === 1 && !empty($t['id_photo_filename'])) {
+        $rawId = trim((string)$t['id_photo_filename']);
+        if (str_starts_with($rawId, 'http://') || str_starts_with($rawId, 'https://')) {
+            $resolvedIdUrl = $rawId;
+        } else {
+            $cleanId = ltrim(str_replace('\\', '/', $rawId), '/');
+            $baseId = basename($cleanId);
+            foreach (array_filter([$cleanId, 'uploads/id_verifications/' . $baseId, 'uploads/id_photos/' . $baseId, 'uploads/' . $baseId]) as $relId) {
+                if (is_file(__DIR__ . '/' . $relId) && filesize(__DIR__ . '/' . $relId) > 0) {
+                    $resolvedIdUrl = $relId;
+                    break;
+                }
+            }
+        }
+    } else {
+        $t['id_photo_filename'] = null;
+    }
+    $t['id_photo_url'] = $resolvedIdUrl;
+
     if ($uId > 0 && ($t['rental_status'] ?? 'active') !== 'moved_out' && isset($unitsWithTenants[$uId])) {
         $unitsWithTenants[$uId]['tenants'][] = $t;
     }
@@ -2969,8 +2990,25 @@ try {
               <button type="button" onclick="closeModal('modalAdminProfileId')" style="background: none; border: none; font-size: 20px; cursor: pointer; color: #1E160E; font-weight: bold; line-height: 1;">✕</button>
             </div>
             <div style="text-align: center; padding: 24px 16px; background: #DECBB3; border-radius: 14px;">
-              <?php if (!empty($user['id_photo_filename']) && file_exists(__DIR__ . '/uploads/id_verifications/' . $user['id_photo_filename'])): ?>
-                <img src="uploads/id_verifications/<?= htmlspecialchars($user['id_photo_filename']) ?>" alt="Admin ID Photo" style="max-width: 100%; max-height: 320px; border-radius: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
+              <?php
+                $adminIdSrc = '';
+                if (!empty($user['id_photo_filename'])) {
+                    $rawAdminId = trim((string)$user['id_photo_filename']);
+                    if (str_starts_with($rawAdminId, 'http://') || str_starts_with($rawAdminId, 'https://')) {
+                        $adminIdSrc = $rawAdminId;
+                    } elseif (is_file(__DIR__ . '/' . ltrim($rawAdminId, '/'))) {
+                        $adminIdSrc = ltrim($rawAdminId, '/');
+                    } elseif (is_file(__DIR__ . '/uploads/id_verifications/' . basename($rawAdminId))) {
+                        $adminIdSrc = 'uploads/id_verifications/' . basename($rawAdminId);
+                    }
+                }
+              ?>
+              <?php if ($adminIdSrc !== ''): ?>
+                <img src="<?= htmlspecialchars($adminIdSrc) ?>" alt="Admin ID Photo" style="max-width: 100%; max-height: 75vh; object-fit: contain; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);" onerror="this.style.display='none';if(this.nextElementSibling)this.nextElementSibling.style.display='block';">
+                <div style="display: none;">
+                  <div style="font-size: 42px; margin-bottom: 10px;">🛡️</div>
+                  <div style="font-size: 16px; font-weight: 800; color: #1E160E;">No valid ID photo available</div>
+                </div>
               <?php else: ?>
                 <div style="font-size: 42px; margin-bottom: 10px;">🛡️</div>
                 <div style="font-size: 16px; font-weight: 800; color: #1E160E;">Verified Property Administrator</div>
@@ -3941,9 +3979,9 @@ try {
         </button>
       </div>
       <div id="viewIdModalBody" class="text-center p-2">
-        <img id="viewIdModalImg" src="" alt="Valid ID" class="max-w-full max-h-[70vh] rounded-lg mx-auto object-contain shadow-sm" style="max-width: 100%; max-height: 70vh; border-radius: 12px; margin: 0 auto; display: block;">
-        <div id="viewIdModalEmpty" class="hidden py-10 text-gray-400 text-sm font-medium" style="display: none; padding: 40px 0; color: #94a3b8; font-size: 14px;">
-          No valid ID photo uploaded yet.
+        <img id="viewIdModalImg" src="" alt="Valid ID" class="max-w-full max-h-[75vh] rounded-lg mx-auto object-contain shadow-sm" style="max-width: 100%; max-height: 75vh; object-fit: contain; border-radius: 8px; margin: 0 auto; display: block;">
+        <div id="viewIdModalEmpty" class="hidden py-10 text-gray-500 text-sm font-semibold" style="display: none; padding: 40px 16px; color: #5C462D; font-size: 14px; font-weight: 600;">
+          No valid ID photo available.
         </div>
       </div>
     </div>
@@ -5864,7 +5902,26 @@ try {
     // - Bottom Cards: Tenant Identification Information & Billing Information.
     // =========================================================================
     window.currentActiveTenantIdPhoto = null;
+    window.currentActiveTenantIdPhotoUrl = null;
     window.currentActiveTenantReceiptPhoto = null;
+
+    function resolveTenantIdImageUrl(rawFilename, resolvedUrl) {
+      if (typeof resolvedUrl === 'string' && resolvedUrl.trim() !== '') {
+        return resolvedUrl.trim();
+      }
+      if (resolvedUrl === '') {
+        return '';
+      }
+      const raw = String(rawFilename || '').trim();
+      if (!raw) return '';
+      if (raw.startsWith('http://') || raw.startsWith('https://') || raw.startsWith('/')) {
+        return raw;
+      }
+      if (raw.startsWith('uploads/')) {
+        return raw;
+      }
+      return 'uploads/id_verifications/' + encodeURIComponent(raw);
+    }
 
     function viewTenantIdImage() {
       if (!window.currentActiveTenantIdPhoto || window.currentActiveTenantIdPhoto.trim() === '') {
@@ -5875,9 +5932,40 @@ try {
       const img = document.getElementById('viewIdModalImg');
       const empty = document.getElementById('viewIdModalEmpty');
       if (!m || !img) return;
-      img.src = 'uploads/id_verifications/' + encodeURIComponent(window.currentActiveTenantIdPhoto);
+
+      const showMissingFallback = () => {
+        img.onerror = null;
+        img.onload = null;
+        img.removeAttribute('src');
+        img.style.display = 'none';
+        if (empty) {
+          empty.classList.remove('hidden');
+          empty.style.display = 'block';
+        }
+      };
+
+      const resolvedSrc = resolveTenantIdImageUrl(window.currentActiveTenantIdPhoto, window.currentActiveTenantIdPhotoUrl);
+      if (!resolvedSrc) {
+        showMissingFallback();
+        openModal('viewIdImageModal');
+        if (window.lucide && typeof window.lucide.createIcons === 'function') window.lucide.createIcons();
+        return;
+      }
+
+      img.onerror = showMissingFallback;
+      img.onload = () => {
+        img.style.display = 'block';
+        if (empty) {
+          empty.classList.add('hidden');
+          empty.style.display = 'none';
+        }
+      };
+      img.src = resolvedSrc;
       img.style.display = 'block';
-      if (empty) empty.style.display = 'none';
+      if (empty) {
+        empty.classList.add('hidden');
+        empty.style.display = 'none';
+      }
       openModal('viewIdImageModal');
       if (window.lucide && typeof window.lucide.createIcons === 'function') window.lucide.createIcons();
     }
@@ -5905,6 +5993,7 @@ try {
 
       // Cache files for lightbox viewers
       window.currentActiveTenantIdPhoto = t.id_photo_filename || null;
+      window.currentActiveTenantIdPhotoUrl = Object.prototype.hasOwnProperty.call(t, 'id_photo_url') ? (t.id_photo_url || '') : undefined;
       window.currentActiveTenantReceiptPhoto = null;
 
       // 1. Resolve Unit information (Unit Number, Subunit 1 BR | 1 CR, Occupancy)
@@ -6105,6 +6194,7 @@ try {
             </div>
           `;
           window.currentActiveTenantIdPhoto = t.id_photo_filename;
+          window.currentActiveTenantIdPhotoUrl = Object.prototype.hasOwnProperty.call(t, 'id_photo_url') ? (t.id_photo_url || '') : undefined;
           if (window.lucide && typeof window.lucide.createIcons === 'function') window.lucide.createIcons();
         } else {
           // Unverified / Pending Fallback: Grayed-out placeholder, NO <a> tags, NO triggers
@@ -6122,6 +6212,7 @@ try {
             </div>
           `;
           window.currentActiveTenantIdPhoto = null;
+          window.currentActiveTenantIdPhotoUrl = null;
         }
       }
 
@@ -6186,6 +6277,7 @@ try {
                 const liveVerified = (parseInt(data.tenant.is_verified, 10) === 1) && ((data.tenant.verification_status || '').toLowerCase() === 'verified');
                 if (liveVerified && data.tenant.id_photo_filename && data.tenant.id_type) {
                   window.currentActiveTenantIdPhoto = data.tenant.id_photo_filename;
+                  window.currentActiveTenantIdPhotoUrl = Object.prototype.hasOwnProperty.call(data.tenant, 'id_photo_url') ? (data.tenant.id_photo_url || '') : undefined;
                   if (idDetailsContainer) {
                     idDetailsContainer.innerHTML = `
                       <div id="tdModalVerifiedIdSection" class="td-verified-id-box">
@@ -6224,6 +6316,7 @@ try {
                   }
                 } else {
                   window.currentActiveTenantIdPhoto = null;
+                  window.currentActiveTenantIdPhotoUrl = null;
                   const liveVStatus = (data.tenant.verification_status || 'unverified').toLowerCase();
                   if (idDetailsContainer) {
                     const placeholderText = (liveVStatus === 'pending' || liveVStatus === 'pending_liveness')

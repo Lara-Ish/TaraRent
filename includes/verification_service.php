@@ -2076,25 +2076,68 @@ class VerificationService
      */
     public static function compareFacesWithFacePlusPlus(string $idFilePath, string $liveFaceFilePath): array
     {
-        if (!file_exists($idFilePath) || !file_exists($liveFaceFilePath)) {
+        $downloadedTempFiles = [];
+        $cleanupTempDownloads = function () use (&$downloadedTempFiles) {
+            foreach ($downloadedTempFiles as $tmp) {
+                if (is_string($tmp) && file_exists($tmp)) {
+                    @unlink($tmp);
+                }
+            }
+        };
+
+        $resolveLocalOrRemoteImage = function (string $source) use (&$downloadedTempFiles): ?string {
+            $src = trim($source);
+            if ($src === '') {
+                return null;
+            }
+            if (str_starts_with($src, 'http://') || str_starts_with($src, 'https://')) {
+                $ch = curl_init($src);
+                curl_setopt_array($ch, [
+                    CURLOPT_RETURNTRANSFER => true,
+                    CURLOPT_FOLLOWLOCATION => true,
+                    CURLOPT_TIMEOUT        => 20,
+                    CURLOPT_SSL_VERIFYPEER => false,
+                ]);
+                $bytes = curl_exec($ch);
+                $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                curl_close($ch);
+
+                if ($httpCode >= 200 && $httpCode < 300 && is_string($bytes) && strlen($bytes) > 200) {
+                    $tmpPath = tempnam(sys_get_temp_dir(), 'rc_face_');
+                    if ($tmpPath !== false && file_put_contents($tmpPath, $bytes) !== false) {
+                        $downloadedTempFiles[] = $tmpPath;
+                        return $tmpPath;
+                    }
+                }
+                return null;
+            }
+            return (is_file($src) && filesize($src) > 0) ? $src : null;
+        };
+
+        $localIdPath = $resolveLocalOrRemoteImage($idFilePath);
+        $localLivePath = $resolveLocalOrRemoteImage($liveFaceFilePath);
+
+        if (!$localIdPath || !$localLivePath) {
+            $cleanupTempDownloads();
             return [
                 'success' => false,
                 'is_match' => false,
+                'error_code' => 'MISSING_IMAGE',
                 'error' => 'One or both verification image files could not be found on the server.'
             ];
         }
 
         // Determine MIME types
         $finfo = finfo_open(FILEINFO_MIME_TYPE);
-        $idMime = finfo_file($finfo, $idFilePath) ?: 'image/jpeg';
-        $liveMime = finfo_file($finfo, $liveFaceFilePath) ?: 'image/jpeg';
+        $idMime = finfo_file($finfo, $localIdPath) ?: 'image/jpeg';
+        $liveMime = finfo_file($finfo, $localLivePath) ?: 'image/jpeg';
         finfo_close($finfo);
 
         $postData = [
             'api_key' => FACEPP_API_KEY,
             'api_secret' => FACEPP_API_SECRET,
-            'image_file1' => new CURLFile($idFilePath, $idMime, basename($idFilePath)),
-            'image_file2' => new CURLFile($liveFaceFilePath, $liveMime, basename($liveFaceFilePath)),
+            'image_file1' => new CURLFile($localIdPath, $idMime, basename($localIdPath)),
+            'image_file2' => new CURLFile($localLivePath, $liveMime, basename($localLivePath)),
         ];
 
         $maxRetries = 2;
@@ -2133,9 +2176,11 @@ class VerificationService
                 curl_close($ch);
 
                 if ($curlErr) {
+                    $cleanupTempDownloads();
                     return [
                         'success' => false,
                         'is_match' => false,
+                        'error_code' => 'NETWORK_ERROR',
                         'error' => 'Network error connecting to Face++ Biometric API: ' . $curlErr
                     ];
                 }
@@ -2151,10 +2196,13 @@ class VerificationService
             }
         }
 
+        $cleanupTempDownloads();
+
         if (!is_array($data)) {
             return [
                 'success' => false,
                 'is_match' => false,
+                'error_code' => 'INVALID_RESPONSE',
                 'error' => 'Invalid or unparseable response from Face++ API.'
             ];
         }
@@ -2166,6 +2214,7 @@ class VerificationService
                 return [
                     'success' => false,
                     'is_match' => false,
+                    'error_code' => 'NO_FACE_REF',
                     'error' => 'No human face detected on your uploaded ID image. Please ensure your ID photo is sharp, well-lit, and clearly displays your face.'
                 ];
             }
@@ -2173,19 +2222,22 @@ class VerificationService
                 return [
                     'success' => false,
                     'is_match' => false,
-                    'error' => 'No human face detected in your live webcam snapshot. Please position your face directly in front of the camera with good lighting and retake.'
+                    'error_code' => 'NO_FACE_LIVE',
+                    'error' => 'No face detected in camera. Please face the camera directly in good lighting.'
                 ];
             }
             if (str_contains($errMsg, 'IMAGE_ERROR_UNSUPPORTED_FORMAT')) {
                 return [
                     'success' => false,
                     'is_match' => false,
+                    'error_code' => 'UNSUPPORTED_FORMAT',
                     'error' => 'The uploaded image format is unsupported or corrupted. Please upload a standard JPG, PNG, or WEBP image.'
                 ];
             }
             return [
                 'success' => false,
                 'is_match' => false,
+                'error_code' => 'FACEPP_API_ERROR',
                 'error' => 'Face++ API error: ' . $errMsg
             ];
         }
@@ -2198,6 +2250,7 @@ class VerificationService
             return [
                 'success' => false,
                 'is_match' => false,
+                'error_code' => 'NO_FACE_REF',
                 'error' => 'No human face detected on your uploaded ID image. Please upload a valid ID with a clear photo of your face.'
             ];
         }
@@ -2206,7 +2259,8 @@ class VerificationService
             return [
                 'success' => false,
                 'is_match' => false,
-                'error' => 'No human face detected in your live webcam snapshot. Please position your face clearly in front of the camera.'
+                'error_code' => 'NO_FACE_LIVE',
+                'error' => 'No face detected in camera. Please face the camera directly in good lighting.'
             ];
         }
 
@@ -2214,12 +2268,14 @@ class VerificationService
             return [
                 'success' => false,
                 'is_match' => false,
+                'error_code' => 'NO_CONFIDENCE',
                 'error' => 'Face biometric comparison could not be completed. Please ensure both faces are clearly visible.'
             ];
         }
 
         $confidence = (float)$data['confidence'];
         $thresholds = isset($data['thresholds']) && is_array($data['thresholds']) ? $data['thresholds'] : [];
+        $threshold1e3 = isset($thresholds['1e-3']) ? (float)$thresholds['1e-3'] : 62.3;
         $threshold1e4 = isset($thresholds['1e-4']) ? (float)$thresholds['1e-4'] : 69.1;
         $threshold1e5 = isset($thresholds['1e-5']) ? (float)$thresholds['1e-5'] : 73.9;
 
@@ -2232,6 +2288,7 @@ class VerificationService
                 'success' => true,
                 'is_match' => false,
                 'confidence' => $confidence,
+                'threshold_1e3' => $threshold1e3,
                 'threshold_1e4' => $threshold1e4,
                 'threshold_1e5' => $threshold1e5,
                 'error' => 'Verification Failed: Face scan does not match the ID photo.'
@@ -2242,6 +2299,7 @@ class VerificationService
             'success' => true,
             'is_match' => true,
             'confidence' => $confidence,
+            'threshold_1e3' => $threshold1e3,
             'threshold_1e4' => $threshold1e4,
             'threshold_1e5' => $threshold1e5,
             'error' => null

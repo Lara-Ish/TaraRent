@@ -320,6 +320,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     let livenessTurnDirection = '';
     let isFaceDetectionActive = false;
     let faceDetectionTimerId = null;
+    let consecutiveNoFaceFrames = 0;
 
     /**
      * Euclidean distance between two 2D points: sqrt((x1 - x2)^2 + (y1 - y2)^2)
@@ -406,11 +407,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       livenessHeadState = 'INITIAL';
       livenessOpenFrames = 0;
       livenessCenterFrames = 0;
+      consecutiveNoFaceFrames = 0;
       livenessTurnDirection = '';
       isCaptured = false;
       isVerifying = false;
       hideSpoofWarning();
-      updateStatusBadge('scan-face', 'Look directly at camera to start', 'normal');
+      updateStatusBadge('scan-face', 'Detecting face...', 'normal');
     }
 
     /**
@@ -482,8 +484,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         isCaptured = false;
         resetLivenessAntiSpoofingState();
 
-        // Preload models before running automated detection
-        await ensureFaceApiModelsLoaded();
+        // Preload models completely before starting automated detection
+        updateStatusBadge('clock', 'Loading face detection models...', 'normal');
+        const modelsReady = await ensureFaceApiModelsLoaded();
+        if (!modelsReady) {
+          updateStatusBadge('alert-triangle', 'Face models unavailable', 'normal');
+          showFaceLoginAlert('Unable to load face detection models. Please refresh the page or log in with your password.');
+          return;
+        }
+
+        updateStatusBadge('scan-face', 'Detecting face...', 'normal');
 
         // Automatically start non-blocking tracking loop
         startFaceDetectionLoop();
@@ -568,7 +578,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       }
 
       if (!detection || !detection.landmarks) {
-        updateStatusBadge('scan-face', 'Look directly at camera to start', 'normal');
+        consecutiveNoFaceFrames++;
+        if (consecutiveNoFaceFrames >= 15) {
+          updateStatusBadge('scan-face', 'No face detected in camera. Please face the camera directly in good lighting.', 'normal');
+        } else {
+          updateStatusBadge('scan-face', 'Detecting face...', 'normal');
+        }
         return;
       }
 
@@ -576,9 +591,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         (typeof detection.landmarks.getPositions === 'function' ? detection.landmarks.getPositions() : null);
 
       if (!landmarks || landmarks.length < 68) {
-        updateStatusBadge('scan-face', 'Look directly at camera to start', 'normal');
+        consecutiveNoFaceFrames++;
+        updateStatusBadge('scan-face', 'Detecting face...', 'normal');
         return;
       }
+
+      consecutiveNoFaceFrames = 0;
 
       // 1. Calculate Eye Aspect Ratio (EAR) using 68 facial landmarks
       // Left eye landmarks: 36, 37, 38, 39, 40, 41
@@ -683,9 +701,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } else if (livenessHeadState === 'TURNED_AWAY') {
           updateStatusBadge('refresh-cw', 'Head turn detected! Return to center...', 'challenge');
         } else if (livenessBlinkState === 'OPEN_OBSERVED' || livenessHeadState === 'CENTER_OBSERVED') {
-          updateStatusBadge('eye', 'Blink your eyes or turn your head slightly', 'challenge');
+          updateStatusBadge('eye', 'Looking good, hold still or blink slightly...', 'challenge');
         } else {
-          updateStatusBadge('scan-face', 'Look directly at camera to start', 'normal');
+          updateStatusBadge('scan-face', 'Detecting face...', 'normal');
         }
       }
     }
@@ -720,7 +738,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
       const base64Data = captureCanvas.toDataURL('image/jpeg', 0.92);
 
-      updateStatusBadge('clock', 'Verifying...', 'verifying');
+      updateStatusBadge('clock', 'Matching...', 'verifying');
 
       try {
         const response = await fetch('login_face_verify.php', {
@@ -749,7 +767,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
           }, 800);
         } else {
           // Rejection / No match: display timed notification
-          const errMsg = result.message || 'Face not recognized. Please try again or use your password.';
+          const errMsg = result.message || 'Face not recognized. Please try again or log in with your password.';
           handleFaceVerificationFailure(errMsg);
         }
       } catch (err) {

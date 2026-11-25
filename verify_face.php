@@ -647,6 +647,19 @@ if ($isConfidenceMatch) {
     $idTypeToSave = !empty($idType) ? $idType : ($accountUser['pending_id_type'] ?? ($accountUser['id_type'] ?? null));
     $notes = sprintf('Face++ Verified: confidence %.2f%% (baseline >= 70.00%%, threshold 1e-4: %.2f%%). Auto-capture liveness verified.', $confidence, $threshold1e4);
 
+    // Sync verified live face snapshot to Supabase Storage while retaining local file fallback
+    $liveFaceStoragePath = basename($liveFacePath);
+    try {
+        if (function_exists('uploadToSupabaseStorage')) {
+            $publicLiveUrl = uploadToSupabaseStorage($liveFacePath, $liveFaceStoragePath, 'id_verifications');
+            if (!empty($publicLiveUrl) && is_string($publicLiveUrl)) {
+                $liveFaceStoragePath = $publicLiveUrl;
+            }
+        }
+    } catch (\Throwable $liveUploadEx) {
+        error_log('[Verify Face] Cloud live photo upload notice: ' . $liveUploadEx->getMessage());
+    }
+
     $updateStmt = $pdo->prepare("
         UPDATE users 
         SET is_verified = TRUE,
@@ -668,7 +681,7 @@ if ($isConfidenceMatch) {
         ':id_type' => $idTypeToSave,
         ':id_photo' => $idFilenameToSave,
         ':id_photo_back' => $idBackFilenameToSave,
-        ':live_face' => basename($liveFacePath),
+        ':live_face' => $liveFaceStoragePath,
         ':notes' => $notes,
         ':id' => $userId
     ]);
@@ -676,6 +689,7 @@ if ($isConfidenceMatch) {
     if (isset($_SESSION['user'])) {
         $_SESSION['user']['is_verified'] = 1;
         $_SESSION['user']['verification_status'] = 'verified';
+        $_SESSION['user']['live_photo_filename'] = $liveFaceStoragePath;
         if ($idTypeToSave) $_SESSION['user']['id_type'] = $idTypeToSave;
         if ($idFilenameToSave) $_SESSION['user']['id_photo_filename'] = $idFilenameToSave;
         if ($idBackFilenameToSave) $_SESSION['user']['id_photo_back_filename'] = $idBackFilenameToSave;

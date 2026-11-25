@@ -181,10 +181,10 @@ if (isset($_SERVER['HTTP_X_MOCK_FACE_USER'])) {
 }
 
 // 5. 1:N Biometric Matching with Stored Verified Photos via Face++
-// Retrieve active verified user accounts who have stored face photos
+// Retrieve active verified user accounts who have stored face photos or profile avatars
 $stmt = $pdo->query("
     SELECT u.id, u.username, u.name, u.email, u.role, u.phone, u.unit_id,
-           u.verification_status, u.is_verified, u.live_photo_filename, u.id_photo_filename,
+           u.verification_status, u.is_verified, u.live_photo_filename, u.id_photo_filename, u.profile_picture,
            un.unit_number
     FROM users u
     LEFT JOIN units un ON u.unit_id = un.id
@@ -193,39 +193,80 @@ $stmt = $pdo->query("
       AND u.deleted_at IS NULL
       AND (u.rental_status != 'archived' OR u.rental_status IS NULL)
       AND (u.is_verified = TRUE OR u.verification_status = 'verified')
-      AND (u.live_photo_filename IS NOT NULL OR u.id_photo_filename IS NOT NULL)
+      AND (u.live_photo_filename IS NOT NULL OR u.id_photo_filename IS NOT NULL OR u.profile_picture IS NOT NULL)
     ORDER BY u.id_verified_at DESC, u.id DESC
 ");
 $candidates = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
+$resolveCandidatePhotoSource = function (?string $rawVal, array $subfolders): ?string {
+    $val = trim((string)($rawVal ?? ''));
+    if ($val === '') {
+        return null;
+    }
+    if (str_starts_with($val, 'http://') || str_starts_with($val, 'https://')) {
+        return $val;
+    }
+    $clean = ltrim(str_replace('\\', '/', $val), '/');
+    $base = basename($clean);
+    $searchPaths = [];
+    if ($clean !== '') {
+        $searchPaths[] = __DIR__ . '/' . $clean;
+    }
+    foreach ($subfolders as $dir) {
+        $searchPaths[] = __DIR__ . '/' . trim($dir, '/') . '/' . $base;
+    }
+    foreach ($searchPaths as $path) {
+        if (is_file($path) && filesize($path) > 0) {
+            return $path;
+        }
+    }
+    return null;
+};
+
 $matchedUser = null;
 $matchedConfidence = 0.0;
-$uploadDir = __DIR__ . '/uploads/id_verifications';
+$liveFrameHadNoFace = false;
 
 foreach ($candidates as $cand) {
-    // Prefer live webcam selfie photo taken during verification, fallback to ID photo
-    $candidatePhotoPath = null;
-    if (!empty($cand['live_photo_filename']) && file_exists($uploadDir . '/' . $cand['live_photo_filename'])) {
-        $candidatePhotoPath = $uploadDir . '/' . $cand['live_photo_filename'];
-    } elseif (!empty($cand['id_photo_filename']) && file_exists($uploadDir . '/' . $cand['id_photo_filename'])) {
-        $candidatePhotoPath = $uploadDir . '/' . $cand['id_photo_filename'];
+    $photoSources = [];
+    foreach ([
+        [$cand['live_photo_filename'] ?? null, ['uploads/id_verifications', 'uploads/live_captures', 'uploads']],
+        [$cand['profile_picture'] ?? null, ['uploads/avatars', 'uploads']],
+        [$cand['id_photo_filename'] ?? null, ['uploads/id_verifications', 'uploads/id_photos', 'uploads']],
+    ] as [$rawField, $dirs]) {
+        $resolved = $resolveCandidatePhotoSource($rawField, $dirs);
+        if ($resolved !== null && !in_array($resolved, $photoSources, true)) {
+            $photoSources[] = $resolved;
+        }
     }
 
-    if (!$candidatePhotoPath) {
+    if (empty($photoSources)) {
         continue;
     }
 
-    // Call Face++ Compare API (1:N search iteration with hardcoded credentials)
-    $compareResult = VerificationService::compareFacesWithFacePlusPlus($candidatePhotoPath, $tempFilePath);
+    foreach ($photoSources as $candidatePhotoPath) {
+        $compareResult = VerificationService::compareFacesWithFacePlusPlus($candidatePhotoPath, $tempFilePath);
 
-    if ($compareResult['success'] && $compareResult['is_match']) {
-        $confidence = (float)($compareResult['confidence'] ?? 0.0);
-        $threshold1e4 = (float)($compareResult['threshold_1e4'] ?? 69.1);
-        // Realistic passing baseline: if confidence >= 70 or meets 1e-4 threshold, accept match
-        if ($confidence >= 70.0 || ($threshold1e4 > 0 && $confidence >= $threshold1e4)) {
-            $matchedUser = $cand;
-            $matchedConfidence = $confidence;
-            break; // 1:N match found!
+        if (($compareResult['error_code'] ?? '') === 'NO_FACE_LIVE') {
+            $liveFrameHadNoFace = true;
+            break 2; // Live frame contains no detectable face; prompt user cleanly
+        }
+
+        if (!empty($compareResult['success'])) {
+            $liveFrameHadNoFace = false;
+            $confidence = (float)($compareResult['confidence'] ?? 0.0);
+            $threshold1e3 = (float)($compareResult['threshold_1e3'] ?? 62.3);
+            // Balanced Face ID login threshold: meets Face++ 1e-3 FAR baseline (>= 62.0%)
+            $minAcceptable = max(62.0, $threshold1e3 > 0 ? $threshold1e3 : 62.3);
+            if ($confidence >= $minAcceptable && $confidence > $matchedConfidence) {
+                $matchedUser = $cand;
+                $matchedConfidence = $confidence;
+            }
+            // Fast exit if confidence is strongly above 1e-4 / 75%
+            if ($matchedConfidence >= 75.0) {
+                break 2;
+            }
+            break; // Candidate yielded a clean biometric comparison; move to next user if needed
         }
     }
 }
@@ -280,9 +321,18 @@ if ($matchedUser !== null) {
 }
 
 // 7. No Match Found
+if ($liveFrameHadNoFace) {
+    http_response_code(422);
+    echo json_encode([
+        'status' => 'error',
+        'message' => 'No face detected in camera. Please face the camera directly in good lighting.'
+    ]);
+    exit;
+}
+
 http_response_code(401);
 echo json_encode([
     'status' => 'error',
-    'message' => 'Face not recognized. Please try again or use your password.'
+    'message' => 'Face not recognized. Please try again or log in with your password.'
 ]);
 exit;

@@ -63,6 +63,42 @@ function resolveDirectoryAvatarUrl(?string $profilePicture): string
     return '';
 }
 
+/**
+ * Resolve a tenant's uploaded Valid ID image path or URL if it exists on the server.
+ * Returns empty string when missing so modals can show a clean fallback notice instead of a broken image.
+ */
+function resolveDirectoryIdPhotoUrl(?string $idPhotoFilename): string
+{
+    $raw = trim((string)($idPhotoFilename ?? ''));
+    if ($raw === '') {
+        return '';
+    }
+    if (str_starts_with($raw, 'http://') || str_starts_with($raw, 'https://')) {
+        return $raw;
+    }
+
+    $rootDir = dirname(__DIR__);
+    $clean = ltrim(str_replace('\\', '/', $raw), '/');
+    $base = basename($clean);
+    $candidates = [];
+    if ($clean !== '') {
+        $candidates[] = $clean;
+    }
+    if ($base !== '') {
+        $candidates[] = 'uploads/id_verifications/' . $base;
+        $candidates[] = 'uploads/id_photos/' . $base;
+        $candidates[] = 'uploads/' . $base;
+    }
+
+    foreach ($candidates as $rel) {
+        if (is_file($rootDir . '/' . $rel) && filesize($rootDir . '/' . $rel) > 0) {
+            return $rel;
+        }
+    }
+
+    return '';
+}
+
 try {
     // -------------------------------------------------------------------------
     // 1. GET: Fetch Tenants Grouped by the 3 Units OR Fetch Archived Tenants
@@ -151,6 +187,7 @@ try {
             $isVerifiedTenant = filter_var($tenant['is_verified'] ?? false, FILTER_VALIDATE_BOOLEAN) && ($rawVStatus === 'verified');
             $tenant['is_verified'] = $isVerifiedTenant ? 1 : 0;
             $tenant['avatar_url'] = resolveDirectoryAvatarUrl($tenant['profile_picture'] ?? null);
+            $tenant['id_photo_url'] = $isVerifiedTenant ? resolveDirectoryIdPhotoUrl($tenant['id_photo_filename'] ?? null) : '';
             if (!$isVerifiedTenant) {
                 $tenant['id_type'] = null;
                 $tenant['id_photo_filename'] = null;
@@ -270,6 +307,7 @@ try {
             $isVerifiedTenant = filter_var($tenant['is_verified'] ?? false, FILTER_VALIDATE_BOOLEAN) && ($rawVStatus === 'verified');
             $tenant['is_verified'] = $isVerifiedTenant ? 1 : 0;
             $tenant['avatar_url'] = resolveDirectoryAvatarUrl($tenant['profile_picture'] ?? null);
+            $tenant['id_photo_url'] = $isVerifiedTenant ? resolveDirectoryIdPhotoUrl($tenant['id_photo_filename'] ?? null) : '';
             if (!$isVerifiedTenant) {
                 $tenant['id_type'] = null;
                 $tenant['id_photo_filename'] = null;
@@ -449,6 +487,7 @@ try {
                 // Strict Backend Privacy Rule: Never send ID info if unverified or rejected/failed
                 'id_type'                        => $isVerifiedTenant ? ($t['id_type'] ?: null) : null,
                 'id_photo_filename'              => $isVerifiedTenant ? ($t['id_photo_filename'] ?: null) : null,
+                'id_photo_url'                   => $isVerifiedTenant ? resolveDirectoryIdPhotoUrl($t['id_photo_filename'] ?? null) : '',
                 'verification_notes'             => $t['verification_notes'] ?: null,
                 'id_submitted_at'                => $t['id_submitted_at'] ?: null,
                 'birthday'                       => $t['birthday'] ?: null,
