@@ -138,6 +138,7 @@ try {
                 );
 
                 // Automated Email Notification to Tenant's Gmail
+                $emailSentOk = false;
                 try {
                                         $tenantId = (int)$payment['tenant_id'];
                     $tStmt = $pdo->prepare("SELECT id, name, email, phone FROM users WHERE id = :id LIMIT 1");
@@ -169,7 +170,7 @@ try {
                             }
 
                             $emailSubj = "Payment {$statusDisplay} - {$billingMonth}";
-                            sendTenantNotification(
+                            $emailSentOk = sendTenantNotification(
                                 (string)$tUser['email'],
                                 $emailSubj,
                                 $emailMsg,
@@ -185,6 +186,11 @@ try {
                                 $tenantId,
                                 $pdo
                             );
+                            if (!$emailSentOk) {
+                                error_log("[payment_api] sendTenantNotification returned false for tenant {$tenantId} email {$tUser['email']} — check email_logs table.");
+                            }
+                        } else {
+                            error_log("[payment_api] Skipped email: tenant {$tenantId} email='" . ($tUser['email'] ?? 'NULL') . "' failed validation.");
                         }
                     }
                 } catch (Throwable $mailEx) {
@@ -246,6 +252,7 @@ try {
                 'status' => 'success',
                 'message' => $successMsg,
                 'auto_archived' => $autoArchived,
+                'email_sent' => $emailSentOk ?? false,
                 'payment' => [
                     'id' => $paymentId,
                     'status' => $statusVal,
