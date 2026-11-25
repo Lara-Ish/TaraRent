@@ -86,24 +86,33 @@ class MailConfig
         }
         $appUrl = rtrim($appUrl, '/');
 
-        // Check whether actual Gmail SMTP credentials have been provided
-        $isConfigured = !empty($username) 
-            && !empty($password) 
-            && !str_contains($username, 'your_email@gmail.com') 
+        $webhookUrl    = trim((string)(getenv('EMAIL_WEBHOOK_URL') ?: ($_ENV['EMAIL_WEBHOOK_URL'] ?? ($_SERVER['EMAIL_WEBHOOK_URL'] ?? ''))));
+        $webhookSecret = trim((string)(getenv('EMAIL_WEBHOOK_SECRET') ?: ($_ENV['EMAIL_WEBHOOK_SECRET'] ?? ($_SERVER['EMAIL_WEBHOOK_SECRET'] ?? ''))));
+
+        $hasWebhook = !empty($webhookUrl) && filter_var($webhookUrl, FILTER_VALIDATE_URL) !== false;
+        $hasSmtp    = !empty($username)
+            && !empty($password)
+            && !str_contains($username, 'your_email@gmail.com')
             && !str_contains($password, 'your_16_character');
 
+        // Configured if either HTTP Email Webhook or Gmail SMTP is provided
+        $isConfigured = $hasWebhook || $hasSmtp;
+
         return [
-            'host'          => $host,
-            'port'          => $port,
-            'encryption'    => $encryption,
-            'auth'          => $auth,
-            'username'      => $username,
-            'password'      => $password,
-            'from_email'    => $fromEmail,
-            'from_name'     => $fromName,
-            'app_url'       => $appUrl,
-            'is_configured' => $isConfigured,
-            'mock_mode'     => !$isConfigured || filter_var(getenv('MAIL_MOCK') ?: ($_ENV['MAIL_MOCK'] ?? false), FILTER_VALIDATE_BOOLEAN),
+            'host'           => $host,
+            'port'           => $port,
+            'encryption'     => $encryption,
+            'auth'           => $auth,
+            'username'       => $username,
+            'password'       => $password,
+            'from_email'     => $fromEmail,
+            'from_name'      => $fromName,
+            'app_url'        => $appUrl,
+            'webhook_url'    => $webhookUrl,
+            'webhook_secret' => $webhookSecret,
+            'has_webhook'    => $hasWebhook,
+            'is_configured'  => $isConfigured,
+            'mock_mode'      => !$isConfigured || filter_var(getenv('MAIL_MOCK') ?: ($_ENV['MAIL_MOCK'] ?? false), FILTER_VALIDATE_BOOLEAN),
         ];
     }
 }

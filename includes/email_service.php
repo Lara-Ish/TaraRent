@@ -14,6 +14,67 @@ require_once dirname(__DIR__) . '/includes/email_template.php';
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception as PHPMailerException;
 
+if (!function_exists('sendViaHttpWebhook')) {
+    /**
+     * Send email via HTTPS (Port 443) using Google Apps Script Web App.
+     * Bypasses Render Free Tier outbound SMTP port blocks (25, 465, 587).
+     */
+    function sendViaHttpWebhook(array $config, string $toEmail, string $subject, string $htmlBody, string $altBody = ''): array
+    {
+        $webhookUrl = $config['webhook_url'] ?? '';
+        if (empty($webhookUrl)) {
+            return ['success' => false, 'error' => 'EMAIL_WEBHOOK_URL is not configured.'];
+        }
+
+        $plainText = $altBody !== ''
+            ? $altBody
+            : strip_tags(str_replace(['<br>', '<br/>', '<p>', '</p>'], ["\n", "\n", "\n\n", ''], $htmlBody));
+
+        $payload = json_encode([
+            'secret'    => $config['webhook_secret'] ?? '',
+            'to'        => $toEmail,
+            'subject'   => $subject,
+            'html'      => $htmlBody,
+            'text'      => $plainText,
+            'from_name' => $config['from_name'] ?? 'TaraRent',
+        ]);
+
+        $ch = curl_init($webhookUrl);
+        curl_setopt_array($ch, [
+            CURLOPT_POST           => true,
+            CURLOPT_POSTFIELDS     => $payload,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_FOLLOWLOCATION => true, // Follow Google's 302 redirect as GET (do NOT set CURLOPT_POSTREDIR)
+            CURLOPT_MAXREDIRS      => 5,
+            CURLOPT_TIMEOUT        => 20,
+            CURLOPT_HTTPHEADER     => [
+                'Content-Type: application/json',
+                'Content-Length: ' . strlen((string)$payload),
+            ],
+        ]);
+
+        $response = curl_exec($ch);
+        $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlErr  = curl_error($ch);
+        curl_close($ch);
+
+        if ($curlErr !== '') {
+            return ['success' => false, 'error' => "Webhook cURL Error: {$curlErr}"];
+        }
+
+        $decoded = json_decode((string)$response, true);
+        if ($httpCode >= 200 && $httpCode < 300 && is_array($decoded) && !empty($decoded['success'])) {
+            return ['success' => true, 'error' => null];
+        }
+
+        $apiError = is_array($decoded) && !empty($decoded['error'])
+            ? $decoded['error']
+            : "HTTP {$httpCode} - " . substr(strip_tags((string)$response), 0, 200);
+
+        return ['success' => false, 'error' => "Webhook Error: {$apiError}"];
+    }
+}
+
 if (!function_exists('sendEmail')) {
     /**
      * Reusable centralized email sending function using PHPMailer and Gmail SMTP.
@@ -46,6 +107,21 @@ if (!function_exists('sendEmail')) {
                 EmailService::logEmail($pdo, $recipientEmail, '', $subject, 'general', null, null, 'mock_sent', 'Dispatched via Mock Mode (Configure Gmail SMTP credentials in .env for live delivery).', $recipientUserId);
             }
             return true;
+        }
+
+        if (!empty($config['has_webhook'])) {
+            $res = sendViaHttpWebhook($config, $recipientEmail, $subject, $message);
+            if ($res['success']) {
+                if ($pdo !== null) {
+                    EmailService::logEmail($pdo, $recipientEmail, '', $subject, 'general', null, null, 'sent', null, $recipientUserId);
+                }
+                return true;
+            }
+            if ($pdo !== null) {
+                EmailService::logEmail($pdo, $recipientEmail, '', $subject, 'general', null, null, 'failed', $res['error'], $recipientUserId);
+            }
+            error_log("[TaraRent Mail] Failed to send email to {$recipientEmail}: {$res['error']}");
+            throw new Exception($res['error']);
         }
 
         $mail = new PHPMailer(true);
@@ -241,6 +317,17 @@ class EmailService
         if (!empty($config['mock_mode'])) {
             self::logEmail($pdo, $toEmail, $toName, $subject, $templateType, $referenceId, $referenceType, 'mock_sent', 'Dispatched via Mock Mode (Configure Gmail SMTP credentials in .env for live delivery).', $recipientUserId);
             return true;
+        }
+
+        if (!empty($config['has_webhook'])) {
+            $res = sendViaHttpWebhook($config, $toEmail, $subject, $htmlBody, (string)($altBody ?? ''));
+            if ($res['success']) {
+                self::logEmail($pdo, $toEmail, $toName, $subject, $templateType, $referenceId, $referenceType, 'sent', null, $recipientUserId);
+                return true;
+            }
+            self::logEmail($pdo, $toEmail, $toName, $subject, $templateType, $referenceId, $referenceType, 'failed', $res['error'], $recipientUserId);
+            error_log("[TaraRent Mail] Failed to send email to {$toEmail}: {$res['error']}");
+            return false;
         }
 
         $mail = new PHPMailer(true);
@@ -662,6 +749,33 @@ class EmailService
     public static function testSmtpConnection(): array
     {
         $config = MailConfig::get(true);
+        if (!empty($config['has_webhook'])) {
+            $ch = curl_init($config['webhook_url']);
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_FOLLOWLOCATION => true,
+                CURLOPT_TIMEOUT        => 10,
+            ]);
+            $resp = curl_exec($ch);
+            $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $err  = curl_error($ch);
+            curl_close($ch);
+
+            $decoded = json_decode((string)$resp, true);
+            if ($err === '' && $code >= 200 && $code < 300 && is_array($decoded) && !empty($decoded['success'])) {
+                return [
+                    'success' => true,
+                    'message' => 'Successfully connected to HTTP Email Webhook (Port 443 HTTPS).',
+                    'details' => 'Ready to send emails on Render Free Tier.'
+                ];
+            }
+            return [
+                'success' => false,
+                'message' => 'HTTP Email Webhook test failed: ' . ($err ?: "HTTP {$code} (Ensure Apps Script access is set to Anyone)"),
+                'details' => substr(strip_tags((string)$resp), 0, 200)
+            ];
+        }
+
         if (empty($config['username']) || empty($config['password'])) {
             return [
                 'success' => false,
