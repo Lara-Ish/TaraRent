@@ -117,7 +117,7 @@ require_once dirname(__DIR__) . '/includes/storage_service.php';
     }
 
     /**
-     * Get singleton PDO PostgreSQL connection instance
+     * Get singleton PDO PostgreSQL connection instance with multi-pooler resilience
      */
     public static function getConnection(): PDO {
         if (self::$instance !== null) {
@@ -126,33 +126,209 @@ require_once dirname(__DIR__) . '/includes/storage_service.php';
 
         self::initFromEnv();
 
-        $dsn = sprintf(
-            'pgsql:host=%s;port=%d;dbname=%s;sslmode=%s',
-            self::$host,
-            self::$port,
-            self::$db,
-            self::$sslmode
-        );
-
         $options = [
             PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
             PDO::ATTR_EMULATE_PREPARES   => false,
+            PDO::ATTR_TIMEOUT            => 5,
         ];
 
-        try {
-            self::$instance = new PDO($dsn, self::$user, self::$pass, $options);
-            self::ensureVerificationColumns(self::$instance);
-            return self::$instance;
-        } catch (PDOException $e) {
-            http_response_code(500);
+        // Build list of candidate endpoints (configured primary + alternate pooler/port fallbacks)
+        $candidates = [
+            ['host' => self::$host, 'port' => self::$port],
+        ];
+
+        // If port 6543 (transaction mode), try port 5432 (session mode)
+        if (self::$port === 6543) {
+            $candidates[] = ['host' => self::$host, 'port' => 5432];
+        } elseif (self::$port === 5432) {
+            $candidates[] = ['host' => self::$host, 'port' => 6543];
+        }
+
+        // Alternate region pooler node fallback (aws-1 <-> aws-0)
+        if (str_contains(self::$host, 'aws-1-')) {
+            $altHost = str_replace('aws-1-', 'aws-0-', self::$host);
+            $candidates[] = ['host' => $altHost, 'port' => self::$port];
+            $candidates[] = ['host' => $altHost, 'port' => (self::$port === 6543 ? 5432 : 6543)];
+        } elseif (str_contains(self::$host, 'aws-0-')) {
+            $altHost = str_replace('aws-0-', 'aws-1-', self::$host);
+            $candidates[] = ['host' => $altHost, 'port' => self::$port];
+            $candidates[] = ['host' => $altHost, 'port' => (self::$port === 6543 ? 5432 : 6543)];
+        }
+
+        $lastException = null;
+
+        foreach ($candidates as $cand) {
+            $dsn = sprintf(
+                'pgsql:host=%s;port=%d;dbname=%s;sslmode=%s',
+                $cand['host'],
+                $cand['port'],
+                self::$db,
+                self::$sslmode
+            );
+
+            try {
+                self::$instance = new PDO($dsn, self::$user, self::$pass, $options);
+                self::ensureVerificationColumns(self::$instance);
+                return self::$instance;
+            } catch (PDOException $e) {
+                $lastException = $e;
+                continue;
+            }
+        }
+
+        // If all attempts failed
+        http_response_code(500);
+
+        // Check if request is an API / AJAX call
+        $isApi = (!empty($_SERVER['HTTP_ACCEPT']) && str_contains($_SERVER['HTTP_ACCEPT'], 'application/json')) ||
+                 (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest') ||
+                 (isset($_SERVER['REQUEST_URI']) && str_contains($_SERVER['REQUEST_URI'], '/api/'));
+
+        if ($isApi) {
             header('Content-Type: application/json; charset=UTF-8');
             echo json_encode([
-                'status' => 'error',
-                'message' => 'Database connection failed: ' . $e->getMessage(),
-                'hint' => 'Ensure Supabase PostgreSQL credentials are valid and sslmode=require is accepted.'
+                'status'  => 'error',
+                'message' => 'Database connection failed: ' . ($lastException ? $lastException->getMessage() : 'Unable to connect to Supabase database.'),
+                'hint'    => 'If using Supabase free tier, check if project is paused in the Supabase Dashboard (https://supabase.com/dashboard) and click "Resume Project".'
             ], JSON_PRETTY_PRINT);
             exit;
         }
+
+        // For browser visits, render a clean, human-readable recovery screen
+        header('Content-Type: text/html; charset=UTF-8');
+        $errorMsg = htmlspecialchars($lastException ? $lastException->getMessage() : 'Connection refused / offline', ENT_QUOTES, 'UTF-8');
+        ?>
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Database Offline - TaraRent</title>
+            <style>
+                body {
+                    margin: 0;
+                    padding: 0;
+                    min-height: 100vh;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    background: #0f172a;
+                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+                    color: #f8fafc;
+                }
+                .card {
+                    max-width: 580px;
+                    margin: 20px;
+                    background: #1e293b;
+                    border: 1px solid #334155;
+                    border-radius: 16px;
+                    padding: 32px;
+                    box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.5);
+                }
+                .icon {
+                    width: 56px;
+                    height: 56px;
+                    background: rgba(239, 68, 68, 0.15);
+                    border: 1px solid rgba(239, 68, 68, 0.3);
+                    border-radius: 12px;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    font-size: 28px;
+                    margin-bottom: 20px;
+                }
+                h1 {
+                    font-size: 22px;
+                    font-weight: 700;
+                    margin: 0 0 10px 0;
+                    color: #ffffff;
+                }
+                p {
+                    font-size: 14px;
+                    line-height: 1.6;
+                    color: #94a3b8;
+                    margin: 0 0 16px 0;
+                }
+                .steps {
+                    background: #0f172a;
+                    border: 1px solid #334155;
+                    border-radius: 10px;
+                    padding: 16px;
+                    margin: 20px 0;
+                }
+                .steps ol {
+                    margin: 0;
+                    padding-left: 20px;
+                    color: #cbd5e1;
+                    font-size: 13.5px;
+                    line-height: 1.8;
+                }
+                .steps strong {
+                    color: #38bdf8;
+                }
+                .btn {
+                    display: inline-block;
+                    background: #0284c7;
+                    color: #ffffff;
+                    text-decoration: none;
+                    padding: 12px 24px;
+                    border-radius: 8px;
+                    font-size: 14px;
+                    font-weight: 600;
+                    transition: background 0.2s ease;
+                    margin-right: 10px;
+                }
+                .btn:hover {
+                    background: #0369a1;
+                }
+                .btn-secondary {
+                    background: #334155;
+                    color: #f8fafc;
+                }
+                .btn-secondary:hover {
+                    background: #475569;
+                }
+                .err-detail {
+                    margin-top: 24px;
+                    font-size: 11px;
+                    color: #64748b;
+                    word-break: break-all;
+                    font-family: monospace;
+                    background: #0a0f1d;
+                    padding: 10px;
+                    border-radius: 6px;
+                }
+            </style>
+        </head>
+        <body>
+            <div class="card">
+                <div class="icon">🔌</div>
+                <h1>Database Connection Offline</h1>
+                <p>TaraRent could not establish a connection to your Supabase PostgreSQL database.</p>
+                
+                <div class="steps">
+                    <strong style="display:block; margin-bottom:8px; color:#f8fafc;">How to Restore Connectivity:</strong>
+                    <ol>
+                        <li>Log into your <strong><a href="https://supabase.com/dashboard" target="_blank" style="color:#38bdf8; text-decoration:underline;">Supabase Dashboard</a></strong>.</li>
+                        <li>Select your project: <strong>TaraRent</strong> (ID: <code>asqnfbhzgqdlqxnuuugu</code>).</li>
+                        <li>If the project shows <strong>"Paused"</strong>, click the <strong>"Resume Project"</strong> / <strong>"Restore"</strong> button.</li>
+                        <li>Wait 1–2 minutes for the database container to finish waking up.</li>
+                    </ol>
+                </div>
+
+                <div style="margin-top: 24px;">
+                    <a href="https://supabase.com/dashboard" target="_blank" class="btn">Open Supabase Dashboard</a>
+                    <a href="javascript:location.reload()" class="btn btn-secondary">Retry Connection</a>
+                </div>
+
+                <div class="err-detail">
+                    <strong>Technical Error:</strong> <?= $errorMsg ?>
+                </div>
+            </div>
+        </body>
+        </html>
+        <?php
+        exit;
     }
 }

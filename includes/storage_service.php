@@ -122,7 +122,23 @@ if (!function_exists('uploadToSupabaseStorage')) {
 
         // If service key is placeholder or invalid in dev/local environment, log a specific warning
         if (str_contains((string)$supabaseServiceKey, 'your_supabase') || empty($supabaseServiceKey)) {
-            error_log("[Supabase Storage Warning] SUPABASE_SERVICE_KEY is currently a placeholder. Please configure your actual Supabase Service Role Key in .env or Render environment variables.");
+            error_log("[Supabase Storage Warning] SUPABASE_SERVICE_KEY is currently a placeholder. Falling back to local disk storage in /uploads/{$cleanBucket}/.");
+        }
+
+        // 7. Resilient Fallback: Save file to local uploads directory so uploads never break
+        try {
+            $localDir = dirname(__DIR__) . '/uploads/' . $cleanBucket;
+            if (!is_dir($localDir)) {
+                @mkdir($localDir, 0777, true);
+            }
+            $targetLocalPath = $localDir . '/' . $cleanFileName;
+
+            if (@file_put_contents($targetLocalPath, $fileData) !== false) {
+                error_log("[Local Storage Fallback] Saved '{$cleanFileName}' locally to {$targetLocalPath}");
+                return $cleanFileName;
+            }
+        } catch (Throwable $fallbackEx) {
+            error_log("[Local Storage Fallback] Failed saving locally: " . $fallbackEx->getMessage());
         }
 
         return false;
