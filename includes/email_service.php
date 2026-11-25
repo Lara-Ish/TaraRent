@@ -106,11 +106,22 @@ if (!function_exists('sendViaPhpMailerSmtp')) {
 
         $lastError = 'Unknown SMTP error.';
 
+        // Force IPv4 resolution for smtp.gmail.com to avoid Windows/XAMPP IPv6 hang.
+        // On Windows, smtp.gmail.com may resolve to an IPv6 address that Apache/PHP
+        // cannot route, causing a 10–30 s connection timeout. gethostbyname() always
+        // returns an IPv4 address string (or the original hostname if unresolvable).
+        $smtpHost = $config['host'];
+        $resolvedIp = gethostbyname($smtpHost);
+        // Only use the resolved IP if it looks like a valid IPv4 address
+        if ($resolvedIp !== $smtpHost && filter_var($resolvedIp, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+            $smtpHost = $resolvedIp;
+        }
+
         foreach ($attempts as $attempt) {
             $mail = new PHPMailer(true);
             try {
                 $mail->isSMTP();
-                $mail->Host       = $config['host'];
+                $mail->Host       = $smtpHost;
                 $mail->SMTPAuth   = $config['auth'];
                 $mail->Username   = $config['username'];
                 $mail->Password   = $config['password'];
