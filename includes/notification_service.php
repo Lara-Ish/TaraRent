@@ -307,9 +307,10 @@ class NotificationService
                 $billingCycle = date('Y-m-d');
                 $unitNum = $userUnit;
 
+                $refNum = null;
                 if ($referenceId) {
                     $pStmt = $pdo->prepare("
-                        SELECT p.amount_paid, p.amount_due, p.billing_cycle, un.unit_number
+                        SELECT p.id, p.amount_paid, p.amount_due, p.billing_cycle, p.payment_method, un.unit_number
                         FROM payments p
                         LEFT JOIN units un ON p.unit_id = un.id
                         WHERE p.id = :pid
@@ -321,6 +322,7 @@ class NotificationService
                         $amountPaid = (float)($pData['amount_paid'] > 0 ? $pData['amount_paid'] : $pData['amount_due']);
                         $billingCycle = $pData['billing_cycle'];
                         $unitNum = $pData['unit_number'] ?: $userUnit;
+                        $refNum = EmailService::extractPaymentReference($pData);
                     }
                 }
 
@@ -332,7 +334,8 @@ class NotificationService
                     $amountPaid,
                     $billingCycle,
                     $referenceId ?: 0,
-                    $userId
+                    $userId,
+                    $refNum
                 );
                 return;
             }
@@ -342,10 +345,12 @@ class NotificationService
                 $amountPaid = 0.0;
                 $notes = '';
                 $unitNum = $userUnit;
+                $billingCycle = null;
+                $refNum = null;
 
                 if ($referenceId) {
                     $pStmt = $pdo->prepare("
-                        SELECT p.amount_paid, p.amount_due, p.verification_notes, un.unit_number
+                        SELECT p.id, p.amount_paid, p.amount_due, p.billing_cycle, p.payment_method, p.verification_notes, un.unit_number
                         FROM payments p
                         LEFT JOIN units un ON p.unit_id = un.id
                         WHERE p.id = :pid
@@ -357,6 +362,8 @@ class NotificationService
                         $amountPaid = (float)($pData['amount_paid'] > 0 ? $pData['amount_paid'] : $pData['amount_due']);
                         $notes = (string)($pData['verification_notes'] ?? '');
                         $unitNum = $pData['unit_number'] ?: $userUnit;
+                        $billingCycle = $pData['billing_cycle'] ?? null;
+                        $refNum = EmailService::extractPaymentReference($pData);
                     }
                 }
 
@@ -368,7 +375,9 @@ class NotificationService
                     $amountPaid,
                     $notes,
                     $referenceId ?: 0,
-                    $userId
+                    $userId,
+                    $refNum,
+                    $billingCycle
                 );
                 return;
             }
@@ -472,6 +481,12 @@ class NotificationService
                     $userId,
                     $userId
                 );
+                return;
+            }
+
+            // 6b. Account Verified
+            if ($referenceType === 'account_verified' || $referenceType === 'id_verification_verified') {
+                EmailService::notifyTenantAccountVerified($pdo, $userId);
                 return;
             }
 

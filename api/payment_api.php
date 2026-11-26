@@ -63,7 +63,7 @@ try {
             }
 
             // Check if payment exists
-            $check = $pdo->prepare("SELECT id, tenant_id, payment_type, billing_cycle, due_date, amount_due, amount_paid, receipt_filename, status, verification_notes, verified_at FROM payments WHERE id = :id LIMIT 1");
+            $check = $pdo->prepare("SELECT id, tenant_id, payment_type, billing_cycle, due_date, amount_due, amount_paid, payment_method, receipt_filename, status, verification_notes, verified_at FROM payments WHERE id = :id LIMIT 1");
             $check->execute([':id' => $paymentId]);
             $payment = $check->fetch();
 
@@ -134,13 +134,14 @@ try {
                     $notifMsg,
                     'tenantPayments',
                     $paymentId,
-                    $isApproved ? 'payment_approved' : 'payment_rejected'
+                    $isApproved ? 'payment_approved' : 'payment_rejected',
+                    false
                 );
 
                 // Automated Email Notification to Tenant's Gmail
                 $emailSentOk = false;
                 try {
-                                        $tenantId = (int)$payment['tenant_id'];
+                    $tenantId = (int)$payment['tenant_id'];
                     $tStmt = $pdo->prepare("SELECT id, name, email, phone FROM users WHERE id = :id LIMIT 1");
                     $tStmt->execute([':id' => $tenantId]);
                     $tUser = $tStmt->fetch(PDO::FETCH_ASSOC);
@@ -151,7 +152,7 @@ try {
                         $billingMonth = (!empty($payment['billing_cycle']) && strtotime($payment['billing_cycle']) !== false)
                             ? date('F Y', strtotime($payment['billing_cycle']))
                             : ($payment['billing_cycle'] ?: date('F Y'));
-                        $statusDisplay = $isApproved ? 'Approved' : 'Rejected';
+                        $refNum = EmailService::extractPaymentReference($payment);
 
                         // 1. Dispatch SMS Notification to Registered Phone Number
                         if (!empty($tUser['phone'])) {
@@ -164,30 +165,18 @@ try {
 
                         // 2. Dispatch Automated Email Notification
                         if (!empty($tUser['email']) && filter_var($tUser['email'], FILTER_VALIDATE_EMAIL)) {
-                            $emailMsg = "Your payment of <strong>{$formattedAmount}</strong> for <strong>{$billingMonth}</strong> has been <strong>{$statusDisplay}</strong>.";
-                            if (!$isApproved && !empty($finalNotes)) {
-                                $emailMsg .= "<br><br><strong>Reason:</strong> " . htmlspecialchars($finalNotes, ENT_QUOTES, 'UTF-8');
-                            }
-
-                            $emailSubj = "Payment {$statusDisplay} - {$billingMonth}";
-                            $emailSentOk = sendTenantNotification(
-                                (string)$tUser['email'],
-                                $emailSubj,
-                                $emailMsg,
-                                $tUser['name'] ?? 'Tenant',
-                                [
-                                    'Amount'        => $formattedAmount,
-                                    'Billing Month' => $billingMonth,
-                                    'Status'        => $statusDisplay,
-                                    'Landlord Notes'=> $finalNotes
-                                ],
-                                'View Payment History',
-                                MailConfig::get()['app_url'] . '/tenant_portal.php?section=tenantPayments&tab=tracker',
+                            $emailSentOk = EmailService::notifyTenantPaymentDecision(
+                                $pdo,
                                 $tenantId,
-                                $pdo
+                                $amtVal,
+                                (string)($payment['billing_cycle'] ?? $billingMonth),
+                                $decision,
+                                $finalNotes,
+                                $paymentId,
+                                $refNum
                             );
                             if (!$emailSentOk) {
-                                error_log("[payment_api] sendTenantNotification returned false for tenant {$tenantId} email {$tUser['email']} — check email_logs table.");
+                                error_log("[payment_api] notifyTenantPaymentDecision returned false for tenant {$tenantId} email {$tUser['email']} — check email_logs table.");
                             }
                         } else {
                             error_log("[payment_api] Skipped email: tenant {$tenantId} email='" . ($tUser['email'] ?? 'NULL') . "' failed validation.");

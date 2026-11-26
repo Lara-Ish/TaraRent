@@ -1142,6 +1142,16 @@ try {
             $_SESSION['verification_status'] = 'verified';
             unset($_SESSION['pending_id_path'], $_SESSION['pending_id_type'], $_SESSION['is_updating_verified_id'], $_SESSION['staged_id_photo'], $_SESSION['staged_id_type']);
 
+            // Send Account Verified email when transitioning from unverified to verified
+            if (($accountUser['verification_status'] ?? '') !== 'verified' && (int)($accountUser['is_verified'] ?? 0) !== 1) {
+                try {
+                    require_once __DIR__ . '/../includes/email_service.php';
+                    EmailService::notifyTenantAccountVerified($pdo, $userId, 'ID & Face Biometric Verification');
+                } catch (Throwable $mailEx) {
+                    error_log('[Profile API] Failed to dispatch account verified email: ' . $mailEx->getMessage());
+                }
+            }
+
             http_response_code(200);
             echo json_encode([
                 'status' => 'success',
@@ -1376,11 +1386,23 @@ try {
                 $msg,
                 'tenantProfile',
                 $targetTenantId,
-                'id_verification_' . $decision
+                'id_verification_' . $decision,
+                false
             );
+
+            $emailSent = false;
+            if ($decision === 'verified') {
+                try {
+                    require_once __DIR__ . '/../includes/email_service.php';
+                    $emailSent = EmailService::notifyTenantAccountVerified($pdo, $targetTenantId, 'Owner / Admin Review');
+                } catch (Throwable $mailEx) {
+                    error_log('[Profile API] Failed to dispatch account verified email: ' . $mailEx->getMessage());
+                }
+            }
 
             echo json_encode([
                 'status' => 'success',
+                'email_sent' => $emailSent,
                 'message' => "Tenant verification status updated to " . strtoupper($decision) . "."
             ]);
             exit;

@@ -76,6 +76,17 @@ class EmailTemplate
         $safeBadge = htmlspecialchars($badgeText, ENT_QUOTES, 'UTF-8');
         $safeName = htmlspecialchars($recipientName, ENT_QUOTES, 'UTF-8');
         $currentDate = date('F j, Y • g:i A');
+        $contactEmail = 'TaraRent2026@gmail.com';
+        if (class_exists('MailConfig')) {
+            try {
+                $cfgEmail = trim((string)(MailConfig::get()['from_email'] ?? ''));
+                if ($cfgEmail !== '' && filter_var($cfgEmail, FILTER_VALIDATE_EMAIL)) {
+                    $contactEmail = $cfgEmail;
+                }
+            } catch (\Throwable $e) {
+            }
+        }
+        $safeContactEmail = htmlspecialchars($contactEmail, ENT_QUOTES, 'UTF-8');
 
         return <<<HTML
 <!DOCTYPE html>
@@ -137,13 +148,17 @@ class EmailTemplate
                     <!-- Footer (60% Light Beige background with Medium/Dark Brown text) -->
                     <tr>
                         <td style="background-color: #FAF5EC; padding: 24px 36px; text-align: center; border-top: 1px solid #E8D8B0;">
-                            <div style="display: flex; align-items: center; justify-content: center; gap: 8px; margin-bottom: 8px;">
+                            <div style="margin-bottom: 8px;">
                                 <span style="font-size: 13px; font-weight: 800; color: #4A3728;">TaraRent</span>
-                                <span style="font-size: 12px; color: #7A6245;">• Apartment Community</span>
+                                <span style="font-size: 12px; color: #7A6245;"> &bull; Property Management</span>
                             </div>
+                            <p style="font-size: 12px; color: #5C4A3A; margin: 0 0 8px 0; line-height: 1.5;">
+                                Questions or concerns? Contact Property Management at
+                                <a href="mailto:{$safeContactEmail}" style="color: #4A3728; font-weight: 700; text-decoration: underline;">{$safeContactEmail}</a>
+                            </p>
                             <p style="font-size: 11.5px; color: #7A6245; margin: 0 0 6px 0; line-height: 1.5;">
-                                This is an automated notification sent on {$currentDate}.<br>
-                                Please do not reply directly to this email.
+                                Automated notification sent on {$currentDate}.<br>
+                                Please do not reply directly to this system email.
                             </p>
                             <p style="font-size: 11px; color: #A89078; margin: 0;">
                                 &copy; 2026 TaraRent. All rights reserved.
@@ -158,6 +173,78 @@ class EmailTemplate
 </body>
 </html>
 HTML;
+    }
+
+    /**
+     * Render a highlighted credential welcome email when a new tenant account is created.
+     */
+    public static function renderAccountCredentials(
+        string $recipientName,
+        string $username,
+        string $email,
+        string $plainPassword,
+        string $unitNumber,
+        string $loginUrl
+    ): string {
+        $safeUser = htmlspecialchars($username, ENT_QUOTES, 'UTF-8');
+        $safeEmail = htmlspecialchars($email, ENT_QUOTES, 'UTF-8');
+        $safePass = htmlspecialchars($plainPassword, ENT_QUOTES, 'UTF-8');
+        $safeUnit = htmlspecialchars($unitNumber, ENT_QUOTES, 'UTF-8');
+
+        $unitRowHtml = '';
+        if ($safeUnit !== '') {
+            $unitRowHtml = "
+                <tr>
+                    <td style=\"padding: 8px 0; font-size: 13px; font-weight: 600; color: #7A6245; width: 42%;\">Assigned Unit:</td>
+                    <td style=\"padding: 8px 0; font-size: 14px; font-weight: 700; color: #3E2723;\">{$safeUnit}</td>
+                </tr>
+            ";
+        }
+
+        $credentialBoxHtml = "
+            <p style=\"margin: 0 0 16px 0;\">
+                Welcome to <strong>TaraRent</strong>! Your tenant portal account has been created and is ready for use.
+                Below are your private login credentials:
+            </p>
+            <div style=\"background-color: #FAF5EC; border: 2px solid #9A7B4F; border-radius: 14px; padding: 20px 22px; margin: 20px 0; box-shadow: 0 4px 12px rgba(74, 55, 40, 0.08);\">
+                <div style=\"font-size: 11.5px; font-weight: 800; color: #9A7B4F; text-transform: uppercase; letter-spacing: 0.9px; margin-bottom: 12px;\">
+                    Your TaraRent Login Credentials
+                </div>
+                <table role=\"presentation\" border=\"0\" cellpadding=\"0\" cellspacing=\"0\" width=\"100%\" style=\"border-collapse: collapse;\">
+                    {$unitRowHtml}
+                    <tr>
+                        <td style=\"padding: 8px 0; font-size: 13px; font-weight: 600; color: #7A6245; width: 42%;\">Username:</td>
+                        <td style=\"padding: 8px 0; font-family: 'Courier New', Courier, monospace; font-size: 15px; font-weight: 800; color: #3E2723;\">{$safeUser}</td>
+                    </tr>
+                    <tr>
+                        <td style=\"padding: 8px 0; font-size: 13px; font-weight: 600; color: #7A6245;\">Registered Email:</td>
+                        <td style=\"padding: 8px 0; font-size: 13.5px; font-weight: 700; color: #3E2723;\">{$safeEmail}</td>
+                    </tr>
+                    <tr>
+                        <td style=\"padding: 8px 0; font-size: 13px; font-weight: 600; color: #7A6245;\">Password:</td>
+                        <td style=\"padding: 8px 0;\">
+                            <span style=\"display: inline-block; background-color: #ffffff; border: 1.5px dashed #B89B72; border-radius: 8px; padding: 5px 12px; font-family: 'Courier New', Courier, monospace; font-size: 16px; font-weight: 800; letter-spacing: 1px; color: #3E2723;\">{$safePass}</span>
+                        </td>
+                    </tr>
+                </table>
+            </div>
+            <div style=\"background-color: #FFFDF8; border-left: 4px solid #4A3728; padding: 12px 16px; border-radius: 0 10px 10px 0; margin: 16px 0 4px 0; font-size: 13px; color: #4A3728; line-height: 1.55;\">
+                <strong>Important Next Steps:</strong><br>
+                1. Log in using the button below and <strong>complete your account identity verification</strong> (Valid ID &amp; Face Verification) to unlock full portal features.<br>
+                2. For your security, we strongly recommend <strong>updating your password</strong> in Account Settings right after signing in.
+            </div>
+        ";
+
+        return self::render(
+            'Welcome to TaraRent — Your Account Credentials',
+            'WELCOME ABOARD',
+            $recipientName,
+            $credentialBoxHtml,
+            [],
+            'Log In to TaraRent Portal',
+            $loginUrl,
+            'Keep your login credentials confidential and never share your password with anyone.'
+        );
     }
 
     /**

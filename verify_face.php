@@ -183,6 +183,15 @@ if ($action === 'complete_liveness') {
     $_SESSION['verification_status'] = 'verified';
     unset($_SESSION['verification_face_matched']);
 
+    if (!$isVerifiedUser) {
+        try {
+            require_once __DIR__ . '/includes/email_service.php';
+            EmailService::notifyTenantAccountVerified($pdo, $userId, 'ID & Face Liveness Verification');
+        } catch (\Throwable $mailEx) {
+            error_log('[Verify Face] Failed to send account verified email: ' . $mailEx->getMessage());
+        }
+    }
+
     sendFaceJsonResponse(200, [
         'status' => 'success',
         'is_verified' => 1,
@@ -697,6 +706,15 @@ if ($isConfidenceMatch) {
     $_SESSION['is_verified'] = 1;
     $_SESSION['verification_status'] = 'verified';
     unset($_SESSION['pending_id_path'], $_SESSION['pending_id_back_path'], $_SESSION['pending_id_type'], $_SESSION['is_updating_verified_id'], $_SESSION['staged_id_photo'], $_SESSION['staged_id_photo_back'], $_SESSION['staged_id_type']);
+
+    if (!$isVerifiedUser) {
+        try {
+            require_once __DIR__ . '/includes/email_service.php';
+            EmailService::notifyTenantAccountVerified($pdo, $userId, 'ID & Face Biometric Verification');
+        } catch (\Throwable $mailEx) {
+            error_log('[Verify Face] Failed to send account verified email: ' . $mailEx->getMessage());
+        }
+    }
 
     sendFaceJsonResponse(200, [
         'status' => 'success',

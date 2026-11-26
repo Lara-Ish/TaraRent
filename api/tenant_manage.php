@@ -128,6 +128,26 @@ try {
                 ':lend' => $leaseEnd
             ]);
 
+            // Dispatch Welcome Email with Plaintext Credentials (After DB Commit)
+            $emailSent = false;
+            if (!empty($assignedEmail) && filter_var($assignedEmail, FILTER_VALIDATE_EMAIL)) {
+                try {
+                    require_once __DIR__ . '/../includes/email_service.php';
+                    $emailSent = EmailService::sendTenantAccountCreated(
+                        $pdo,
+                        $assignedEmail,
+                        $name,
+                        $assignedUsername,
+                        $plainTextPassword,
+                        'Unit 1',
+                        $newTenantId,
+                        $newTenantId
+                    );
+                } catch (Throwable $mailEx) {
+                    error_log('[Tenant Manage] Error sending welcome email: ' . $mailEx->getMessage());
+                }
+            }
+
             // Dispatch Welcome SMS Notification with Plaintext Credentials (After DB Commit)
             if (!empty($phone)) {
                 try {
@@ -142,6 +162,7 @@ try {
             echo json_encode([
                 'status' => 'success',
                 'message' => "New tenant '{$name}' provisioned successfully! Previous tenant access revoked.",
+                'email_sent' => $emailSent,
                 'tenant' => [
                     'id' => $newTenantId,
                     'name' => $name,

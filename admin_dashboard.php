@@ -4008,6 +4008,27 @@ try {
     </div>
   </div>
 
+  <!-- LIGHTBOX MODAL: FULL MAINTENANCE TICKET PHOTO PREVIEW -->
+  <div class="modal-backdrop hidden" id="ticketPhotoLightboxModal" onclick="if(event.target === this) { event.stopPropagation(); closeTicketPhotoLightbox(); }" style="display: none; align-items: center; justify-content: center; background: rgba(15, 23, 42, 0.85); backdrop-filter: blur(4px); z-index: 100050; position: fixed; inset: 0; padding: 20px;" role="dialog" aria-modal="true" aria-labelledby="ticketPhotoLightboxTitle">
+    <div onclick="event.stopPropagation()" style="position: relative; max-width: 94vw; max-height: 92vh; background: #ffffff; border-radius: 16px; padding: 14px 16px 16px; box-shadow: 0 25px 60px rgba(0,0,0,0.45); display: flex; flex-direction: column; align-items: center;">
+      <div style="width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid #e2e8f0;">
+        <h3 id="ticketPhotoLightboxTitle" style="font-size: 15px; font-weight: 800; color: #3E2723; margin: 0; display: flex; align-items: center; gap: 8px;">
+          <i data-lucide="image" class="w-4 h-4" style="color: #9A7B4F;" aria-hidden="true"></i>
+          <span>Ticket Attachment Preview</span>
+        </h3>
+        <button type="button" id="btnCloseTicketPhotoLightbox" onclick="event.stopPropagation(); closeTicketPhotoLightbox();" title="Close photo preview (Esc)" aria-label="Close photo preview" style="width: 34px; height: 34px; border-radius: 999px; border: 1px solid #e2e8f0; background: #FAF5EC; color: #3E2723; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; font-weight: 800;">
+          <i data-lucide="x" class="w-4 h-4" style="pointer-events: none;" aria-hidden="true"></i>
+        </button>
+      </div>
+      <div style="display: flex; align-items: center; justify-content: center; min-width: 240px; min-height: 160px;">
+        <img id="ticketPhotoLightboxImg" src="" alt="Ticket Attachment Full Preview" style="max-width: 90vw; max-height: 85vh; width: auto; height: auto; object-fit: contain; border-radius: 10px; display: block;">
+        <div id="ticketPhotoLightboxEmpty" style="display: none; padding: 36px 24px; text-align: center; color: #7A6245; font-size: 14px; font-weight: 700;">
+          Photo unavailable
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- =====================================================================
        ARCHIVED TENANT POPUP MODAL (EXPANDED 60-30-10 WITH FULL HISTORY)
        ===================================================================== -->
@@ -4713,6 +4734,7 @@ try {
       else if (id === 'moveOutConfirmModal' && typeof closeMoveOutConfirmModal === 'function') closeMoveOutConfirmModal(true);
       else if (id === 'announcementModal' && typeof closeAnnouncementModal === 'function') closeAnnouncementModal(true);
       else if (id === 'modalAdminProfileId' && typeof closeAdminIdModal === 'function') closeAdminIdModal(true);
+      else if (id === 'ticketPhotoLightboxModal' && typeof closeTicketPhotoLightbox === 'function') closeTicketPhotoLightbox(true);
     }
     window.closeModal = closeModal;
 
@@ -8589,25 +8611,92 @@ try {
       const noPhotosNotice = document.getElementById('mdlNoPhotosNotice');
       if (photosContainer) {
         photosContainer.innerHTML = '';
-        if (tk.photo_path && tk.photo_path.trim() !== '') {
+        const parsedPhotos = parseTicketPhotoPaths(tk.photo_path);
+        if (parsedPhotos.length > 0) {
           if (noPhotosNotice) noPhotosNotice.style.display = 'none';
           photosContainer.style.display = 'flex';
-          const pList = tk.photo_path.split(',');
-          pList.forEach((pItem, idx) => {
-            pItem = pItem.trim();
-            if (!pItem) return;
+          parsedPhotos.forEach((rawItem, idx) => {
+            const resolved = resolveTicketPhotoUrl(rawItem);
+            if (!resolved.primary) return;
+
+            const photoLabel = parsedPhotos.length > 1 ? `Ticket Photo ${idx + 1}` : 'Ticket Attachment';
+            const btnLabel = `View Photo${parsedPhotos.length > 1 ? ' ' + (idx + 1) : ''}`;
+            let activeUrl = resolved.primary;
+            let triedFallback = false;
+            let isUnavailable = false;
+
             const card = document.createElement('div');
-            card.style.cssText = 'border: 1.5px solid rgba(166,180,204,0.35); border-radius: 10px; overflow: hidden; background: #fff; box-shadow: 0 4px 10px rgba(0,0,0,0.06); text-align: center; max-width: 160px;';
-            card.innerHTML = `
-              <a href="${pItem}" target="_blank" title="Click to view full image in a new tab" style="display: block; text-decoration: none;">
-                <img src="${pItem}" alt="Ticket Attachment" style="width: 150px; height: 110px; object-fit: cover; display: block;" onerror="this.onerror=null;this.parentElement.innerHTML='<div style=\\'padding:14px;font-size:12px;color:#56380E;display:inline-flex;align-items:center;gap:4px;\\'>' + window.rcIcon('image', 'w-4 h-4') + ' Photo ' + (${pList.length > 1 ? (idx + 1) : ''}) + '</div>';">
-                <div style="font-size: 11.5px; font-weight: 700; color: #56380E; padding: 7px 6px; background: #FDF7EC; border-top: 1px solid rgba(166,180,204,0.2); display: flex; align-items: center; justify-content: center; gap: 4px;">
-                  ${window.rcIcon('zoom-in', 'w-3.5 h-3.5')} View Photo ${pList.length > 1 ? (idx + 1) : ''}
-                </div>
-              </a>
-            `;
+            card.style.cssText = 'width: 160px; border: 1.5px solid rgba(166,180,204,0.35); border-radius: 10px; overflow: hidden; background: #fff; box-shadow: 0 4px 10px rgba(0,0,0,0.06); text-align: center;';
+
+            const thumbFrame = document.createElement('div');
+            thumbFrame.style.cssText = 'width: 100%; height: 112px; position: relative; overflow: hidden; background: #FAF5EC; cursor: pointer; display: flex; align-items: center; justify-content: center;';
+            thumbFrame.title = 'Click to view full-size photo';
+
+            const imgEl = document.createElement('img');
+            imgEl.alt = 'Ticket Attachment';
+            imgEl.style.cssText = 'width: 100%; height: 100%; object-fit: cover; display: block; cursor: pointer;';
+
+            const unavailEl = document.createElement('div');
+            unavailEl.style.cssText = 'display: none; padding: 12px 8px; font-size: 12px; font-weight: 600; color: #7A6245; flex-direction: column; align-items: center; justify-content: center; gap: 4px; text-align: center;';
+            unavailEl.innerHTML = `${window.rcIcon('image-off', 'w-4 h-4')}<span>Photo unavailable</span>`;
+
+            const viewBtn = document.createElement('button');
+            viewBtn.type = 'button';
+            viewBtn.title = 'Click to view full-size photo';
+            viewBtn.style.cssText = 'width: 100%; cursor: pointer; font-size: 11.5px; font-weight: 700; color: #56380E; padding: 7px 6px; background: #FDF7EC; border: 0; border-top: 1px solid rgba(166,180,204,0.2); display: flex; align-items: center; justify-content: center; gap: 4px;';
+            viewBtn.innerHTML = `${window.rcIcon('zoom-in', 'w-3.5 h-3.5')} <span>${btnLabel}</span>`;
+
+            const handleOpenPreview = (e) => {
+              if (e) {
+                e.preventDefault();
+                e.stopPropagation();
+              }
+              if (isUnavailable) {
+                if (typeof showToast === 'function') showToast('Photo unavailable.', 'warning');
+                return;
+              }
+              openTicketPhotoLightbox(activeUrl, photoLabel);
+            };
+
+            imgEl.onerror = function() {
+              if (!triedFallback && resolved.fallback && resolved.fallback !== activeUrl) {
+                triedFallback = true;
+                activeUrl = resolved.fallback;
+                imgEl.src = activeUrl;
+                return;
+              }
+              isUnavailable = true;
+              imgEl.onerror = null;
+              imgEl.style.display = 'none';
+              unavailEl.style.display = 'flex';
+              thumbFrame.style.cursor = 'default';
+              thumbFrame.title = 'Photo unavailable';
+              viewBtn.disabled = true;
+              viewBtn.style.opacity = '0.55';
+              viewBtn.style.cursor = 'not-allowed';
+            };
+
+            imgEl.onload = function() {
+              isUnavailable = false;
+              imgEl.style.display = 'block';
+              unavailEl.style.display = 'none';
+              thumbFrame.style.cursor = 'pointer';
+            };
+
+            imgEl.src = activeUrl;
+            thumbFrame.addEventListener('click', handleOpenPreview);
+            viewBtn.addEventListener('click', handleOpenPreview);
+
+            thumbFrame.appendChild(imgEl);
+            thumbFrame.appendChild(unavailEl);
+            card.appendChild(thumbFrame);
+            card.appendChild(viewBtn);
             photosContainer.appendChild(card);
           });
+          if (photosContainer.children.length === 0) {
+            photosContainer.style.display = 'none';
+            if (noPhotosNotice) noPhotosNotice.style.display = 'block';
+          }
         } else {
           photosContainer.style.display = 'none';
           if (noPhotosNotice) noPhotosNotice.style.display = 'block';
@@ -8616,6 +8705,168 @@ try {
 
       // 9. Open Modal with Animation & Lock Body Scroll
       openModal('ticketDetailsModal');
+    }
+
+    function parseTicketPhotoPaths(rawPhotoPath) {
+      if (!rawPhotoPath) return [];
+      let items = [];
+      if (Array.isArray(rawPhotoPath)) {
+        items = rawPhotoPath;
+      } else {
+        const rawStr = String(rawPhotoPath).trim();
+        if (!rawStr) return [];
+        if (rawStr.startsWith('[') || rawStr.startsWith('{') || rawStr.startsWith('"')) {
+          try {
+            const parsed = JSON.parse(rawStr);
+            if (Array.isArray(parsed)) {
+              items = parsed;
+            } else if (typeof parsed === 'string') {
+              items = parsed.split(',');
+            } else if (parsed && typeof parsed === 'object') {
+              items = Object.values(parsed);
+            }
+          } catch (e) {
+            items = rawStr.replace(/^\[|\]$/g, '').split(',');
+          }
+        } else {
+          items = rawStr.split(',');
+        }
+      }
+      return items
+        .map(v => {
+          if (v && typeof v === 'object') {
+            v = v.url || v.path || v.src || v.filename || '';
+          }
+          return String(v || '').trim().replace(/^["']+|["']+$/g, '').trim();
+        })
+        .filter(Boolean);
+    }
+
+    function resolveTicketPhotoUrl(rawItem) {
+      const cleanedRaw = String(rawItem || '').trim().replace(/\\/g, '/');
+      if (!cleanedRaw) return { primary: '', fallback: '' };
+
+      if (/^(data:image\/|blob:)/i.test(cleanedRaw)) {
+        return { primary: cleanedRaw, fallback: '' };
+      }
+
+      if (/^https?:\/\//i.test(cleanedRaw)) {
+        const baseName = cleanedRaw.split('?')[0].split('/').pop() || '';
+        const localFallback = baseName ? ('uploads/maintenance/' + encodeURIComponent(decodeSafeSegment(baseName))) : '';
+        return { primary: cleanedRaw, fallback: localFallback };
+      }
+
+      let normalized = cleanedRaw.replace(/^\.\//, '').replace(/\/{2,}/g, '/');
+      if (normalized.startsWith('/uploads/')) {
+        normalized = normalized.slice(1);
+      }
+
+      const lower = normalized.toLowerCase();
+      if (lower.startsWith('uploads/maintenance/')) {
+        const relFile = normalized.slice('uploads/maintenance/'.length);
+        const safePath = 'uploads/maintenance/' + encodeRelativeSegments(relFile);
+        const baseName = relFile.split('/').pop() || '';
+        return {
+          primary: safePath,
+          fallback: baseName ? ('uploads/tickets/' + encodeURIComponent(decodeSafeSegment(baseName))) : ''
+        };
+      }
+      if (lower.startsWith('uploads/tickets/')) {
+        const relFile = normalized.slice('uploads/tickets/'.length);
+        const safePath = 'uploads/tickets/' + encodeRelativeSegments(relFile);
+        const baseName = relFile.split('/').pop() || '';
+        return {
+          primary: safePath,
+          fallback: baseName ? ('uploads/maintenance/' + encodeURIComponent(decodeSafeSegment(baseName))) : ''
+        };
+      }
+      if (lower.startsWith('uploads/')) {
+        const relFile = normalized.slice('uploads/'.length);
+        const safePath = 'uploads/' + encodeRelativeSegments(relFile);
+        const baseName = relFile.split('/').pop() || '';
+        return {
+          primary: safePath,
+          fallback: baseName ? ('uploads/maintenance/' + encodeURIComponent(decodeSafeSegment(baseName))) : ''
+        };
+      }
+      if (lower.startsWith('maintenance/') || lower.startsWith('tickets/')) {
+        const safePath = 'uploads/' + encodeRelativeSegments(normalized);
+        return { primary: safePath, fallback: '' };
+      }
+      if (normalized.startsWith('/')) {
+        return { primary: normalized, fallback: '' };
+      }
+
+      const safeFile = encodeRelativeSegments(normalized);
+      return {
+        primary: 'uploads/maintenance/' + safeFile,
+        fallback: 'uploads/tickets/' + safeFile
+      };
+    }
+
+    function decodeSafeSegment(seg) {
+      try {
+        return decodeURIComponent(seg);
+      } catch (e) {
+        return seg;
+      }
+    }
+
+    function encodeRelativeSegments(pathStr) {
+      return String(pathStr || '')
+        .split('/')
+        .filter(Boolean)
+        .map(seg => encodeURIComponent(decodeSafeSegment(seg)))
+        .join('/');
+    }
+
+    function openTicketPhotoLightbox(imageUrl, label = 'Ticket Attachment Preview') {
+      const modal = document.getElementById('ticketPhotoLightboxModal');
+      const img = document.getElementById('ticketPhotoLightboxImg');
+      const empty = document.getElementById('ticketPhotoLightboxEmpty');
+      const titleEl = document.getElementById('ticketPhotoLightboxTitle');
+      if (!modal || !img) return;
+
+      if (titleEl) {
+        const span = titleEl.querySelector('span');
+        if (span) span.textContent = label || 'Ticket Attachment Preview';
+      }
+
+      const showUnavailable = () => {
+        img.onerror = null;
+        img.onload = null;
+        img.removeAttribute('src');
+        img.style.display = 'none';
+        if (empty) empty.style.display = 'block';
+      };
+
+      if (!imageUrl) {
+        showUnavailable();
+      } else {
+        if (empty) empty.style.display = 'none';
+        img.style.display = 'block';
+        img.onerror = showUnavailable;
+        img.onload = () => {
+          img.style.display = 'block';
+          if (empty) empty.style.display = 'none';
+        };
+        img.src = imageUrl;
+      }
+
+      openModal('ticketPhotoLightboxModal');
+    }
+
+    function closeTicketPhotoLightbox(fromCloseModal = false) {
+      const modal = document.getElementById('ticketPhotoLightboxModal');
+      if (modal) {
+        modal.classList.add('hidden');
+        modal.classList.remove('open', 'active');
+        modal.style.display = 'none';
+        modal.style.pointerEvents = 'none';
+      }
+      const ticketModal = document.getElementById('ticketDetailsModal');
+      const isTicketModalOpen = ticketModal && !ticketModal.classList.contains('hidden') && ticketModal.style.display !== 'none';
+      document.body.style.overflow = isTicketModalOpen ? 'hidden' : '';
     }
 
     function closeTicketDetailsModal(fromCloseModal = false) {
@@ -8641,6 +8892,11 @@ try {
     // Universal Escape key listener for closing modals
     document.addEventListener('keydown', function(e) {
       if (e.key === 'Escape' || e.keyCode === 27) {
+        const photoLightbox = document.getElementById('ticketPhotoLightboxModal');
+        if (photoLightbox && (photoLightbox.classList.contains('open') || photoLightbox.classList.contains('active') || photoLightbox.style.display === 'flex')) {
+          closeTicketPhotoLightbox();
+          return;
+        }
         if (document.getElementById('ownerDeleteConfirmModal')?.classList.contains('open') || document.getElementById('ownerDeleteConfirmModal')?.classList.contains('active')) {
           closeOwnerDeleteConfirmModal();
           return;

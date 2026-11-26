@@ -76,6 +76,20 @@ if (!function_exists('sendViaHttpWebhook')) {
     }
 }
 
+if (!function_exists('resolveSmtpIpv4Host')) {
+    /**
+     * Resolve SMTP hostname to IPv4 on Windows/XAMPP to avoid IPv6 connection timeouts.
+     */
+    function resolveSmtpIpv4Host(string $host): string
+    {
+        $resolvedIp = gethostbyname($host);
+        if ($resolvedIp !== $host && filter_var($resolvedIp, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+            return $resolvedIp;
+        }
+        return $host;
+    }
+}
+
 if (!function_exists('sendViaPhpMailerSmtp')) {
     /**
      * Send email via PHPMailer SMTP with automatic TLS (587) -> SSL (465) fallback for Gmail.
@@ -106,16 +120,7 @@ if (!function_exists('sendViaPhpMailerSmtp')) {
 
         $lastError = 'Unknown SMTP error.';
 
-        // Force IPv4 resolution for smtp.gmail.com to avoid Windows/XAMPP IPv6 hang.
-        // On Windows, smtp.gmail.com may resolve to an IPv6 address that Apache/PHP
-        // cannot route, causing a 10–30 s connection timeout. gethostbyname() always
-        // returns an IPv4 address string (or the original hostname if unresolvable).
-        $smtpHost = $config['host'];
-        $resolvedIp = gethostbyname($smtpHost);
-        // Only use the resolved IP if it looks like a valid IPv4 address
-        if ($resolvedIp !== $smtpHost && filter_var($resolvedIp, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
-            $smtpHost = $resolvedIp;
-        }
+        $smtpHost = resolveSmtpIpv4Host((string)$config['host']);
 
         foreach ($attempts as $attempt) {
             $mail = new PHPMailer(true);
@@ -491,9 +496,84 @@ class EmailService
     }
 
     /**
+     * Extract payment reference number from a payment record or generate a fallback PAY-000XX code.
+     */
+    public static function extractPaymentReference(array $payment): string
+    {
+        $explicitRef = trim((string)($payment['reference_number'] ?? ''));
+        if ($explicitRef !== '') {
+            return $explicitRef;
+        }
+        $methodStr = (string)($payment['payment_method'] ?? '');
+        if ($methodStr !== '' && preg_match('/Ref:\s*([A-Za-z0-9_-]+)/i', $methodStr, $matches)) {
+            return $matches[1];
+        }
+        $paymentId = (int)($payment['id'] ?? 0);
+        return $paymentId > 0 ? ('PAY-' . str_pad((string)$paymentId, 5, '0', STR_PAD_LEFT)) : 'N/A';
+    }
+
+    /**
+     * Notify Tenant when their account / identity has been verified and activated.
+     */
+    public static function notifyTenantAccountVerified(
+        PDO $pdo,
+        int $tenantId,
+        ?string $verificationMethod = null,
+        bool $checkDuplicate = true
+    ): bool {
+        $tenant = self::getTenantFromDatabase($pdo, $tenantId);
+        if (!$tenant || empty($tenant['email'])) {
+            return false;
+        }
+
+        $subject = 'TaraRent: Your Account Has Been Verified';
+        $unitLabel = !empty($tenant['unit_number']) ? (string)$tenant['unit_number'] : 'Assigned Unit';
+
+        $intro = "Great news! Your identity verification has been approved and your TaraRent tenant account is now <strong>fully verified and active</strong>.<br><br>"
+            . "You now have full access to all resident features, including online rent payment submissions, maintenance request tracking, and general reports.";
+
+        $details = [
+            'Account Holder'  => $tenant['name'],
+            'Assigned Unit'   => $unitLabel,
+            'Account Status'  => 'Verified & Active',
+            'Verified On'     => date('F j, Y • g:i A'),
+        ];
+        if (!empty($verificationMethod)) {
+            $details['Verification Method'] = $verificationMethod;
+        }
+
+        $config = MailConfig::get();
+        $actionUrl = $config['app_url'] . '/tenant_portal.php';
+
+        $html = EmailTemplate::render(
+            'Your Account Is Now Verified',
+            'ACCOUNT VERIFIED',
+            $tenant['name'],
+            $intro,
+            $details,
+            'Open Tenant Portal',
+            $actionUrl,
+            'Thank you for completing verification and being part of the TaraRent community!'
+        );
+
+        return self::send(
+            $pdo,
+            $tenant['email'],
+            $tenant['name'],
+            $subject,
+            $html,
+            'account_verified',
+            $tenantId,
+            'tenant',
+            $checkDuplicate,
+            null,
+            $tenantId
+        );
+    }
+
+    /**
      * Notify Tenant of Landlord payment approval or rejection.
-     * Email states: "Your payment of [Amount] for [Billing Month] has been [Status]."
-     * If rejected, includes the landlord's reason if provided.
+     * Includes amount, reference number, month covered, and rejection reason + resubmission instructions when rejected.
      */
     public static function notifyTenantPaymentDecision(
         PDO $pdo,
@@ -502,7 +582,8 @@ class EmailService
         string $billingMonth,
         string $status,
         ?string $reason = null,
-        ?int $paymentId = null
+        ?int $paymentId = null,
+        ?string $referenceNumber = null
     ): bool {
         $tenant = self::getTenantFromDatabase($pdo, $tenantId);
         if (!$tenant || empty($tenant['email'])) {
@@ -517,45 +598,67 @@ class EmailService
             $monthStr = date('F Y');
         }
 
+        $refDisplay = trim((string)$referenceNumber);
+        if ($refDisplay === '') {
+            $refDisplay = $paymentId ? ('PAY-' . str_pad((string)$paymentId, 5, '0', STR_PAD_LEFT)) : 'N/A';
+        }
+
         $statusNormalized = strtolower($status);
         $isApproved = in_array($statusNormalized, ['approved', 'verified'], true);
         $statusDisplay = $isApproved ? 'Approved' : 'Rejected';
 
-        // Exact requirement: "Your payment of [Amount] for [Billing Month] has been [Status]."
-        $messageBody = "Your payment of <strong>{$formattedAmount}</strong> for <strong>{$monthStr}</strong> has been <strong>{$statusDisplay}</strong>.";
-        if (!$isApproved && !empty($reason)) {
-            $messageBody .= "<br><br><strong>Reason:</strong> " . htmlspecialchars($reason, ENT_QUOTES, 'UTF-8');
-        }
-
-        $subject = "Payment {$statusDisplay} - {$monthStr}";
-        $details = [
-            'Amount' => $formattedAmount,
-            'Billing Month' => $monthStr,
-            'Status' => $statusDisplay,
-        ];
-        if (!empty($reason)) {
-            $details['Notes / Reason'] = $reason;
-        }
-
         $config = MailConfig::get();
         $actionUrl = $config['app_url'] . '/tenant_portal.php?section=tenantPayments&tab=tracker';
 
-        return self::sendTenantNotification(
-            $tenant['email'],
-            $subject,
-            $messageBody,
+        $details = [
+            'Reference Number' => $refDisplay,
+            'Month Covered'    => $monthStr,
+            'Amount'           => $formattedAmount,
+            'Status'           => $isApproved ? 'Verified & Approved' : 'Rejected (Action Required)',
+        ];
+
+        if ($isApproved) {
+            $subject = "TaraRent: Payment Verified & Approved - {$monthStr}";
+            $heading = 'Payment Verified & Approved';
+            $badge   = 'PAYMENT APPROVED';
+            $messageBody = "Your rental payment of <strong>{$formattedAmount}</strong> for <strong>{$monthStr}</strong> (Reference: <strong>" . htmlspecialchars($refDisplay, ENT_QUOTES, 'UTF-8') . "</strong>) has been <strong>verified and approved</strong> by property management.";
+            if (!empty($reason)) {
+                $details['Admin Remarks'] = $reason;
+            }
+            $buttonText = 'View Payment History';
+            $closing = 'Thank you for keeping your rental account in good standing!';
+        } else {
+            $subject = "TaraRent: Payment Proof Rejected - {$monthStr}";
+            $heading = 'Payment Proof Rejected';
+            $badge   = 'ACTION REQUIRED';
+            $messageBody = "Your submitted payment proof of <strong>{$formattedAmount}</strong> for <strong>{$monthStr}</strong> (Reference: <strong>" . htmlspecialchars($refDisplay, ENT_QUOTES, 'UTF-8') . "</strong>) was <strong>rejected</strong> during review.";
+            if (!empty($reason)) {
+                $messageBody .= "<br><br><strong>Reason / Admin Remarks:</strong> " . htmlspecialchars($reason, ENT_QUOTES, 'UTF-8');
+                $details['Reason / Remarks'] = $reason;
+            }
+            $messageBody .= "<br><br><strong>How to Resubmit:</strong> Please log in to your TaraRent Tenant Portal, go to the <em>Payments</em> section, and upload a clear, valid receipt screenshot with the correct amount and reference number.";
+            $details['Next Steps'] = 'Re-upload a clear, valid proof of payment in the Tenant Portal.';
+            $buttonText = 'Resubmit Payment Proof';
+            $closing = 'Please resubmit your payment proof promptly to avoid overdue notices.';
+        }
+
+        $html = EmailTemplate::render(
+            $heading,
+            $badge,
             $tenant['name'],
+            $messageBody,
             $details,
-            'View Payment History',
+            $buttonText,
             $actionUrl,
-            $tenantId,
-            $pdo
+            $closing
         );
+
+        $templateType = $isApproved ? 'payment_verified' : 'payment_rejected';
+        return self::send($pdo, $tenant['email'], $tenant['name'], $subject, $html, $templateType, $paymentId, 'payment', false, null, $tenantId);
     }
 
     /**
      * Notify Tenant of Maintenance status update.
-     * Email states: "The status of your Maintenance request regarding '[Issue/Title]' has been updated to: [New Status]."
      */
     public static function notifyTenantMaintenanceStatusUpdate(
         PDO $pdo,
@@ -570,42 +673,46 @@ class EmailService
             return false;
         }
 
+        $ticketRef = $ticketId ? ('#MT-' . str_pad((string)$ticketId, 4, '0', STR_PAD_LEFT)) : '#MT';
         $safeTitle = htmlspecialchars($issueTitle, ENT_QUOTES, 'UTF-8');
-        // Exact requirement: "The status of your Maintenance request regarding '[Issue/Title]' has been updated to: [New Status]."
-        $messageBody = "The status of your Maintenance request regarding '<strong>{$safeTitle}</strong>' has been updated to: <strong>{$newStatus}</strong>.";
+        $safeStatus = htmlspecialchars($newStatus, ENT_QUOTES, 'UTF-8');
+
+        $messageBody = "The status of your maintenance request <strong>{$ticketRef}</strong> regarding '<strong>{$safeTitle}</strong>' has been updated to: <strong>{$safeStatus}</strong>.";
         if (!empty($notes)) {
-            $messageBody .= "<br><br><strong>Landlord Notes:</strong> " . htmlspecialchars($notes, ENT_QUOTES, 'UTF-8');
+            $messageBody .= "<br><br><strong>Owner Remarks / Instructions:</strong> " . htmlspecialchars($notes, ENT_QUOTES, 'UTF-8');
         }
 
-        $subject = "Maintenance Request Update: {$issueTitle}";
+        $subject = "TaraRent: Maintenance Request Update - {$issueTitle} ({$ticketRef})";
         $details = [
-            'Request Type' => 'Maintenance Request',
-            'Issue / Title' => $issueTitle,
-            'Updated Status' => $newStatus,
+            'Request Reference' => $ticketRef,
+            'Apartment Unit'    => !empty($tenant['unit_number']) ? $tenant['unit_number'] : 'Assigned Unit',
+            'Issue / Title'     => $issueTitle,
+            'Updated Status'    => $newStatus,
         ];
         if (!empty($notes)) {
-            $details['Landlord Notes'] = $notes;
+            $details['Owner Remarks'] = $notes;
         }
 
         $config = MailConfig::get();
         $actionUrl = $config['app_url'] . '/tenant_portal.php?section=tenantMaintenance';
 
-        return self::sendTenantNotification(
-            $tenant['email'],
-            $subject,
-            $messageBody,
+        $html = EmailTemplate::render(
+            'Maintenance Request Updated',
+            'MAINTENANCE UPDATE',
             $tenant['name'],
+            $messageBody,
             $details,
             'View Maintenance Details',
             $actionUrl,
-            $tenantId,
-            $pdo
+            'You can monitor repair progress and reply anytime from your Tenant Portal.'
         );
+
+        $templateType = 'maintenance_updated_' . strtolower(str_replace([' ', '-'], '_', $newStatus));
+        return self::send($pdo, $tenant['email'], $tenant['name'], $subject, $html, $templateType, $ticketId, 'ticket', false, null, $tenantId);
     }
 
     /**
-     * Notify Tenant of Report status update.
-     * Email states: "The status of your Report request regarding '[Issue/Title]' has been updated to: [New Status]."
+     * Notify Tenant when a submitted report / concern is acknowledged or updated.
      */
     public static function notifyTenantReportStatusUpdate(
         PDO $pdo,
@@ -620,37 +727,53 @@ class EmailService
             return false;
         }
 
+        $reportRef = $reportId ? ('#GR-' . str_pad((string)$reportId, 4, '0', STR_PAD_LEFT)) : '#GR';
         $safeTitle = htmlspecialchars($reportTitle, ENT_QUOTES, 'UTF-8');
-        // Exact requirement: "The status of your Report request regarding '[Issue/Title]' has been updated to: [New Status]."
-        $messageBody = "The status of your Report request regarding '<strong>{$safeTitle}</strong>' has been updated to: <strong>{$newStatus}</strong>.";
-        if (!empty($remarks)) {
-            $messageBody .= "<br><br><strong>Landlord Remarks:</strong> " . htmlspecialchars($remarks, ENT_QUOTES, 'UTF-8');
+        $safeStatus = htmlspecialchars($newStatus, ENT_QUOTES, 'UTF-8');
+        $statusLower = strtolower(trim($newStatus));
+
+        if ($statusLower === 'acknowledged') {
+            $subject = "TaraRent: Report Acknowledged - {$reportTitle} ({$reportRef})";
+            $heading = 'Report & Concern Acknowledged';
+            $badge   = 'REPORT ACKNOWLEDGED';
+            $messageBody = "Your report/concern <strong>{$reportRef}</strong> regarding '<strong>{$safeTitle}</strong>' has been <strong>received and acknowledged</strong> by property management.";
+            $nextSteps = !empty($remarks) ? 'Please review the owner remarks above. Further updates will be posted in your portal.' : 'Property management has logged your concern and will follow up as needed.';
+        } else {
+            $subject = "TaraRent: Report & Concern Update - {$reportTitle} ({$reportRef})";
+            $heading = 'Report & Concern Updated';
+            $badge   = 'REPORT UPDATE';
+            $messageBody = "Your report/concern <strong>{$reportRef}</strong> regarding '<strong>{$safeTitle}</strong>' has been reviewed and updated to: <strong>{$safeStatus}</strong>.";
+            $nextSteps = 'Log in to your Tenant Portal to view full report details and history.';
         }
 
-        $subject = "Report Request Update: {$reportTitle}";
-        $details = [
-            'Request Type' => 'General Report',
-            'Report Title' => $reportTitle,
-            'Updated Status' => $newStatus,
-        ];
         if (!empty($remarks)) {
-            $details['Landlord Remarks'] = $remarks;
+            $messageBody .= "<br><br><strong>Owner Response / Remarks:</strong> " . htmlspecialchars($remarks, ENT_QUOTES, 'UTF-8');
         }
+
+        $details = [
+            'Report Reference' => $reportRef,
+            'Report Subject'   => $reportTitle,
+            'Status'           => $newStatus,
+            'Owner Remarks'    => !empty($remarks) ? $remarks : 'Reviewed by property management.',
+            'Next Steps'       => $nextSteps,
+        ];
 
         $config = MailConfig::get();
         $actionUrl = $config['app_url'] . '/tenant_portal.php?section=tenantReport';
 
-        return self::sendTenantNotification(
-            $tenant['email'],
-            $subject,
-            $messageBody,
+        $html = EmailTemplate::render(
+            $heading,
+            $badge,
             $tenant['name'],
+            $messageBody,
             $details,
             'View Report Details',
             $actionUrl,
-            $tenantId,
-            $pdo
+            'Thank you for keeping property management informed.'
         );
+
+        $templateType = 'report_update_' . strtolower(str_replace([' ', '-'], '_', $newStatus));
+        return self::send($pdo, $tenant['email'], $tenant['name'], $subject, $html, $templateType, $reportId, 'report', false, null, $tenantId);
     }
 
     public const DEFAULT_OWNER_EMAIL = 'rentconnect2026@gmail.com';
@@ -805,7 +928,7 @@ class EmailService
         $mail = new PHPMailer(true);
         try {
             $mail->isSMTP();
-            $mail->Host       = $config['host'];
+            $mail->Host       = resolveSmtpIpv4Host((string)$config['host']);
             $mail->SMTPAuth   = $config['auth'];
             $mail->Username   = $config['username'];
             $mail->Password   = $config['password'];
@@ -1109,59 +1232,69 @@ class EmailService
         int $tenantId = 0,
         ?int $recipientUserId = null
     ): bool {
-        $subject = 'Your Apartment Management System Account Has Been Created';
+        $subject = 'TaraRent: Your Account Credentials';
         $config = MailConfig::get();
         $loginUrl = $config['app_url'] . '/login.php';
 
         // Support backward compatibility if called with (pdo, email, name, unitNumber, setupPasswordUrl, tenantId, recipientUserId)
-        if (!empty($temporaryPassword) && (filter_var($temporaryPassword, FILTER_VALIDATE_URL) || str_starts_with($temporaryPassword, 'http'))) {
-            $displayUnit = $username;
+        $isLegacyUrlMode = !empty($temporaryPassword) && (filter_var($temporaryPassword, FILTER_VALIDATE_URL) || str_starts_with($temporaryPassword, 'http'));
+        if ($isLegacyUrlMode) {
+            $displayUnit = (string)$username;
             $displayUsername = $tenantEmail;
             $displayPassword = '(Sent via setup link)';
             $buttonUrl = $temporaryPassword;
             $buttonText = 'Set Up Your Password';
             $actualTenantId = is_numeric($unitNumber) ? (int)$unitNumber : $tenantId;
             $actualRecipientUserId = $tenantId ?: ($recipientUserId ?: ($actualTenantId > 0 ? $actualTenantId : null));
+
+            $intro = "Welcome to <strong>TaraRent</strong>! Your tenant account has been created. Please use the link below to set up your password and verify your identity:";
+            $details = [
+                'Username / Email' => $displayUsername,
+            ];
+            if ($displayUnit !== '') {
+                $details['Assigned Unit'] = $displayUnit;
+            }
+            $secondaryNotice = 'Once logged in, please complete your account verification and update your password in Account Settings.';
+            $html = EmailTemplate::render(
+                'Welcome to TaraRent — Your Account Credentials',
+                'ACCOUNT CREATED',
+                $tenantName,
+                $intro,
+                $details,
+                $buttonText,
+                $buttonUrl,
+                $secondaryNotice
+            );
         } else {
             $displayUnit = (string)$unitNumber;
             $displayUsername = $username;
             $displayPassword = $temporaryPassword;
             $buttonUrl = $loginUrl;
-            $buttonText = 'Log In to System';
             $actualTenantId = $tenantId;
             $actualRecipientUserId = $recipientUserId ?: ($actualTenantId > 0 ? $actualTenantId : null);
+
+            $html = EmailTemplate::renderAccountCredentials(
+                $tenantName,
+                $displayUsername,
+                $tenantEmail,
+                $displayPassword,
+                $displayUnit,
+                $buttonUrl
+            );
         }
-
-        $intro = "Your tenant account has been successfully created!<br><br>Here are your account details:";
-
-        $details = [
-            'Username'           => $displayUsername,
-            'Temporary Password' => $displayPassword,
-        ];
-        if (!empty($displayUnit)) {
-            $details['Assigned Unit'] = $displayUnit;
-        }
-
-        $secondaryNotice = "You can now log in to your account using these credentials. Once logged in, you can change your password through your account settings.<br><br>Thank you!";
-        $html = EmailTemplate::render(
-            'Your Apartment Management System Account Has Been Created',
-            'ACCOUNT CREATED',
-            $tenantName,
-            $intro,
-            $details,
-            $buttonText,
-            $buttonUrl,
-            $secondaryNotice
-        );
 
         $altBody = "Hello {$tenantName},\n\n" .
-            "Your tenant account has been successfully created!\n\n" .
-            "Here are your account details:\n\n" .
+            "Welcome to TaraRent! Your tenant account has been successfully created.\n\n" .
+            "Here are your login credentials:\n" .
+            ($displayUnit !== '' ? "- Assigned Unit: {$displayUnit}\n" : '') .
             "- Username: {$displayUsername}\n" .
-            "- Temporary Password: {$displayPassword}\n\n" .
-            "You can now log in to your account using these credentials. Once logged in, you can change your password through your account settings.\n\n" .
-            "Thank you!\n\n" .
-            "Apartment Management System";
+            "- Registered Email: {$tenantEmail}\n" .
+            "- Temporary Password: {$displayPassword}\n" .
+            "- Login Link: {$buttonUrl}\n\n" .
+            "Important Next Steps:\n" .
+            "1. Log in and complete your account identity verification (Valid ID & Face Verification).\n" .
+            "2. For your security, we recommend updating your password in Account Settings after logging in.\n\n" .
+            "Thank you,\nTaraRent Property Management";
 
         return self::send($pdo, $tenantEmail, $tenantName, $subject, $html, 'tenant_account_created', $actualTenantId, 'tenant', true, $altBody, $actualRecipientUserId);
     }
@@ -1177,28 +1310,35 @@ class EmailService
         float $amountPaid,
         string $billingCycle,
         int $paymentId,
-        ?int $recipientUserId = null
+        ?int $recipientUserId = null,
+        ?string $referenceNumber = null
     ): bool {
-        $subject = "Your Payment Has Been Verified - {$unitNumber}";
-        $monthStr = date('F Y', strtotime($billingCycle));
+        $monthStr = (!empty($billingCycle) && strtotime($billingCycle) !== false)
+            ? date('F Y', strtotime($billingCycle))
+            : ($billingCycle ?: date('F Y'));
+        $subject = "TaraRent: Payment Verified & Approved - {$monthStr}";
         $formattedAmount = '₱' . number_format($amountPaid, 2);
+        $refDisplay = trim((string)$referenceNumber) !== ''
+            ? trim((string)$referenceNumber)
+            : ('PAY-' . str_pad((string)$paymentId, 5, '0', STR_PAD_LEFT));
 
-        $intro = "Great news! Your rental payment for <strong>{$monthStr}</strong> has been officially verified and recorded by property management.";
+        $intro = "Great news! Your rental payment of <strong>{$formattedAmount}</strong> for <strong>{$monthStr}</strong> (Reference: <strong>" . htmlspecialchars($refDisplay, ENT_QUOTES, 'UTF-8') . "</strong>) has been officially verified and approved by property management.";
 
         $details = [
-            'Apartment Unit'  => $unitNumber,
-            'Billing Cycle'   => $monthStr,
-            'Verified Amount' => $formattedAmount,
+            'Apartment Unit'    => $unitNumber,
+            'Reference Number'  => $refDisplay,
+            'Month Covered'     => $monthStr,
+            'Verified Amount'   => $formattedAmount,
             'Verification Date' => date('F j, Y • g:i A'),
-            'Payment Status'  => 'Verified & Approved'
+            'Payment Status'    => 'Verified & Approved'
         ];
 
         $config = MailConfig::get();
         $actionUrl = $config['app_url'] . '/tenant_portal.php?section=tenantPayments';
 
         $html = EmailTemplate::render(
-            'Payment Verified Successfully',
-            'RENTAL PAYMENT',
+            'Payment Verified & Approved',
+            'PAYMENT APPROVED',
             $tenantName,
             $intro,
             $details,
@@ -1207,7 +1347,7 @@ class EmailService
             'Thank you for keeping your account in good standing!'
         );
 
-        return self::send($pdo, $tenantEmail, $tenantName, $subject, $html, 'payment_verified', $paymentId, 'payment', true, null, $recipientUserId);
+        return self::send($pdo, $tenantEmail, $tenantName, $subject, $html, 'payment_verified', $paymentId, 'payment', false, null, $recipientUserId);
     }
 
     /**
@@ -1221,34 +1361,51 @@ class EmailService
         float $amountPaid,
         string $reason,
         int $paymentId,
-        ?int $recipientUserId = null
+        ?int $recipientUserId = null,
+        ?string $referenceNumber = null,
+        ?string $billingCycle = null
     ): bool {
-        $subject = "Payment Proof Requires Correction - {$unitNumber}";
+        $monthStr = (!empty($billingCycle) && strtotime($billingCycle) !== false)
+            ? date('F Y', strtotime($billingCycle))
+            : ($billingCycle ?: '');
+        $subject = $monthStr !== ''
+            ? "TaraRent: Payment Proof Rejected - {$monthStr}"
+            : "TaraRent: Payment Proof Rejected - {$unitNumber}";
+        $formattedAmount = '₱' . number_format($amountPaid, 2);
+        $refDisplay = trim((string)$referenceNumber) !== ''
+            ? trim((string)$referenceNumber)
+            : ('PAY-' . str_pad((string)$paymentId, 5, '0', STR_PAD_LEFT));
 
-        $intro = "Your recently submitted payment proof for <strong>{$unitNumber}</strong> could not be verified. Please review the management feedback below and re-submit a valid receipt.";
+        $intro = "Your recently submitted payment proof of <strong>{$formattedAmount}</strong> for <strong>{$unitNumber}</strong> (Reference: <strong>" . htmlspecialchars($refDisplay, ENT_QUOTES, 'UTF-8') . "</strong>) was rejected during review."
+            . "<br><br><strong>How to Resubmit:</strong> Please log in to your TaraRent Tenant Portal, open the <em>Payments</em> tab, and upload a clear receipt screenshot matching the billed amount and reference number.";
 
         $details = [
-            'Apartment Unit'  => $unitNumber,
-            'Status'          => 'Action Required (Rejected)',
-            'Management Note' => $reason ?: 'Payment proof was unclear or did not match the expected amount.',
-            'Action Needed'   => 'Please upload a clear screenshot or official receipt'
+            'Apartment Unit'   => $unitNumber,
+            'Reference Number' => $refDisplay,
+            'Amount'           => $formattedAmount,
+            'Status'           => 'Rejected (Action Required)',
+            'Reason / Remarks' => $reason ?: 'Payment proof was unclear or did not match the expected amount.',
+            'Action Needed'    => 'Please upload a clear screenshot or official receipt in the Tenant Portal.'
         ];
+        if ($monthStr !== '') {
+            $details['Month Covered'] = $monthStr;
+        }
 
         $config = MailConfig::get();
         $actionUrl = $config['app_url'] . '/tenant_portal.php?section=tenantPayments';
 
         $html = EmailTemplate::render(
-            'Payment Proof Requires Correction',
+            'Payment Proof Rejected',
             'ACTION REQUIRED',
             $tenantName,
             $intro,
             $details,
-            'Re-Upload Payment Proof',
+            'Resubmit Payment Proof',
             $actionUrl,
             'If you have questions regarding this notice, please contact property management.'
         );
 
-        return self::send($pdo, $tenantEmail, $tenantName, $subject, $html, 'payment_rejected', $paymentId, 'payment', true, null, $recipientUserId);
+        return self::send($pdo, $tenantEmail, $tenantName, $subject, $html, 'payment_rejected', $paymentId, 'payment', false, null, $recipientUserId);
     }
 
     /**
@@ -1383,51 +1540,70 @@ class EmailService
         string $unitNumber,
         float $amountDue,
         string $dueDate,
-        string $reminderType, // 'upcoming', 'upcoming_3days', 'upcoming_1day', 'due_today', 'overdue'
+        string $reminderType, // 'upcoming', 'upcoming_2_3days', 'upcoming_3days', 'upcoming_2days', 'upcoming_1day', 'due_today', 'overdue'
         int $paymentId,
-        ?int $recipientUserId = null
+        ?int $recipientUserId = null,
+        ?int $daysRemaining = null,
+        bool $checkDuplicate = true
     ): bool {
         $formattedAmount = '₱' . number_format($amountDue, 2);
         $dueFormatted = date('F j, Y', strtotime($dueDate));
         $config = MailConfig::get();
         $actionUrl = $config['app_url'] . '/tenant_portal.php?section=tenantPayments';
 
+        if ($daysRemaining === null && !empty($dueDate) && strtotime($dueDate) !== false) {
+            $today = new DateTimeImmutable('today');
+            $dueObj = new DateTimeImmutable(date('Y-m-d', strtotime($dueDate)));
+            $daysRemaining = (int)$today->diff($dueObj)->format('%r%a');
+        }
+
         switch ($reminderType) {
             case 'overdue':
-                $subject = "Overdue Payment Notice - {$unitNumber}";
-                $heading = "Payment Overdue Notice";
-                $badge   = "OVERDUE NOTICE";
-                $intro   = "Our records indicate that your rent payment for <strong>{$unitNumber}</strong> is currently overdue.<br><br><strong>Payment Details:</strong>";
-                $closing = "Please make sure to complete your payment and upload your receipt promptly.<br><br>Thank you!";
+                $subject    = "TaraRent: Overdue Rent Payment Notice - {$unitNumber}";
+                $heading    = "Payment Overdue Notice";
+                $badge      = "OVERDUE NOTICE";
+                $intro      = "Our records indicate that your rent payment for <strong>{$unitNumber}</strong> is currently overdue. Please settle your balance and upload your proof of payment as soon as possible.";
+                $buttonText = "Upload Proof of Payment";
+                $closing    = "Please make sure to complete your payment and upload your receipt promptly.<br><br>Thank you!";
                 break;
             case 'due_today':
-                $subject = "Rental Payment Reminder - {$unitNumber}";
-                $heading = "Rent Payment Due Today";
-                $badge   = "DUE TODAY";
-                $intro   = "This is a reminder that your rental payment for <strong>{$unitNumber}</strong> is due today.<br><br><strong>Payment Details:</strong>";
-                $closing = "Please make sure to complete your payment on or before the end of the day.<br><br>Thank you!";
+                $subject    = "TaraRent: Your Rent Payment is Due Today ({$unitNumber})";
+                $heading    = "Rent Payment Due Today";
+                $badge      = "DUE TODAY";
+                $intro      = "This is a friendly reminder that your rental payment for <strong>{$unitNumber}</strong> is due <strong>today ({$dueFormatted})</strong>. Please upload your proof of payment once settled.";
+                $buttonText = "Upload Proof of Payment";
+                $closing    = "Please make sure to complete your payment before the end of the day.<br><br>Thank you!";
                 break;
             case 'upcoming_1day':
-                $subject = "Rental Payment Reminder - {$unitNumber}";
-                $heading = "Upcoming Rent Reminder (Due Tomorrow)";
-                $badge   = "DUE TOMORROW";
-                $intro   = "This is a reminder regarding your upcoming rental payment for <strong>{$unitNumber}</strong> due tomorrow.<br><br><strong>Payment Details:</strong>";
-                $closing = "Please make sure to complete your payment on or before the due date.<br><br>Thank you!";
+                $subject    = "TaraRent: Your Rent is Due Tomorrow ({$unitNumber})";
+                $heading    = "Upcoming Rent Reminder (Due Tomorrow)";
+                $badge      = "DUE TOMORROW";
+                $intro      = "This is a friendly reminder regarding your upcoming rental payment for <strong>{$unitNumber}</strong> due tomorrow (<strong>{$dueFormatted}</strong>). Please upload your proof of payment once completed.";
+                $buttonText = "Upload Proof of Payment";
+                $closing    = "Please make sure to complete your payment on or before the due date.<br><br>Thank you!";
                 break;
+            case 'upcoming_2_3days':
             case 'upcoming_3days':
+            case 'upcoming_2days':
             case 'upcoming':
             default:
-                $subject = "Rental Payment Reminder - {$unitNumber}";
-                $heading = "Rental Payment Reminder";
-                $badge   = "UPCOMING RENT";
-                $intro   = "This is a reminder regarding your upcoming rental payment.<br><br><strong>Payment Details:</strong>";
-                $closing = "Please make sure to complete your payment on or before the due date.<br><br>Thank you!";
+                $daysLabel  = ($daysRemaining !== null && $daysRemaining >= 1) ? "{$daysRemaining} Day" . ($daysRemaining === 1 ? '' : 's') : '3 Days';
+                $subject    = ($daysRemaining !== null && $daysRemaining >= 1)
+                    ? "TaraRent: Your Rent is Due in {$daysLabel}"
+                    : "TaraRent: Rental Payment Reminder - {$unitNumber}";
+                $heading    = ($daysRemaining !== null && $daysRemaining >= 1)
+                    ? "Rent Payment Due in {$daysLabel}"
+                    : "Rental Payment Reminder";
+                $badge      = "RENT DUE REMINDER";
+                $intro      = "This is a friendly reminder that your upcoming rent payment for <strong>{$unitNumber}</strong> is due in <strong>{$daysLabel}</strong> (on <strong>{$dueFormatted}</strong>).<br><br>Once you complete your payment, please upload your proof of payment in the TaraRent Tenant Portal for verification.";
+                $buttonText = "Upload Proof of Payment";
+                $closing    = "Prompt submission helps keep your account and billing records up to date.<br><br>Thank you!";
                 break;
         }
 
         $details = [
             'Apartment Unit' => $unitNumber,
-            'Rental Amount'  => $formattedAmount,
+            'Amount Due'     => $formattedAmount,
             'Due Date'       => $dueFormatted,
             'Payment Status' => 'Unpaid'
         ];
@@ -1438,13 +1614,13 @@ class EmailService
             $tenantName,
             $intro,
             $details,
-            'View & Pay Rent in Dashboard',
+            $buttonText,
             $actionUrl,
             $closing
         );
 
         $templateType = 'payment_reminder_' . $reminderType;
-        return self::send($pdo, $tenantEmail, $tenantName, $subject, $html, $templateType, $paymentId, 'payment', true, null, $recipientUserId);
+        return self::send($pdo, $tenantEmail, $tenantName, $subject, $html, $templateType, $paymentId, 'payment', $checkDuplicate, null, $recipientUserId);
     }
 
     /**

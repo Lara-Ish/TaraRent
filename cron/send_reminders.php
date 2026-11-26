@@ -92,43 +92,59 @@ try {
 }
 
 // -----------------------------------------------------------------------------
-// 1. Upcoming Payment Reminders (3 Days Before Due Date)
+// 1. Upcoming Payment Reminders (2–3 Days Before Due Date)
 // -----------------------------------------------------------------------------
 try {
     $upcoming3Stmt = $pdo->prepare("
-        SELECT p.id, p.tenant_id, p.amount_due, p.due_date, p.billing_cycle,
-               u.name as tenant_name, u.email as tenant_email, un.unit_number
+        SELECT p.id, p.tenant_id, p.amount_due, COALESCE(p.amount_paid, 0) AS amount_paid, p.due_date, p.billing_cycle,
+               u.name as tenant_name, u.email as tenant_email, un.unit_number,
+               (p.due_date - CURRENT_DATE) AS days_remaining
         FROM payments p
         JOIN users u ON p.tenant_id = u.id
         LEFT JOIN units un ON p.unit_id = un.id
-        WHERE p.status NOT IN ('paid', 'verified', 'pending_setup')
-          AND p.amount_paid = 0
+        WHERE p.status NOT IN ('paid', 'verified', 'approved', 'pending', 'pending_setup')
+          AND (p.amount_due - COALESCE(p.amount_paid, 0)) > 0
           AND p.due_date IS NOT NULL
-          AND (p.due_date - CURRENT_DATE) = 3
+          AND (p.due_date - CURRENT_DATE) BETWEEN 2 AND 3
           AND u.is_active = TRUE
+          AND (u.is_archived = FALSE OR u.is_archived IS NULL)
     ");
     $upcoming3Stmt->execute();
     while ($row = $upcoming3Stmt->fetch(PDO::FETCH_ASSOC)) {
         $pid = (int)$row['id'];
         $tid = (int)$row['tenant_id'];
+        $daysLeft = (int)$row['days_remaining'];
+        $balanceDue = max(0.0, (float)$row['amount_due'] - (float)$row['amount_paid']);
 
-        $chk = $pdo->prepare("SELECT id FROM email_logs WHERE recipient_email = :e AND template_type = 'payment_reminder_upcoming_3days' AND reference_id = :ref LIMIT 1");
+        $chk = $pdo->prepare("
+            SELECT id FROM email_logs
+            WHERE recipient_email = :e
+              AND template_type LIKE 'payment_reminder%'
+              AND reference_id = :ref
+              AND reference_type = 'payment'
+              AND DATE(sent_at) = CURRENT_DATE
+              AND status IN ('sent', 'mock_sent')
+            LIMIT 1
+        ");
         $chk->execute([':e' => $row['tenant_email'], ':ref' => $pid]);
         if ($chk->fetch()) {
             $summary['duplicates_skipped']++;
             continue;
         }
 
+        $reminderType = ($daysLeft === 2) ? 'upcoming_2days' : 'upcoming_3days';
         $sent = EmailService::notifyTenantPaymentReminder(
             $pdo,
-            $row['tenant_email'],
-            $row['tenant_name'],
+            (string)$row['tenant_email'],
+            (string)$row['tenant_name'],
             $row['unit_number'] ?: 'Unit',
-            (float)$row['amount_due'],
-            $row['due_date'],
-            'upcoming_3days',
+            $balanceDue,
+            (string)$row['due_date'],
+            $reminderType,
             $pid,
-            $tid
+            $tid,
+            $daysLeft,
+            false
         );
 
         if ($sent) {
@@ -138,15 +154,16 @@ try {
                 $tid,
                 'payment',
                 'Upcoming Rental Payment Reminder',
-                "Reminder: Your rent payment of ₱" . number_format((float)$row['amount_due'], 2) . " for " . ($row['unit_number'] ?: 'your unit') . " is due in 3 days (" . date('F j, Y', strtotime($row['due_date'])) . ").",
+                "Reminder: Your rent payment of ₱" . number_format($balanceDue, 2) . " for " . ($row['unit_number'] ?: 'your unit') . " is due in {$daysLeft} days (" . date('F j, Y', strtotime((string)$row['due_date'])) . ").",
                 'tenantPayments',
                 $pid,
-                'payment_upcoming_3days'
+                "payment_upcoming_{$daysLeft}days",
+                false
             );
         }
     }
 } catch (Throwable $e) {
-    $summary['errors'][] = 'Upcoming 3-day scan error: ' . $e->getMessage();
+    $summary['errors'][] = 'Upcoming 2-3 day scan error: ' . $e->getMessage();
 }
 
 // -----------------------------------------------------------------------------
@@ -199,7 +216,8 @@ try {
                 "Reminder: Your rent payment of ₱" . number_format((float)$row['amount_due'], 2) . " for " . ($row['unit_number'] ?: 'your unit') . " is due tomorrow (" . date('F j, Y', strtotime($row['due_date'])) . ").",
                 'tenantPayments',
                 $pid,
-                'payment_upcoming_1day'
+                'payment_upcoming_1day',
+                false
             );
         }
     }
@@ -257,7 +275,8 @@ try {
                 "Your rent payment of ₱" . number_format((float)$row['amount_due'], 2) . " for " . ($row['unit_number'] ?: 'your unit') . " is due today (" . date('F j, Y', strtotime($row['due_date'])) . "). Please submit your payment.",
                 'tenantPayments',
                 $pid,
-                'payment_due_today'
+                'payment_due_today',
+                false
             );
         }
     }
@@ -323,7 +342,8 @@ try {
                 "Your rent payment of ₱" . number_format((float)$row['amount_due'], 2) . " for " . ($row['unit_number'] ?: 'your unit') . " is overdue. Please submit your payment promptly.",
                 'tenantPayments',
                 $pid,
-                'payment_overdue'
+                'payment_overdue',
+                false
             );
         }
     }
@@ -375,7 +395,8 @@ try {
                 "Your apartment lease is scheduled to end in 30 days (" . date('F j, Y', strtotime($row['lease_end'])) . ").",
                 'tenantProfile',
                 $tid,
-                'lease_expiring'
+                'lease_expiring',
+                false
             );
         }
     }

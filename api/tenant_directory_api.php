@@ -856,8 +856,29 @@ try {
                 ':id' => $tenantId
             ]);
 
+            $emailSent = false;
+            if ($decision === 'verified' && $tenantId > 0) {
+                try {
+                    NotificationService::notifyTenant(
+                        $pdo,
+                        $tenantId,
+                        'account',
+                        'Account Verified',
+                        'Your identity verification has been approved by the landlord. Your account is now fully verified and active.',
+                        'tenantProfile',
+                        $tenantId,
+                        'account_verified',
+                        false
+                    );
+                    $emailSent = EmailService::notifyTenantAccountVerified($pdo, $tenantId, 'Admin ID Verification');
+                } catch (Throwable $mailEx) {
+                    error_log('[Tenant Directory] Failed to dispatch account verified email: ' . $mailEx->getMessage());
+                }
+            }
+
             echo json_encode([
                 'status' => 'success',
+                'email_sent' => $emailSent,
                 'message' => "Tenant verification status updated to '{$decision}'."
             ]);
             exit;

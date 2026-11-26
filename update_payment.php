@@ -48,7 +48,7 @@ if (in_array($statusLower, ['approved', 'verified'], true)) {
 }
 
 // 1. Fetch current payment record
-$check = $pdo->prepare("SELECT id, tenant_id, payment_type, billing_cycle, due_date, amount_due, amount_paid, status, verification_notes FROM payments WHERE id = :id LIMIT 1");
+$check = $pdo->prepare("SELECT id, tenant_id, payment_type, billing_cycle, due_date, amount_due, amount_paid, payment_method, status, verification_notes FROM payments WHERE id = :id LIMIT 1");
 $check->execute([':id' => $paymentId]);
 $payment = $check->fetch(PDO::FETCH_ASSOC);
 
@@ -122,37 +122,18 @@ if ($tenantId > 0) {
         $rawCycle = (string)($payment['billing_cycle'] ?? '');
         $billingMonth = (!empty($rawCycle) && strtotime($rawCycle) !== false) ? date('F Y', strtotime($rawCycle)) : ($rawCycle ?: date('F Y'));
 
-        // 4. Call mailer function: "Your payment of [Amount] for [Billing Month] has been [Status]."
-        // If rejected, include the landlord's reason if provided.
-        $messageBody = "Your payment of <strong>{$formattedAmount}</strong> for <strong>{$billingMonth}</strong> has been <strong>{$statusDisplay}</strong>.";
-        if ($statusDisplay === 'Rejected' && !empty($finalNotes)) {
-            $messageBody .= "<br><br><strong>Reason:</strong> " . htmlspecialchars($finalNotes, ENT_QUOTES, 'UTF-8');
-        }
-
-        $subject = "Payment {$statusDisplay} - {$billingMonth}";
-        $details = [
-            'Amount'        => $formattedAmount,
-            'Billing Month' => $billingMonth,
-            'Status'        => $statusDisplay,
-        ];
-        if (!empty($finalNotes)) {
-            $details['Notes / Reason'] = $finalNotes;
-        }
-
-        $config = MailConfig::get();
-        $actionUrl = $config['app_url'] . '/tenant_portal.php?section=tenantPayments&tab=tracker';
+        $refNum = EmailService::extractPaymentReference($payment);
 
         try {
-            $emailSent = sendTenantNotification(
-                $tenantEmail,
-                $subject,
-                $messageBody,
-                $tenantName,
-                $details,
-                'View Payment Tracker',
-                $actionUrl,
+            $emailSent = EmailService::notifyTenantPaymentDecision(
+                $pdo,
                 $tenantId,
-                $pdo
+                $amtVal,
+                (string)($payment['billing_cycle'] ?? $billingMonth),
+                $statusDisplay,
+                $finalNotes,
+                $paymentId,
+                $refNum
             );
         } catch (Throwable $mailEx) {
             error_log('[update_payment] Email dispatch failed: ' . $mailEx->getMessage());
@@ -171,7 +152,8 @@ if ($tenantId > 0) {
             $notifMsg,
             'tenantPayments',
             $paymentId,
-            'payment_' . strtolower($statusDisplay)
+            'payment_' . strtolower($statusDisplay),
+            false
         );
     }
 }

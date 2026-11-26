@@ -99,29 +99,14 @@ $tenantEmail = trim((string)($reportRow['tenant_email'] ?? ''));
 $reportSubject = (string)$reportRow['subject'];
 
 if (!empty($tenantEmail) && filter_var($tenantEmail, FILTER_VALIDATE_EMAIL)) {
-    // Exact requirement: "The status of your [Maintenance/Report] request regarding '[Issue/Title]' has been updated to: [New Status]."
-    $emailTitle = "Report Request Update: {$reportSubject}";
-    $emailMessage = "The status of your Report request regarding '<strong>" . htmlspecialchars($reportSubject, ENT_QUOTES, 'UTF-8') . "</strong>' has been updated to: <strong>{$statusToSave}</strong>.";
-    if (!empty($remarksToSave)) {
-        $emailMessage .= "<br><br><strong>Landlord Remarks:</strong> " . htmlspecialchars($remarksToSave, ENT_QUOTES, 'UTF-8');
-    }
-
     try {
-        $emailSent = sendTenantNotification(
-            $tenantEmail,
-            $emailTitle,
-            $emailMessage,
-            (string)($reportRow['tenant_name'] ?? 'Tenant'),
-            [
-                'Request Type'     => 'General Report',
-                'Report Subject'   => $reportSubject,
-                'Updated Status'   => $statusToSave,
-                'Landlord Remarks' => $remarksToSave ?: 'Reviewed by property management.'
-            ],
-            'View Report History',
-            MailConfig::get()['app_url'] . '/tenant_portal.php?section=tenantReport',
+        $emailSent = EmailService::notifyTenantReportStatusUpdate(
+            $pdo,
             $tenantId,
-            $pdo
+            $reportSubject,
+            $statusToSave,
+            $remarksToSave,
+            $reportId
         );
     } catch (Throwable $mailEx) {
         error_log('[update_report] Email error: ' . $mailEx->getMessage());
