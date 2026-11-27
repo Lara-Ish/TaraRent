@@ -1411,7 +1411,7 @@ try {
                         FROM additional_spaces s
                         LEFT JOIN users u ON s.assigned_tenant_id = u.id
                         WHERE s.id = :id
-                        FOR UPDATE
+                        FOR UPDATE OF s
                     ");
                     $spaceStmt->execute([':id' => $sId]);
                     $spaceRow = $spaceStmt->fetch();
