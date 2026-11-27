@@ -3554,11 +3554,11 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
             </div>
 
             <!-- Live Camera Capture Interface (Front) -->
-            <div id="idFrontCameraCaptureContainer" class="hidden rounded-2xl overflow-hidden bg-[#1c1206] border-2 border-[#B89B72] shadow-lg flex-col" style="display: none; border-radius: 16px; overflow: hidden; background: #1c1206; border: 2px solid #B89B72; box-shadow: 0 6px 20px rgba(43,26,6,0.18); flex-direction: column;">
-              <div class="relative w-full h-52 sm:h-60 bg-[#0f0b06] flex items-center justify-center overflow-hidden" style="position: relative; width: 100%; height: 220px; background: #0f0b06; display: flex; align-items: center; justify-content: center; overflow: hidden;">
+            <div id="idFrontCameraCaptureContainer" class="hidden rounded-2xl overflow-hidden bg-[#1c1206] border-2 border-[#B89B72] shadow-lg flex-col" style="display: none; width: 100%; max-width: 480px; margin: 0 auto; border-radius: 16px; overflow: hidden; background: #1c1206; border: 2px solid #B89B72; box-shadow: 0 6px 20px rgba(43,26,6,0.18); flex-direction: column;">
+              <div id="idFrontCameraViewport" class="relative w-full bg-[#0f0b06] flex items-center justify-center overflow-hidden" style="position: relative; width: 100%; aspect-ratio: 16 / 10; background: #0f0b06; display: flex; align-items: center; justify-content: center; overflow: hidden;">
                 <video id="idFrontCameraVideo" autoplay playsinline muted class="w-full h-full object-cover block" style="width: 100%; height: 100%; object-fit: cover; display: block;"></video>
                 <canvas id="idFrontCameraCanvas" style="display: none;"></canvas>
-                <img id="idFrontCameraCapturedPreview" alt="Captured Front ID Preview" class="hidden w-full h-full object-contain" style="display: none; width: 100%; height: 100%; object-fit: contain;">
+                <img id="idFrontCameraCapturedPreview" alt="Captured Front ID Preview" class="hidden w-full h-full object-cover" style="display: none; width: 100%; height: 100%; object-fit: cover;">
                 <div id="idFrontCameraCardGuide" class="pointer-events-none absolute inset-3 sm:inset-5 border-2 border-dashed border-[#B89B72]/80 rounded-xl flex items-end justify-center pb-2.5 transition-opacity" style="position: absolute; top: 12px; bottom: 12px; left: 16px; right: 16px; border: 2px dashed rgba(184, 155, 114, 0.85); border-radius: 12px; display: flex; align-items: flex-end; justify-content: center; padding-bottom: 8px; pointer-events: none;">
                   <span class="bg-[#1c1206]/80 text-[#F5F0E6] text-[11px] font-bold px-2.5 py-0.5 rounded-full border border-white/20" style="background: rgba(28, 18, 6, 0.85); color: #F5F0E6; font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 9999px; border: 1px solid rgba(255, 255, 255, 0.2);">
                     Align FRONT side of ID card within frame
@@ -3622,9 +3622,9 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
             <input type="hidden" id="captured_id_base64" value="">
 
             <!-- Image Preview Card (Front) -->
-            <div id="idFrontImagePreviewCard" class="hidden rounded-xl overflow-hidden bg-white border-2 border-[#B89B72] shadow-md" style="display: none; border-radius: 14px; overflow: hidden; background: #ffffff; border: 2px solid #B89B72; box-shadow: 0 4px 12px rgba(43,26,6,0.12);">
-              <div class="relative w-full h-44 bg-[#1c1206] flex items-center justify-center overflow-hidden" style="position: relative; width: 100%; height: 175px; background: #1c1206; display: flex; align-items: center; justify-content: center; overflow: hidden;">
-                <img id="idFrontVisualPreviewImg" src="" alt="Uploaded Front ID Preview" class="w-full h-full object-contain block" style="width: 100%; height: 100%; object-fit: contain; display: block;">
+            <div id="idFrontImagePreviewCard" class="hidden rounded-xl overflow-hidden bg-white border-2 border-[#B89B72] shadow-md" style="display: none; width: 100%; max-width: 480px; margin: 0 auto; border-radius: 14px; overflow: hidden; background: #ffffff; border: 2px solid #B89B72; box-shadow: 0 4px 12px rgba(43,26,6,0.12);">
+              <div class="relative w-full bg-[#1c1206] flex items-center justify-center overflow-hidden" style="position: relative; width: 100%; aspect-ratio: 16 / 10; background: #1c1206; display: flex; align-items: center; justify-content: center; overflow: hidden;">
+                <img id="idFrontVisualPreviewImg" src="" alt="Uploaded Front ID Preview" class="w-full h-full object-cover block" style="width: 100%; height: 100%; object-fit: cover; display: block;">
                 <button type="button" 
                         class="btn-remove-attached-photo absolute top-2.5 right-2.5 bg-[#1c1206]/85 hover:bg-[#1c1206] text-white w-8 h-8 rounded-full flex items-center justify-center cursor-pointer border border-white/35 transition-colors" 
                         id="btnRemoveFrontAttachedPhoto" 
@@ -3688,11 +3688,11 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
             </div>
 
             <!-- Live Camera Capture Interface (Back) -->
-            <div id="idBackCameraCaptureContainer" class="hidden rounded-2xl overflow-hidden bg-[#1c1206] border-2 border-[#B89B72] shadow-lg flex-col" style="display: none; border-radius: 16px; overflow: hidden; background: #1c1206; border: 2px solid #B89B72; box-shadow: 0 6px 20px rgba(43,26,6,0.18); flex-direction: column;">
-              <div class="relative w-full h-52 sm:h-60 bg-[#0f0b06] flex items-center justify-center overflow-hidden" style="position: relative; width: 100%; height: 220px; background: #0f0b06; display: flex; align-items: center; justify-content: center; overflow: hidden;">
+            <div id="idBackCameraCaptureContainer" class="hidden rounded-2xl overflow-hidden bg-[#1c1206] border-2 border-[#B89B72] shadow-lg flex-col" style="display: none; width: 100%; max-width: 480px; margin: 0 auto; border-radius: 16px; overflow: hidden; background: #1c1206; border: 2px solid #B89B72; box-shadow: 0 6px 20px rgba(43,26,6,0.18); flex-direction: column;">
+              <div id="idBackCameraViewport" class="relative w-full bg-[#0f0b06] flex items-center justify-center overflow-hidden" style="position: relative; width: 100%; aspect-ratio: 16 / 10; background: #0f0b06; display: flex; align-items: center; justify-content: center; overflow: hidden;">
                 <video id="idBackCameraVideo" autoplay playsinline muted class="w-full h-full object-cover block" style="width: 100%; height: 100%; object-fit: cover; display: block;"></video>
                 <canvas id="idBackCameraCanvas" style="display: none;"></canvas>
-                <img id="idBackCameraCapturedPreview" alt="Captured Back ID Preview" class="hidden w-full h-full object-contain" style="display: none; width: 100%; height: 100%; object-fit: contain;">
+                <img id="idBackCameraCapturedPreview" alt="Captured Back ID Preview" class="hidden w-full h-full object-cover" style="display: none; width: 100%; height: 100%; object-fit: cover;">
                 <div id="idBackCameraCardGuide" class="pointer-events-none absolute inset-3 sm:inset-5 border-2 border-dashed border-[#B89B72]/80 rounded-xl flex items-end justify-center pb-2.5 transition-opacity" style="position: absolute; top: 12px; bottom: 12px; left: 16px; right: 16px; border: 2px dashed rgba(184, 155, 114, 0.85); border-radius: 12px; display: flex; align-items: flex-end; justify-content: center; padding-bottom: 8px; pointer-events: none;">
                   <span class="bg-[#1c1206]/80 text-[#F5F0E6] text-[11px] font-bold px-2.5 py-0.5 rounded-full border border-white/20" style="background: rgba(28, 18, 6, 0.85); color: #F5F0E6; font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 9999px; border: 1px solid rgba(255, 255, 255, 0.2);">
                     Align BACK side of ID card within frame
@@ -3753,9 +3753,9 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
             <input type="hidden" name="captured_id_back_base64" id="captured_back_id_base64" value="">
 
             <!-- Image Preview Card (Back) -->
-            <div id="idBackImagePreviewCard" class="hidden rounded-xl overflow-hidden bg-white border-2 border-[#B89B72] shadow-md" style="display: none; border-radius: 14px; overflow: hidden; background: #ffffff; border: 2px solid #B89B72; box-shadow: 0 4px 12px rgba(43,26,6,0.12);">
-              <div class="relative w-full h-44 bg-[#1c1206] flex items-center justify-center overflow-hidden" style="position: relative; width: 100%; height: 175px; background: #1c1206; display: flex; align-items: center; justify-content: center; overflow: hidden;">
-                <img id="idBackVisualPreviewImg" src="" alt="Uploaded Back ID Preview" class="w-full h-full object-contain block" style="width: 100%; height: 100%; object-fit: contain; display: block;">
+            <div id="idBackImagePreviewCard" class="hidden rounded-xl overflow-hidden bg-white border-2 border-[#B89B72] shadow-md" style="display: none; width: 100%; max-width: 480px; margin: 0 auto; border-radius: 14px; overflow: hidden; background: #ffffff; border: 2px solid #B89B72; box-shadow: 0 4px 12px rgba(43,26,6,0.12);">
+              <div class="relative w-full bg-[#1c1206] flex items-center justify-center overflow-hidden" style="position: relative; width: 100%; aspect-ratio: 16 / 10; background: #1c1206; display: flex; align-items: center; justify-content: center; overflow: hidden;">
+                <img id="idBackVisualPreviewImg" src="" alt="Uploaded Back ID Preview" class="w-full h-full object-cover block" style="width: 100%; height: 100%; object-fit: cover; display: block;">
                 <button type="button" 
                         class="btn-remove-attached-photo absolute top-2.5 right-2.5 bg-[#1c1206]/85 hover:bg-[#1c1206] text-white w-8 h-8 rounded-full flex items-center justify-center cursor-pointer border border-white/35 transition-colors" 
                         id="btnRemoveBackAttachedPhoto" 
@@ -5408,8 +5408,8 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
         idCameraStream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: { ideal: 'environment' },
-            width: { ideal: 1920, min: 640 },
-            height: { ideal: 1080, min: 480 }
+            width: { ideal: 1920 },
+            height: { ideal: 1080 }
           },
           audio: false
         });
@@ -5468,17 +5468,44 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
 
       if (!videoEl || !canvasEl) return;
 
-      const w = videoEl.videoWidth || 1280;
-      const h = videoEl.videoHeight || 720;
-      canvasEl.width = w;
-      canvasEl.height = h;
+      const viewportEl = document.getElementById('id' + cap + 'CameraViewport') || videoEl.parentElement;
+      const vpW = viewportEl ? viewportEl.clientWidth : 0;
+      const vpH = viewportEl ? viewportEl.clientHeight : 0;
+      const targetRatio = (vpW > 0 && vpH > 0) ? (vpW / vpH) : (16 / 10);
+
+      const rawW = videoEl.videoWidth || 1280;
+      const rawH = videoEl.videoHeight || 800;
+      const videoRatio = rawW / rawH;
+
+      let sx = 0;
+      let sy = 0;
+      let sw = rawW;
+      let sh = rawH;
+
+      if (videoRatio > targetRatio) {
+        sh = rawH;
+        sw = sh * targetRatio;
+        sx = (rawW - sw) / 2;
+        sy = 0;
+      } else if (videoRatio < targetRatio) {
+        sw = rawW;
+        sh = sw / targetRatio;
+        sx = 0;
+        sy = (rawH - sh) / 2;
+      }
+
+      const outWidth = 1280;
+      const outHeight = Math.round(outWidth / targetRatio);
+      canvasEl.width = outWidth;
+      canvasEl.height = outHeight;
 
       const ctx = canvasEl.getContext('2d');
-      ctx.drawImage(videoEl, 0, 0, w, h);
+      ctx.drawImage(videoEl, sx, sy, sw, sh, 0, 0, outWidth, outHeight);
 
       const dataUrl = canvasEl.toDataURL('image/jpeg', 0.95);
       if (previewImg) {
         previewImg.src = dataUrl;
+        previewImg.classList.remove('hidden');
         previewImg.style.display = 'block';
       }
       if (videoEl) {
