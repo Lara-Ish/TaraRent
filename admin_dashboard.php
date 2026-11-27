@@ -232,7 +232,7 @@ $completedTickets = array_values(array_filter($tickets, fn($t) => $t['status'] =
 
 // Fetch General Tenant Reports (strictly separated from maintenance_tickets, deduplicated)
 $tenantReports = $pdo->query("
-    SELECT DISTINCT tr.*, u.name AS tenant_name, u.email AS tenant_email, u.phone AS tenant_phone, un.unit_number, rv.name AS reviewer_name
+    SELECT DISTINCT tr.*, u.name AS tenant_name, u.email AS tenant_email, u.phone AS tenant_phone, u.profile_picture AS tenant_profile_picture, un.unit_number, rv.name AS reviewer_name
     FROM tenant_reports tr
     JOIN users u ON tr.tenant_id = u.id
     LEFT JOIN units un ON tr.unit_id = un.id
@@ -2428,10 +2428,32 @@ try {
               </div>
             </div>
 
-            <!-- PANE 2: REVIEWED REPORTS (APPROVED / REJECTED / ACKNOWLEDGED) -->
+            <!-- PANE 2: REVIEWED REPORTS (APPROVED / REJECTED) -->
             <div id="paneReviewedReports" role="tabpanel" aria-labelledby="btnTabReviewedReports" style="display: none;">
-              <div class="maintenance-unified-box" id="reportsReviewedUnifiedBox">
-                <div class="maintenance-unified-grid" id="reportsReviewedGrid"></div>
+              <div class="maintenance-completed-card">
+                <div style="overflow-x: auto;">
+                  <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 13.5px;">
+                    <thead>
+                      <tr style="border-bottom: 2px solid rgba(166, 180, 204, 0.3); color: #422B0B; font-weight: 800; background: #EFE3CC;">
+                        <th style="padding: 14px 16px;">Request Number</th>
+                        <th style="padding: 14px 16px;">Tenant Name</th>
+                        <th style="padding: 14px 16px;">Unit</th>
+                        <th style="padding: 14px 16px;">Request Description</th>
+                        <th style="padding: 14px 16px;">Date Submitted</th>
+                        <th style="padding: 14px 16px;">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody id="reviewedReportsTableBody">
+                      <tr id="emptyReviewedReportsRow">
+                        <td colspan="6" style="text-align: center; padding: 42px 14px; color: var(--text-muted); font-size: 14px;">
+                          <div style="margin-bottom: 8px; display: flex; justify-content: center; color: #94a3b8;"><i data-lucide="clipboard-list" class="w-8 h-8" aria-hidden="true"></i></div>
+                          <strong>No reviewed general reports yet.</strong>
+                          <div style="font-size: 12px; color: #94a3b8; margin-top: 4px;">Approved and rejected requests will appear here for historical review.</div>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
               </div>
             </div>
           </div>
@@ -2673,26 +2695,37 @@ try {
                   <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 13.5px;">
                     <thead>
                       <tr style="border-bottom: 2px solid rgba(166, 180, 204, 0.3); color: #422B0B; font-weight: 800; background: #EFE3CC;">
-                        <th style="padding: 14px 16px;">Billing Month</th>
-                        <th style="padding: 14px 16px;">Type</th>
+                        <th style="padding: 14px 16px;">Payment / Ref No.</th>
+                        <th style="padding: 14px 16px;">Tenant Name</th>
                         <th style="padding: 14px 16px;">Unit</th>
-                        <th style="padding: 14px 16px;">Tenant</th>
-                        <th style="padding: 14px 16px;">Amount Due</th>
-                        <th style="padding: 14px 16px;">Amount Paid</th>
+                        <th style="padding: 14px 16px;">Payment Details</th>
+                        <th style="padding: 14px 16px;">Date Verified</th>
                         <th style="padding: 14px 16px;">Status</th>
                       </tr>
                     </thead>
                     <tbody id="paymentRecordsTableBody">
                       <?php if (empty($historyPayments)): ?>
                       <tr id="paymentEmptyStateRow">
-                        <td colspan="7" style="text-align: center; padding: 42px 14px; color: var(--text-muted); font-size: 14px;">
+                        <td colspan="6" style="text-align: center; padding: 42px 14px; color: var(--text-muted); font-size: 14px;">
                           <div style="margin-bottom: 8px; display: flex; justify-content: center; color: #94a3b8;"><i data-lucide="receipt" class="w-8 h-8" aria-hidden="true"></i></div>
                           <strong style="color: #302313;">No processed payment records found.</strong>
                           <div style="font-size: 12px; color: #7A6245; margin-top: 4px;">Verified, approved, and archived payment records will appear here.</div>
                         </td>
                       </tr>
                       <?php else: ?>
-                      <?php foreach ($historyPayments as $pm): ?>
+                      <?php foreach ($historyPayments as $pm):
+                        $pmUnitRaw = trim((string)($pm['unit_number'] ?? ''));
+                        $pmUnitLabel = $pmUnitRaw !== ''
+                          ? (preg_match('/^unit\b/i', $pmUnitRaw) ? $pmUnitRaw : 'Unit ' . $pmUnitRaw)
+                          : ('Unit ' . (string)($pm['unit_id'] ?? ''));
+                        $pmTypeLabel = (($pm['payment_type'] ?? 'Rent') === 'Advance Deposit') ? 'Advance Deposit' : 'Monthly Rent';
+                        $pmPeriodStr = !empty($pm['billing_cycle']) ? date('F Y', strtotime($pm['billing_cycle'])) . ' • ' . $pmTypeLabel : $pmTypeLabel;
+                        $pmAmountVal = ((float)($pm['amount_paid'] ?? 0) > 0) ? (float)$pm['amount_paid'] : (float)($pm['amount_due'] ?? 0);
+                        $pmDateRaw = !empty($pm['verified_at']) ? $pm['verified_at'] : (!empty($pm['payment_date']) ? $pm['payment_date'] : ($pm['created_at'] ?? ''));
+                        $pmDateFmt = !empty($pmDateRaw) ? date('M j, Y', strtotime($pmDateRaw)) : '—';
+                        $pmRefDisplay = '#PAY-' . str_pad((string)$pm['id'], 4, '0', STR_PAD_LEFT);
+                        $pmStatusNorm = strtolower(trim((string)($pm['status'] ?? '')));
+                      ?>
                       <tr class="clickable-payment-row payment-record-row"
                           id="payment-row-<?= $pm['id'] ?>"
                           data-id="<?= $pm['id'] ?>"
@@ -2706,73 +2739,54 @@ try {
                           onclick="openPaymentDetailsModal(<?= htmlspecialchars(json_encode($pm), ENT_QUOTES, 'UTF-8') ?>)"
                           title="Click to view detailed payment verification &amp; audit">
                         <td style="padding: 14px 16px; font-weight: 700; color: #56380E; white-space: nowrap;">
-                          <?php if (!empty($pm['billing_cycle'])): ?>
-                            <?= date('F Y', strtotime($pm['billing_cycle'])) ?>
-                          <?php else: ?>
-                            <span style="color: #92400e; font-style: italic; background: #fef3c7; padding: 3px 8px; border-radius: 6px; font-size: 11.5px; border: 1px solid rgba(245, 158, 11, 0.25);">To be assigned</span>
-                          <?php endif; ?>
+                          <?= htmlspecialchars($pmRefDisplay) ?>
+                        </td>
+                        <td style="padding: 14px 16px; font-weight: 600; color: #0f172a; white-space: nowrap;">
+                          <?= htmlspecialchars($pm['tenant_name'] ?? '-') ?>
                         </td>
                         <td style="padding: 14px 16px; white-space: nowrap;">
-                          <?php if (($pm['payment_type'] ?? 'Rent') === 'Advance Deposit'): ?>
-                            <span class="clay-badge" style="background: #F5E6C4; color: #7B4B19; font-weight: 800; font-size: 11px; border: 1px solid rgba(181, 143, 83, 0.45);">
-                              Advance Deposit
-                            </span>
-                          <?php else: ?>
-                            <span class="clay-badge" style="background: #e0f2fe; color: #0369a1; font-weight: 800; font-size: 11px; border: 1px solid rgba(3, 105, 161, 0.25);">
-                              Monthly Rent
-                            </span>
-                          <?php endif; ?>
-                        </td>
-                        <td style="padding: 14px 16px; white-space: nowrap;">
-                          <span class="clay-badge" style="background: #F3E4C6; color: #56380E; border: 1px solid rgba(181, 143, 83, 0.35); font-weight: 800; font-size: 11.5px;">
-                            <?= htmlspecialchars($pm['unit_number']) ?>
+                          <span class="clay-badge" style="background: #F3E4C6; color: #56380E; border: 1px solid rgba(181, 143, 83, 0.35); font-weight: 800; font-size: 11px;">
+                            <?= htmlspecialchars($pmUnitLabel) ?>
                           </span>
                         </td>
-                        <td style="padding: 14px 16px; white-space: nowrap;">
-                          <div style="display: flex; align-items: center; gap: 8px;">
-                            <div style="width: 28px; height: 28px; border-radius: 8px; background: linear-gradient(135deg, #B58F53, #56380E); color: #fffdf8; font-weight: 800; font-size: 12px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
-                              <?= strtoupper(substr($pm['tenant_name'], 0, 1)) ?>
-                            </div>
-                            <span style="font-weight: 600; color: #0f172a;"><?= htmlspecialchars($pm['tenant_name']) ?></span>
+                        <td style="padding: 14px 16px; max-width: 320px;">
+                          <div style="font-weight: 600; color: #1e293b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="<?= htmlspecialchars($pmPeriodStr) ?>">
+                            <?= htmlspecialchars($pmPeriodStr) ?>
+                          </div>
+                          <div style="font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px;">
+                            PHP <?= number_format($pmAmountVal, 2) ?>
                           </div>
                         </td>
-                        <td style="padding: 14px 16px; font-weight: 700; white-space: nowrap;">
-                          <?php if ($pm['amount_due'] !== null && (float)$pm['amount_due'] > 0): ?>
-                            ₱<?= number_format((float)$pm['amount_due'], 2) ?>
-                          <?php else: ?>
-                            <span style="color: var(--text-muted); font-style: italic; font-size: 12px;">Awaiting configuration</span>
-                          <?php endif; ?>
-                        </td>
-                        <td style="padding: 14px 16px; font-weight: 700; color: <?= (float)$pm['amount_paid'] > 0 ? '#047857' : 'var(--text-muted)' ?>; white-space: nowrap;">
-                          ₱<?= number_format((float)$pm['amount_paid'], 2) ?>
+                        <td style="padding: 14px 16px; font-size: 12.5px; color: var(--text-muted); white-space: nowrap;">
+                          <?= htmlspecialchars($pmDateFmt) ?>
                         </td>
                         <td style="padding: 14px 16px; white-space: nowrap;">
-                          <?php if ($pm['status'] === 'pending_setup'): ?>
-                            <span class="clay-badge" style="background: #fef3c7; color: #92400e; font-weight: 800; border: 1px solid rgba(245, 158, 11, 0.35); font-size: 10.5px; padding: 4px 10px;">
-                              AWAITING CONFIGURATION
+                          <?php if (in_array($pmStatusNorm, ['approved', 'verified', 'paid'], true)): ?>
+                            <span class="clay-badge badge-approved" style="font-weight: 700; font-size: 11.5px; padding: 4px 10px;">
+                              Verified
                             </span>
-                          <?php elseif ($pm['status'] === 'unpaid'): ?>
-                            <span class="clay-badge" style="background: #fee2e2; color: #991b1b; font-weight: 800; border: 1px solid rgba(239, 68, 68, 0.35); font-size: 10.5px; padding: 4px 10px;">
-                              UNPAID
+                          <?php elseif ($pmStatusNorm === 'rejected'): ?>
+                            <span class="clay-badge badge-rejected" style="font-weight: 700; font-size: 11.5px; padding: 4px 10px;">
+                              Rejected
                             </span>
-                          <?php elseif ($pm['status'] === 'approved'): ?>
-                            <span class="clay-badge badge-approved" style="font-size: 10.5px; padding: 4px 10px;">
-                              APPROVED
+                          <?php elseif ($pmStatusNorm === 'pending_setup'): ?>
+                            <span class="clay-badge badge-pending" style="font-weight: 700; font-size: 11.5px; padding: 4px 10px;">
+                              Pending Setup
                             </span>
-                          <?php elseif ($pm['status'] === 'rejected'): ?>
-                            <span class="clay-badge badge-rejected" style="font-size: 10.5px; padding: 4px 10px;">
-                              REJECTED
+                          <?php elseif ($pmStatusNorm === 'unpaid'): ?>
+                            <span class="clay-badge badge-rejected" style="font-weight: 700; font-size: 11.5px; padding: 4px 10px;">
+                              Unpaid
                             </span>
                           <?php else: ?>
-                            <span class="clay-badge badge-<?= strtolower($pm['status']) ?>" style="font-size: 10.5px; padding: 4px 10px;">
-                              <?= strtoupper($pm['status']) ?>
+                            <span class="clay-badge badge-<?= htmlspecialchars($pmStatusNorm) ?>" style="font-weight: 700; font-size: 11.5px; padding: 4px 10px;">
+                              <?= htmlspecialchars(ucfirst($pmStatusNorm ?: 'Processed')) ?>
                             </span>
                           <?php endif; ?>
                         </td>
                       </tr>
                       <?php endforeach; ?>
                       <tr id="paymentNoFilterResultsRow" style="display: none;">
-                        <td colspan="7" style="text-align: center; padding: 32px 14px; color: var(--text-muted); font-size: 13.5px;">
+                        <td colspan="6" style="text-align: center; padding: 32px 14px; color: var(--text-muted); font-size: 13.5px;">
                           No payment records match the selected filters. <a href="javascript:void(0)" onclick="resetPaymentFilters()" style="color: var(--clay-primary); font-weight: 700; text-decoration: underline;">Reset filters</a>
                         </td>
                       </tr>
@@ -3638,7 +3652,7 @@ try {
 
       <!-- Tenant & Unit Info -->
       <div style="display: flex; align-items: center; gap: 14px; background: rgba(248, 250, 252, 0.9); border: 1px solid rgba(166, 180, 204, 0.35); border-radius: 12px; padding: 12px 16px; margin-bottom: 16px;">
-        <div style="width: 40px; height: 40px; border-radius: 50%; background: linear-gradient(135deg, #B58F53, #56380E); color: #fff; font-weight: 800; font-size: 16px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;" id="mdlReportTenantAvatar">
+        <div style="width: 44px; height: 44px; border-radius: 50%; overflow: hidden; background: linear-gradient(135deg, #B58F53, #56380E); color: #fff; font-weight: 800; font-size: 16px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; border: 1.5px solid #B89B72;" id="mdlReportTenantAvatar">
           T
         </div>
         <div style="flex: 1; min-width: 0;">
@@ -3673,9 +3687,8 @@ try {
 
         <!-- Action Buttons Row (Active / Pending Review State) -->
         <div id="mdlReportActionButtons" class="report-decision-actions">
-          <button type="button" id="btnReportApprove" class="report-action-btn report-action-btn--approve" onclick="handleReportDecision('Approved')" style="display:inline-flex;align-items:center;justify-content:center;gap:5px;"><i data-lucide="check" class="w-4 h-4" aria-hidden="true"></i> Approve</button>
-          <button type="button" id="btnReportAcknowledge" class="report-action-btn report-action-btn--acknowledge" onclick="handleReportDecision('Acknowledged')" style="display:inline-flex;align-items:center;justify-content:center;gap:5px;"><i data-lucide="eye" class="w-4 h-4" aria-hidden="true"></i> Acknowledge</button>
-          <button type="button" id="btnReportReject" class="report-action-btn report-action-btn--reject" onclick="handleReportDecision('Rejected')" style="display:inline-flex;align-items:center;justify-content:center;gap:5px;"><i data-lucide="x" class="w-4 h-4" aria-hidden="true"></i> Reject</button>
+          <button type="button" id="btnReportApprove" class="report-action-btn report-action-btn--approve" onclick="handleReportDecision('Approved')" style="display:inline-flex;align-items:center;justify-content:center;gap:6px;width:100%;"><i data-lucide="check" class="w-4 h-4" aria-hidden="true"></i> Approve</button>
+          <button type="button" id="btnReportReject" class="report-action-btn report-action-btn--reject" onclick="handleReportDecision('Rejected')" style="display:inline-flex;align-items:center;justify-content:center;gap:6px;width:100%;"><i data-lucide="x" class="w-4 h-4" aria-hidden="true"></i> Reject</button>
         </div>
 
         <!-- Read-Only Reviewed Actions: Single Neutral Close Button -->
@@ -4023,6 +4036,27 @@ try {
       <div style="display: flex; align-items: center; justify-content: center; min-width: 240px; min-height: 160px;">
         <img id="ticketPhotoLightboxImg" src="" alt="Ticket Attachment Full Preview" style="max-width: 90vw; max-height: 85vh; width: auto; height: auto; object-fit: contain; border-radius: 10px; display: block;">
         <div id="ticketPhotoLightboxEmpty" style="display: none; padding: 36px 24px; text-align: center; color: #7A6245; font-size: 14px; font-weight: 700;">
+          Photo unavailable
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- LIGHTBOX MODAL: FULL REPORT ATTACHMENT PHOTO PREVIEW -->
+  <div class="modal-backdrop hidden" id="reportPhotoLightboxModal" onclick="if(event.target === this) { event.stopPropagation(); closeReportPhotoLightbox(); }" style="display: none; align-items: center; justify-content: center; background: rgba(15, 23, 42, 0.85); backdrop-filter: blur(4px); z-index: 100060; position: fixed; inset: 0; padding: 20px;" role="dialog" aria-modal="true" aria-labelledby="reportPhotoLightboxTitle">
+    <div onclick="event.stopPropagation()" style="position: relative; max-width: 94vw; max-height: 92vh; background: #ffffff; border-radius: 16px; padding: 14px 16px 16px; box-shadow: 0 25px 60px rgba(0,0,0,0.45); display: flex; flex-direction: column; align-items: center; border: 2px solid #B89B72;">
+      <div style="width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid #E8D8B0;">
+        <h3 id="reportPhotoLightboxTitle" style="font-size: 15px; font-weight: 800; color: #3E2723; margin: 0; display: flex; align-items: center; gap: 8px;">
+          <i data-lucide="image" class="w-4 h-4" style="color: #9A7B4F;" aria-hidden="true"></i>
+          <span>Supporting Photo Preview</span>
+        </h3>
+        <button type="button" id="btnCloseReportPhotoLightbox" onclick="event.stopPropagation(); closeReportPhotoLightbox();" title="Close photo preview (Esc)" aria-label="Close photo preview" style="width: 34px; height: 34px; border-radius: 999px; border: 1px solid #E8D8B0; background: #FAF5EC; color: #3E2723; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; font-weight: 800;">
+          <i data-lucide="x" class="w-4 h-4" style="pointer-events: none;" aria-hidden="true"></i>
+        </button>
+      </div>
+      <div style="display: flex; align-items: center; justify-content: center; min-width: 240px; min-height: 160px;">
+        <img id="reportPhotoLightboxImg" src="" alt="Report Attachment Full Preview" style="max-width: 90vw; max-height: 85vh; width: auto; height: auto; object-fit: contain; border-radius: 10px; display: block;">
+        <div id="reportPhotoLightboxEmpty" style="display: none; padding: 36px 24px; text-align: center; color: #7A6245; font-size: 14px; font-weight: 700;">
           Photo unavailable
         </div>
       </div>
@@ -4735,6 +4769,7 @@ try {
       else if (id === 'announcementModal' && typeof closeAnnouncementModal === 'function') closeAnnouncementModal(true);
       else if (id === 'modalAdminProfileId' && typeof closeAdminIdModal === 'function') closeAdminIdModal(true);
       else if (id === 'ticketPhotoLightboxModal' && typeof closeTicketPhotoLightbox === 'function') closeTicketPhotoLightbox(true);
+      else if (id === 'reportPhotoLightboxModal' && typeof closeReportPhotoLightbox === 'function') closeReportPhotoLightbox(true);
     }
     window.closeModal = closeModal;
 
@@ -8892,6 +8927,11 @@ try {
     // Universal Escape key listener for closing modals
     document.addEventListener('keydown', function(e) {
       if (e.key === 'Escape' || e.keyCode === 27) {
+        const reportPhotoLightbox = document.getElementById('reportPhotoLightboxModal');
+        if (reportPhotoLightbox && (reportPhotoLightbox.classList.contains('open') || reportPhotoLightbox.classList.contains('active') || reportPhotoLightbox.style.display === 'flex')) {
+          closeReportPhotoLightbox();
+          return;
+        }
         const photoLightbox = document.getElementById('ticketPhotoLightboxModal');
         if (photoLightbox && (photoLightbox.classList.contains('open') || photoLightbox.classList.contains('active') || photoLightbox.style.display === 'flex')) {
           closeTicketPhotoLightbox();
@@ -9120,6 +9160,90 @@ try {
       });
     }
 
+    function openReportByIdFromCache(reportId) {
+      const idNum = parseInt(reportId, 10);
+      const found = (Array.isArray(window.allReportsData) ? window.allReportsData : []).find(r => parseInt(r.id, 10) === idNum);
+      if (found) {
+        openReportDetailsModal(found);
+      }
+    }
+
+    function renderReviewedReportsTable(tbodyEl, list, emptyTitle, emptySub) {
+      if (!tbodyEl) return;
+      if (!list || list.length === 0) {
+        tbodyEl.innerHTML = `
+          <tr id="emptyReviewedReportsRow">
+            <td colspan="6" style="text-align: center; padding: 42px 14px; color: var(--text-muted); font-size: 14px;">
+              <div style="margin-bottom: 8px; display: flex; justify-content: center; color: #94a3b8;">${window.rcIcon('clipboard-list', 'w-8 h-8')}</div>
+              <strong>${escapeHtml(emptyTitle)}</strong>
+              <div style="font-size: 12px; color: #94a3b8; margin-top: 4px;">${escapeHtml(emptySub)}</div>
+            </td>
+          </tr>
+        `;
+        return;
+      }
+
+      tbodyEl.innerHTML = list.map(rep => {
+        const rawUnit = String(rep.unit_number || '').trim();
+        const unitStr = rawUnit
+          ? (/^unit\b/i.test(rawUnit) ? rawUnit : `Unit ${rawUnit}`)
+          : 'Unassigned';
+        const dateStr = rep.created_at
+          ? new Date(String(rep.created_at).replace(' ', 'T')).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+          : '-';
+        const titleStr = String(rep.subject || rep.category || 'General Request').trim();
+        const detailsRaw = String(rep.details || rep.category || '').trim();
+        const detailsPreview = detailsRaw.length > 60 ? detailsRaw.slice(0, 57) + '...' : detailsRaw;
+
+        const stNorm = String(rep.status || 'Approved').trim().toLowerCase();
+        let badgeClass = 'badge-approved';
+        let statusLabel = 'Approved';
+        if (stNorm === 'rejected') {
+          badgeClass = 'badge-rejected';
+          statusLabel = 'Rejected';
+        } else if (stNorm === 'acknowledged') {
+          badgeClass = 'badge-open';
+          statusLabel = 'Acknowledged';
+        } else if (stNorm === 'approved') {
+          badgeClass = 'badge-approved';
+          statusLabel = 'Approved';
+        } else {
+          statusLabel = stNorm.charAt(0).toUpperCase() + stNorm.slice(1);
+        }
+
+        return `
+          <tr class="clickable-ticket-row"
+              data-report-id="${rep.id}"
+              tabindex="0"
+              role="button"
+              style="border-bottom: 1px solid rgba(166, 180, 204, 0.15); cursor: pointer;"
+              onclick="openReportByIdFromCache(${rep.id})"
+              onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openReportByIdFromCache(${rep.id}); }"
+              title="Click to view reviewed report details">
+            <td style="padding: 14px 16px; font-weight: 700; color: #56380E; white-space: nowrap;">#GR-${String(rep.id).padStart(4, '0')}</td>
+            <td style="padding: 14px 16px; font-weight: 600; color: #0f172a; white-space: nowrap;">${escapeHtml(rep.tenant_name || '-')}</td>
+            <td style="padding: 14px 16px; white-space: nowrap;">
+              <span class="clay-badge" style="background: #F3E4C6; color: #56380E; border: 1px solid rgba(181, 143, 83, 0.35); font-weight: 800; font-size: 11px;">
+                ${escapeHtml(unitStr)}
+              </span>
+            </td>
+            <td style="padding: 14px 16px; max-width: 320px;">
+              <div style="font-weight: 600; color: #1e293b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${escapeHtml(titleStr)}">
+                ${escapeHtml(titleStr)}
+              </div>
+              ${detailsPreview ? `<div style="font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px;" title="${escapeHtml(detailsRaw)}">${escapeHtml(detailsPreview)}</div>` : ''}
+            </td>
+            <td style="padding: 14px 16px; font-size: 12.5px; color: var(--text-muted); white-space: nowrap;">${escapeHtml(dateStr)}</td>
+            <td style="padding: 14px 16px; white-space: nowrap;">
+              <span class="clay-badge ${badgeClass}" style="font-weight: 700; font-size: 11.5px; padding: 4px 10px;">
+                ${escapeHtml(statusLabel)}
+              </span>
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+
     function renderReportsFolderViews() {
       const all = Array.isArray(window.allReportsData) ? window.allReportsData : [];
       const filterEl = document.getElementById('reportsCategoryFilter');
@@ -9135,11 +9259,11 @@ try {
         'No pending general reports',
         catFilter === 'ALL' ? 'New tenant requests will appear here for review.' : `No pending reports under "${catFilter}".`
       );
-      renderReportsCardGrid(
-        document.getElementById('reportsReviewedGrid'),
+      renderReviewedReportsTable(
+        document.getElementById('reviewedReportsTableBody'),
         reviewedList,
         'No reviewed general reports yet',
-        catFilter === 'ALL' ? 'Approved, acknowledged, and rejected reports appear here.' : `No reviewed reports under "${catFilter}".`
+        catFilter === 'ALL' ? 'Approved and rejected reports appear here.' : `No reviewed reports under "${catFilter}".`
       );
       updateReportCounters();
     }
@@ -9181,37 +9305,130 @@ try {
       document.getElementById('mdlReportDate').textContent = `Submitted on ${createdFmt}`;
 
       const tName = rep.tenant_name || 'Resident';
-      document.getElementById('mdlReportTenantAvatar').textContent = tName.trim().charAt(0).toUpperCase() || 'T';
+      const tInitial = tName.trim().charAt(0).toUpperCase() || 'T';
+      const avatarEl = document.getElementById('mdlReportTenantAvatar');
+      if (avatarEl) {
+        const avatarSrc = resolveReportTenantAvatarUrl(rep);
+        avatarEl.innerHTML = '';
+        if (avatarSrc) {
+          const avImg = document.createElement('img');
+          avImg.src = avatarSrc;
+          avImg.alt = tName;
+          avImg.style.cssText = 'width: 100%; height: 100%; border-radius: 50%; object-fit: cover; display: block;';
+          avImg.onerror = function() {
+            avImg.onerror = null;
+            avatarEl.innerHTML = '';
+            avatarEl.textContent = tInitial;
+          };
+          avatarEl.appendChild(avImg);
+        } else {
+          avatarEl.textContent = tInitial;
+        }
+      }
       document.getElementById('mdlReportTenantName').textContent = tName;
-      document.getElementById('mdlReportUnitBadge').textContent = rep.unit_number ? `Unit ${rep.unit_number}` : 'Unassigned';
+
+      const rawUnit = String(rep.unit_number || '').trim();
+      const formattedUnit = rawUnit
+        ? (/^unit\b/i.test(rawUnit) ? rawUnit : `Unit ${rawUnit}`)
+        : 'Unassigned';
+      document.getElementById('mdlReportUnitBadge').textContent = formattedUnit;
       document.getElementById('mdlReportTenantMeta').textContent = [rep.tenant_phone || '', rep.tenant_email || ''].filter(Boolean).join(' • ') || 'Registered Tenant';
       document.getElementById('mdlReportDetails').textContent = rep.details || 'No details provided.';
 
       const attSec = document.getElementById('mdlReportAttachmentsSection');
       const attCont = document.getElementById('mdlReportAttachmentsContainer');
       attCont.innerHTML = '';
-      if (rep.attachment_path && String(rep.attachment_path).trim() !== '') {
-        const files = String(rep.attachment_path).split(',').map(s => s.trim()).filter(Boolean);
-        if (files.length > 0) {
-          attSec.style.display = 'block';
-          files.forEach(src => {
+      const reportFiles = typeof parseTicketPhotoPaths === 'function'
+        ? parseTicketPhotoPaths(rep.attachment_path)
+        : String(rep.attachment_path || '').split(',').map(s => s.trim()).filter(Boolean);
+
+      if (reportFiles.length > 0) {
+        attSec.style.display = 'block';
+        reportFiles.forEach((rawSrc, idx) => {
+          const resolved = resolveReportAttachmentUrl(rawSrc);
+          if (!resolved.primary) return;
+
+          const cleanLower = resolved.primary.split('?')[0].toLowerCase();
+          const isDoc = /\.(pdf|doc|docx)$/i.test(cleanLower);
+
+          if (isDoc) {
+            const fileName = decodeSafeSegment(cleanLower.split('/').pop() || 'Attachment');
+            const isPdf = cleanLower.endsWith('.pdf');
             const link = document.createElement('a');
-            link.href = src;
+            link.href = resolved.primary;
             link.target = '_blank';
             link.rel = 'noopener';
-            if (src.toLowerCase().endsWith('.pdf')) {
-              link.style.cssText = 'display:inline-flex;align-items:center;gap:6px;padding:8px 12px;border-radius:8px;background:#FFF9EE;border:1.5px solid rgba(181,143,83,0.4);color:#56380E;font-size:12px;font-weight:700;text-decoration:none;';
-              link.innerHTML = `${window.rcIcon('file-text', 'w-4 h-4')} Open PDF Attachment`;
-            } else {
-              const img = document.createElement('img');
-              img.src = src;
-              img.alt = 'Report attachment';
-              img.style.cssText = 'width:84px;height:84px;object-fit:cover;border-radius:10px;border:1.5px solid rgba(86,56,14,0.22);';
-              link.appendChild(img);
-            }
+            link.style.cssText = 'display:inline-flex;align-items:center;gap:6px;padding:8px 12px;border-radius:10px;background:#FFF9EE;border:1.5px solid #B89B72;color:#56380E;font-size:12px;font-weight:700;text-decoration:none;cursor:pointer;';
+            link.innerHTML = `${window.rcIcon('file-text', 'w-4 h-4')} <span>${isPdf ? 'Open PDF' : escapeHtml(fileName)}</span>`;
             attCont.appendChild(link);
+            return;
+          }
+
+          let activeUrl = resolved.primary;
+          let triedFallback = false;
+          let isUnavailable = false;
+          const label = reportFiles.length > 1 ? `Supporting Photo ${idx + 1}` : 'Supporting Photo Preview';
+
+          const thumbCard = document.createElement('div');
+          thumbCard.style.cssText = 'width: 90px; height: 90px; border-radius: 10px; overflow: hidden; border: 1.5px solid #B89B72; background: #FAF5EC; box-shadow: 0 3px 10px rgba(74,55,40,0.1); cursor: pointer; position: relative; display: flex; align-items: center; justify-content: center; flex-shrink: 0; text-decoration: none; transition: transform 0.15s ease, box-shadow 0.15s ease;';
+          thumbCard.title = 'Click to view full photo';
+
+          const img = document.createElement('img');
+          img.alt = 'Supporting Photo';
+          img.style.cssText = 'width: 100%; height: 100%; object-fit: cover; display: block;';
+
+          const unavailEl = document.createElement('div');
+          unavailEl.style.cssText = 'display: none; flex-direction: column; align-items: center; justify-content: center; gap: 3px; padding: 6px; text-align: center; font-size: 10.5px; font-weight: 700; color: #7A6245;';
+          unavailEl.innerHTML = `${window.rcIcon('image-off', 'w-4 h-4')}<span>Photo unavailable</span>`;
+
+          img.onerror = function() {
+            if (!triedFallback && resolved.fallback && resolved.fallback !== activeUrl) {
+              triedFallback = true;
+              activeUrl = resolved.fallback;
+              img.src = activeUrl;
+              return;
+            }
+            isUnavailable = true;
+            img.onerror = null;
+            img.style.display = 'none';
+            unavailEl.style.display = 'flex';
+            thumbCard.style.cursor = 'default';
+            thumbCard.title = 'Photo unavailable';
+          };
+
+          img.onload = function() {
+            isUnavailable = false;
+            img.style.display = 'block';
+            unavailEl.style.display = 'none';
+            thumbCard.style.cursor = 'pointer';
+          };
+
+          thumbCard.addEventListener('mouseenter', () => {
+            if (!isUnavailable) {
+              thumbCard.style.transform = 'scale(1.03)';
+              thumbCard.style.boxShadow = '0 6px 14px rgba(74,55,40,0.2)';
+            }
           });
-        } else {
+          thumbCard.addEventListener('mouseleave', () => {
+            thumbCard.style.transform = 'scale(1)';
+            thumbCard.style.boxShadow = '0 3px 10px rgba(74,55,40,0.1)';
+          });
+          thumbCard.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (isUnavailable) {
+              if (typeof showToast === 'function') showToast('Photo unavailable.', 'warning');
+              return;
+            }
+            openReportPhotoLightbox(activeUrl, label);
+          });
+
+          img.src = activeUrl;
+          thumbCard.appendChild(img);
+          thumbCard.appendChild(unavailEl);
+          attCont.appendChild(thumbCard);
+        });
+        if (attCont.children.length === 0) {
           attSec.style.display = 'none';
         }
       } else {
@@ -9266,6 +9483,133 @@ try {
       openModal('reportDetailsModal');
     }
 
+    function resolveReportTenantAvatarUrl(rep) {
+      if (!rep) return '';
+      const raw = String(rep.tenant_avatar_url || rep.tenant_profile_picture || rep.profile_picture || rep.avatar_url || '').trim().replace(/\\/g, '/');
+      if (!raw) return '';
+      if (/^(https?:\/\/|data:image\/)/i.test(raw)) return raw;
+      let normalized = raw.replace(/^\.\//, '').replace(/\/{2,}/g, '/');
+      if (normalized.startsWith('/uploads/')) normalized = normalized.slice(1);
+      if (normalized.toLowerCase().startsWith('uploads/')) {
+        return normalized;
+      }
+      if (normalized.toLowerCase().startsWith('avatars/')) {
+        return 'uploads/' + encodeRelativeSegments(normalized);
+      }
+      if (normalized.startsWith('/')) return normalized;
+      return 'uploads/avatars/' + encodeURIComponent(decodeSafeSegment(normalized));
+    }
+
+    function resolveReportAttachmentUrl(rawItem) {
+      const cleanedRaw = String(rawItem || '').trim().replace(/\\/g, '/');
+      if (!cleanedRaw) return { primary: '', fallback: '' };
+
+      if (/^(data:image\/|blob:)/i.test(cleanedRaw)) {
+        return { primary: cleanedRaw, fallback: '' };
+      }
+
+      if (/^https?:\/\//i.test(cleanedRaw)) {
+        const baseName = cleanedRaw.split('?')[0].split('/').pop() || '';
+        const localFallback = baseName ? ('uploads/reports/' + encodeURIComponent(decodeSafeSegment(baseName))) : '';
+        return { primary: cleanedRaw, fallback: localFallback };
+      }
+
+      let normalized = cleanedRaw.replace(/^\.\//, '').replace(/\/{2,}/g, '/');
+      if (normalized.startsWith('/uploads/')) {
+        normalized = normalized.slice(1);
+      }
+
+      const lower = normalized.toLowerCase();
+      if (lower.startsWith('uploads/reports/')) {
+        const relFile = normalized.slice('uploads/reports/'.length);
+        const safePath = 'uploads/reports/' + encodeRelativeSegments(relFile);
+        const baseName = relFile.split('/').pop() || '';
+        return {
+          primary: safePath,
+          fallback: baseName ? ('uploads/requests/' + encodeURIComponent(decodeSafeSegment(baseName))) : ''
+        };
+      }
+      if (lower.startsWith('uploads/requests/')) {
+        const relFile = normalized.slice('uploads/requests/'.length);
+        const safePath = 'uploads/requests/' + encodeRelativeSegments(relFile);
+        const baseName = relFile.split('/').pop() || '';
+        return {
+          primary: safePath,
+          fallback: baseName ? ('uploads/reports/' + encodeURIComponent(decodeSafeSegment(baseName))) : ''
+        };
+      }
+      if (lower.startsWith('uploads/')) {
+        const relFile = normalized.slice('uploads/'.length);
+        const safePath = 'uploads/' + encodeRelativeSegments(relFile);
+        const baseName = relFile.split('/').pop() || '';
+        return {
+          primary: safePath,
+          fallback: baseName ? ('uploads/reports/' + encodeURIComponent(decodeSafeSegment(baseName))) : ''
+        };
+      }
+      if (lower.startsWith('reports/') || lower.startsWith('requests/')) {
+        return { primary: 'uploads/' + encodeRelativeSegments(normalized), fallback: '' };
+      }
+      if (normalized.startsWith('/')) {
+        return { primary: normalized, fallback: '' };
+      }
+
+      const safeFile = encodeRelativeSegments(normalized);
+      return {
+        primary: 'uploads/reports/' + safeFile,
+        fallback: 'uploads/requests/' + safeFile
+      };
+    }
+
+    function openReportPhotoLightbox(imageUrl, label = 'Supporting Photo Preview') {
+      const modal = document.getElementById('reportPhotoLightboxModal');
+      const img = document.getElementById('reportPhotoLightboxImg');
+      const empty = document.getElementById('reportPhotoLightboxEmpty');
+      const titleEl = document.getElementById('reportPhotoLightboxTitle');
+      if (!modal || !img) return;
+
+      if (titleEl) {
+        const span = titleEl.querySelector('span');
+        if (span) span.textContent = label || 'Supporting Photo Preview';
+      }
+
+      const showUnavailable = () => {
+        img.onerror = null;
+        img.onload = null;
+        img.removeAttribute('src');
+        img.style.display = 'none';
+        if (empty) empty.style.display = 'block';
+      };
+
+      if (!imageUrl) {
+        showUnavailable();
+      } else {
+        if (empty) empty.style.display = 'none';
+        img.style.display = 'block';
+        img.onerror = showUnavailable;
+        img.onload = () => {
+          img.style.display = 'block';
+          if (empty) empty.style.display = 'none';
+        };
+        img.src = imageUrl;
+      }
+
+      openModal('reportPhotoLightboxModal');
+    }
+
+    function closeReportPhotoLightbox(fromCloseModal = false) {
+      const modal = document.getElementById('reportPhotoLightboxModal');
+      if (modal) {
+        modal.classList.add('hidden');
+        modal.classList.remove('open', 'active');
+        modal.style.display = 'none';
+        modal.style.pointerEvents = 'none';
+      }
+      const reportModal = document.getElementById('reportDetailsModal');
+      const isReportModalOpen = reportModal && !reportModal.classList.contains('hidden') && reportModal.style.display !== 'none';
+      document.body.style.overflow = isReportModalOpen ? 'hidden' : '';
+    }
+
     function closeReportDetailsModal(fromCloseModal = false) {
       const modal = document.getElementById('reportDetailsModal');
       if (modal) {
@@ -9301,7 +9645,6 @@ try {
 
       const btns = [
         document.getElementById('btnReportApprove'),
-        document.getElementById('btnReportAcknowledge'),
         document.getElementById('btnReportReject')
       ].filter(Boolean);
       btns.forEach(b => { b.disabled = true; });

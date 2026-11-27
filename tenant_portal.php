@@ -330,9 +330,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (
         $category = 'General Request';
     }
 
-    // 3. Securely handle $_FILES upload for supporting document (Supabase Cloud Storage)
+    // 3. Securely handle $_FILES upload for supporting document(s) (Supabase Cloud Storage + local fallback)
 
     $savedFiles = [];
+    $seenUploadKeys = [];
     $allowedExts = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'pdf', 'doc', 'docx'];
     $allowedMimes = [
         'image/jpeg', 'image/png', 'image/webp', 'image/gif',
@@ -341,7 +342,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (
         'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
     ];
 
-    $fileInputs = ['request_attachment', 'request_attachments', 'report_attachments', 'document', 'attachment', 'attachments', 'file'];
+    $fileInputs = ['request_attachments', 'supporting_docs', 'request_attachment', 'report_attachments', 'document', 'attachment', 'attachments', 'file'];
     foreach ($fileInputs as $fKey) {
         if (!isset($_FILES[$fKey])) continue;
         $f = $_FILES[$fKey];
@@ -350,7 +351,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (
         if (is_array($f['name'])) {
             $count = count($f['name']);
             for ($i = 0; $i < $count; $i++) {
-                if ($f['error'][$i] === UPLOAD_ERR_OK && !empty($f['tmp_name'][$i])) {
+                if (($f['error'][$i] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_OK && !empty($f['tmp_name'][$i])) {
                     $filesToProcess[] = [
                         'name'     => $f['name'][$i],
                         'tmp_name' => $f['tmp_name'][$i],
@@ -358,12 +359,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (
                     ];
                 }
             }
-        } elseif ($f['error'] === UPLOAD_ERR_OK && !empty($f['tmp_name'])) {
+        } elseif (($f['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_OK && !empty($f['tmp_name'])) {
             $filesToProcess[] = $f;
         }
 
         foreach ($filesToProcess as $fileItem) {
-            if ($fileItem['size'] > 15 * 1024 * 1024) continue; // 15MB limit
+            if ((int)$fileItem['size'] > 15 * 1024 * 1024) continue; // 15MB limit
+            $dedupKey = (string)$fileItem['name'] . '|' . (string)$fileItem['size'];
+            if (isset($seenUploadKeys[$dedupKey])) continue;
+
             $ext = strtolower(pathinfo((string)$fileItem['name'], PATHINFO_EXTENSION));
             if (!in_array($ext, $allowedExts, true)) continue;
 
@@ -374,12 +378,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (
                 if (!in_array($mime, $allowedMimes, true)) continue;
             }
 
+            $seenUploadKeys[$dedupKey] = true;
             $safeFilename = 'report_' . $tenantId . '_' . time() . '_' . bin2hex(random_bytes(6)) . '.' . $ext;
 
-            // Upload directly to Supabase Storage bucket 'reports' via REST API
-            $publicDocUrl = uploadToSupabaseStorage($fileItem['tmp_name'], $safeFilename, 'reports');
+            // Upload directly to Supabase Storage bucket 'reports' via REST API, with local uploads/reports fallback
+            $publicDocUrl = function_exists('uploadToSupabaseStorage')
+                ? uploadToSupabaseStorage($fileItem['tmp_name'], $safeFilename, 'reports')
+                : false;
             if ($publicDocUrl !== false) {
                 $savedFiles[] = $publicDocUrl;
+            } else {
+                $localDir = __DIR__ . '/uploads/reports';
+                if (!is_dir($localDir)) {
+                    @mkdir($localDir, 0755, true);
+                }
+                $localDest = $localDir . '/' . $safeFilename;
+                if (@move_uploaded_file($fileItem['tmp_name'], $localDest) || @copy($fileItem['tmp_name'], $localDest)) {
+                    $savedFiles[] = 'uploads/reports/' . $safeFilename;
+                }
             }
         }
     }
@@ -2225,19 +2241,19 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
                   <label
                     for="requestAttachments"
                     id="uploadDashedZone"
-                    class="flex items-center justify-center gap-3 w-full rounded-xl
+                    class="flex flex-col sm:flex-row items-center justify-center gap-2 sm:gap-3 w-full rounded-xl
                            border-2 border-dashed border-[#8C6D43]
                            bg-[#FBF8F1]/80 text-[#422B0B] hover:bg-white
                            py-5 px-4 text-center transition-all cursor-pointer shadow-sm
                            <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed pointer-events-none' : '' ?>">
-                    <span class="font-bold text-sm sm:text-base text-[#422B0B]" style="color: #422B0B !important;">
+                    <span id="uploadDashedZoneLabel" class="font-bold text-sm sm:text-base text-[#422B0B]" style="color: #422B0B !important;">
                       Upload Supporting Document/Photo
                     </span>
-                    <svg class="w-6 h-6 text-[#5E3F12]" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+                    <svg class="w-6 h-6 text-[#5E3F12] flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
                       <path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M12 12V4m0 0L8 8m4-4l4 4"/>
                     </svg>
                   </label>
-                  <div id="requestFilePreview" class="flex flex-wrap gap-2 mt-2"></div>
+                  <div id="requestFilePreview" class="flex flex-wrap gap-3 mt-3" style="display: none;"></div>
                 </div>
 
                 <!-- Submit Request Button -->
@@ -2430,20 +2446,179 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
         }
 
         /**
-         * Handle file selection preview chips
+         * Cumulative file list & visual thumbnail preview grid for Report and Approval Request
          */
-        function handleRequestFileSelect(input) {
+        let requestAttachmentFiles = [];
+
+        function isPreviewableImageFile(file) {
+          if (!file) return false;
+          if (file.type && file.type.startsWith('image/')) return true;
+          return /\.(jpe?g|png|webp|gif|bmp)$/i.test(String(file.name || ''));
+        }
+
+        function syncRequestAttachmentsInput(input) {
+          if (!input) input = document.getElementById('requestAttachments');
+          if (!input || typeof DataTransfer === 'undefined') return;
+          const dt = new DataTransfer();
+          requestAttachmentFiles.forEach(item => {
+            if (item && item.file) {
+              dt.items.add(item.file);
+            }
+          });
+          input.files = dt.files;
+        }
+
+        function updateUploadZoneLabel() {
+          const labelEl = document.getElementById('uploadDashedZoneLabel');
+          if (!labelEl) return;
+          if (requestAttachmentFiles.length > 0) {
+            labelEl.textContent = `Add More Supporting Photos/Documents (${requestAttachmentFiles.length} attached)`;
+          } else {
+            labelEl.textContent = 'Upload Supporting Document/Photo';
+          }
+        }
+
+        function openRequestAttachmentLightbox(imageUrl, fileName) {
+          const modal = document.getElementById('requestAttachmentLightboxModal');
+          const img = document.getElementById('requestAttachmentLightboxImg');
+          const titleEl = document.getElementById('requestAttachmentLightboxTitle');
+          if (!modal || !img || !imageUrl) return;
+
+          if (titleEl) {
+            const span = titleEl.querySelector('span');
+            if (span) span.textContent = fileName || 'Photo Preview';
+          }
+          img.src = imageUrl;
+          img.alt = fileName || 'Attached photo preview';
+          openModal('requestAttachmentLightboxModal');
+        }
+
+        function removeRequestAttachment(index) {
+          if (index < 0 || index >= requestAttachmentFiles.length) return;
+          const [removed] = requestAttachmentFiles.splice(index, 1);
+          if (removed && removed.objectUrl) {
+            try { URL.revokeObjectURL(removed.objectUrl); } catch (e) {}
+          }
+          syncRequestAttachmentsInput(document.getElementById('requestAttachments'));
+          renderRequestFilePreview();
+        }
+
+        function clearRequestAttachments() {
+          requestAttachmentFiles.forEach(item => {
+            if (item && item.objectUrl) {
+              try { URL.revokeObjectURL(item.objectUrl); } catch (e) {}
+            }
+          });
+          requestAttachmentFiles = [];
+          syncRequestAttachmentsInput(document.getElementById('requestAttachments'));
+          renderRequestFilePreview();
+        }
+
+        function renderRequestFilePreview() {
           const preview = document.getElementById('requestFilePreview');
           if (!preview) return;
           preview.innerHTML = '';
-          if (input.files && input.files.length > 0) {
-            Array.from(input.files).forEach(f => {
-              const chip = document.createElement('span');
-              chip.className = 'inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#4A3728] text-white text-xs font-bold shadow-sm';
-              chip.textContent = '📎 ' + (f.name.length > 25 ? f.name.substring(0, 22) + '...' : f.name);
-              preview.appendChild(chip);
-            });
+          updateUploadZoneLabel();
+
+          if (requestAttachmentFiles.length === 0) {
+            preview.style.display = 'none';
+            return;
           }
+
+          preview.style.display = 'flex';
+          requestAttachmentFiles.forEach((item, idx) => {
+            const file = item.file;
+            const card = document.createElement('div');
+            card.style.cssText = 'position: relative; width: 112px; height: 112px; border-radius: 12px; overflow: hidden; border: 1.5px solid #B89B72; background: #FAF5EC; box-shadow: 0 4px 12px rgba(74,55,40,0.12); flex-shrink: 0; transition: transform 0.16s ease, box-shadow 0.16s ease;';
+
+            if (item.isImage && item.objectUrl) {
+              card.style.cursor = 'pointer';
+              card.title = 'Click to view full photo: ' + file.name;
+
+              const img = document.createElement('img');
+              img.src = item.objectUrl;
+              img.alt = file.name;
+              img.style.cssText = 'width: 100%; height: 100%; object-fit: cover; display: block; transition: transform 0.2s ease;';
+
+              const caption = document.createElement('div');
+              caption.style.cssText = 'position: absolute; left: 0; right: 0; bottom: 0; padding: 4px 6px; background: linear-gradient(transparent, rgba(43,26,6,0.78)); color: #fff; font-size: 10px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none;';
+              caption.textContent = file.name;
+
+              card.addEventListener('mouseenter', () => {
+                img.style.transform = 'scale(1.05)';
+                card.style.boxShadow = '0 6px 16px rgba(74,55,40,0.22)';
+              });
+              card.addEventListener('mouseleave', () => {
+                img.style.transform = 'scale(1)';
+                card.style.boxShadow = '0 4px 12px rgba(74,55,40,0.12)';
+              });
+              card.addEventListener('click', () => {
+                openRequestAttachmentLightbox(item.objectUrl, file.name);
+              });
+
+              card.appendChild(img);
+              card.appendChild(caption);
+            } else {
+              card.style.cssText += ' display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 10px 8px; gap: 6px; text-align: center;';
+              card.title = file.name;
+
+              const ext = (file.name.split('.').pop() || 'FILE').toUpperCase().slice(0, 5);
+              const iconBox = document.createElement('div');
+              iconBox.style.cssText = 'width: 38px; height: 38px; border-radius: 10px; background: #EFE3CC; color: #5E3F12; display: flex; align-items: center; justify-content: center;';
+              iconBox.innerHTML = '<svg style="width:20px;height:20px;" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path stroke-linecap="round" stroke-linejoin="round" d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/></svg>';
+
+              const extBadge = document.createElement('span');
+              extBadge.style.cssText = 'font-size: 9.5px; font-weight: 800; color: #fff; background: #8C6D43; padding: 1px 6px; border-radius: 999px; letter-spacing: 0.4px;';
+              extBadge.textContent = ext;
+
+              const nameEl = document.createElement('span');
+              nameEl.style.cssText = 'font-size: 11px; font-weight: 700; color: #3E2723; width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;';
+              nameEl.textContent = file.name;
+
+              card.appendChild(iconBox);
+              card.appendChild(extBadge);
+              card.appendChild(nameEl);
+            }
+
+            const removeBtn = document.createElement('button');
+            removeBtn.type = 'button';
+            removeBtn.className = 'btn-remove-attached-photo';
+            removeBtn.title = 'Remove file';
+            removeBtn.setAttribute('aria-label', 'Remove ' + file.name);
+            removeBtn.innerHTML = '&times;';
+            removeBtn.style.cssText = 'position: absolute; top: 5px; right: 5px; width: 22px; height: 22px; border-radius: 9999px; background: rgba(62, 39, 35, 0.88); color: #ffffff; border: 1.5px solid #ffffff; font-size: 14px; font-weight: 800; line-height: 1; display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 3; box-shadow: 0 2px 6px rgba(0,0,0,0.28); padding: 0;';
+            removeBtn.addEventListener('click', (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              removeRequestAttachment(idx);
+            });
+
+            card.appendChild(removeBtn);
+            preview.appendChild(card);
+          });
+        }
+
+        function handleRequestFileSelect(input) {
+          if (!input || !input.files) return;
+          const incoming = Array.from(input.files);
+          if (incoming.length === 0) return;
+
+          incoming.forEach(file => {
+            const key = `${file.name}::${file.size}`;
+            const alreadyAdded = requestAttachmentFiles.some(item => item.key === key);
+            if (alreadyAdded) return;
+
+            const isImg = isPreviewableImageFile(file);
+            requestAttachmentFiles.push({
+              file: file,
+              key: key,
+              isImage: isImg,
+              objectUrl: isImg ? URL.createObjectURL(file) : null
+            });
+          });
+
+          syncRequestAttachmentsInput(input);
+          renderRequestFilePreview();
         }
 
         // Form Submission with Feedback & Redirection to Tracker
@@ -2460,6 +2635,9 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
             }
 
             try {
+              const fileInput = document.getElementById('requestAttachments');
+              syncRequestAttachmentsInput(fileInput);
+
               const formData = new FormData(form);
               const catVal = document.getElementById('requestCategory') ? document.getElementById('requestCategory').value : '';
               const specVal = document.getElementById('requestSpecification') ? document.getElementById('requestSpecification').value : '';
@@ -2475,13 +2653,14 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
               formData.set('details', descVal);
               formData.set('description', descVal);
 
-              const fileInput = document.getElementById('requestAttachments');
-              if (fileInput && fileInput.files.length > 0) {
-                for (let i = 0; i < fileInput.files.length; i++) {
-                  formData.append('request_attachments[]', fileInput.files[i]);
-                  formData.append('report_attachments[]', fileInput.files[i]);
+              formData.delete('request_attachments[]');
+              formData.delete('report_attachments[]');
+              formData.delete('supporting_docs[]');
+              requestAttachmentFiles.forEach(item => {
+                if (item && item.file) {
+                  formData.append('request_attachments[]', item.file);
                 }
-              }
+              });
 
               const res = await fetch('tenant_portal.php?section=tenantReport', {
                 method: 'POST',
@@ -2500,8 +2679,7 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
                   alert('Request submitted successfully!');
                 }
                 form.reset();
-                const previewEl = document.getElementById('requestFilePreview');
-                if (previewEl) previewEl.innerHTML = '';
+                clearRequestAttachments();
                 switchApprovalTab('tracker');
                 setTimeout(() => {
                   window.location.href = 'tenant_portal.php?section=tenantReport&tab=tracker&success=report_submitted';
@@ -2515,6 +2693,7 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
               }
             } catch (err) {
               // Fallback to standard form submission if AJAX is interrupted
+              syncRequestAttachmentsInput(document.getElementById('requestAttachments'));
               form.submit();
             } finally {
               if (btn) {
@@ -3770,6 +3949,24 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
         <button type="button" class="py-2 px-5 rounded-xl font-black text-sm bg-[#4A3728] hover:bg-[#382618] text-white border border-[#382618] shadow-md transition-colors cursor-pointer" onclick="agreePrivacyFromModal()">
           <span>I Acknowledge &amp; Consent</span>
         </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- LIGHTBOX MODAL: REPORT ATTACHMENT FULL PHOTO PREVIEW -->
+  <div class="modal-backdrop hidden" id="requestAttachmentLightboxModal" onclick="if (event.target === this) { event.stopPropagation(); closeModal('requestAttachmentLightboxModal'); }" style="display: none; pointer-events: none; align-items: center; justify-content: center; background: rgba(15, 23, 42, 0.85); backdrop-filter: blur(4px); z-index: 100050; position: fixed; inset: 0; padding: 20px;" role="dialog" aria-modal="true" aria-labelledby="requestAttachmentLightboxTitle">
+    <div onclick="event.stopPropagation()" style="position: relative; max-width: 94vw; max-height: 92vh; background: #ffffff; border-radius: 16px; padding: 14px 16px 16px; box-shadow: 0 25px 60px rgba(0,0,0,0.45); display: flex; flex-direction: column; align-items: center; border: 2px solid #B89B72;">
+      <div style="width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid #E8D8B0;">
+        <h3 id="requestAttachmentLightboxTitle" style="font-size: 15px; font-weight: 800; color: #3E2723; margin: 0; display: flex; align-items: center; gap: 8px; min-width: 0;">
+          <i data-lucide="image" class="w-4 h-4 flex-shrink-0" style="color: #9A7B4F;" aria-hidden="true"></i>
+          <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Photo Preview</span>
+        </h3>
+        <button type="button" class="modal-close-btn" onclick="closeModal('requestAttachmentLightboxModal')" title="Close photo preview (Esc)" aria-label="Close" style="width: 34px; height: 34px; border-radius: 999px; border: 1px solid #E8D8B0; background: #FAF5EC; color: #3E2723; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; font-weight: 800; flex-shrink: 0;">
+          <i data-lucide="x" class="w-4 h-4" style="pointer-events: none;" aria-hidden="true"></i>
+        </button>
+      </div>
+      <div style="display: flex; align-items: center; justify-content: center; min-width: 240px; min-height: 160px;">
+        <img id="requestAttachmentLightboxImg" src="" alt="Attached photo preview" style="max-width: 90vw; max-height: 82vh; width: auto; height: auto; object-fit: contain; border-radius: 10px; display: block;">
       </div>
     </div>
   </div>

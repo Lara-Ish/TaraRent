@@ -86,22 +86,18 @@ class MailConfig
         }
         $appUrl = rtrim($appUrl, '/');
 
-        $webhookUrl    = trim((string)(getenv('EMAIL_WEBHOOK_URL') ?: ($_ENV['EMAIL_WEBHOOK_URL'] ?? ($_SERVER['EMAIL_WEBHOOK_URL'] ?? ''))));
-        $webhookSecret = trim((string)(getenv('EMAIL_WEBHOOK_SECRET') ?: ($_ENV['EMAIL_WEBHOOK_SECRET'] ?? ($_SERVER['EMAIL_WEBHOOK_SECRET'] ?? ''))));
-
         $gmailClientId     = trim((string)(getenv('GMAIL_CLIENT_ID') ?: ($_ENV['GMAIL_CLIENT_ID'] ?? ($_SERVER['GMAIL_CLIENT_ID'] ?? ''))));
         $gmailClientSecret = trim((string)(getenv('GMAIL_CLIENT_SECRET') ?: ($_ENV['GMAIL_CLIENT_SECRET'] ?? ($_SERVER['GMAIL_CLIENT_SECRET'] ?? ''))));
         $gmailRefreshToken = trim((string)(getenv('GMAIL_REFRESH_TOKEN') ?: ($_ENV['GMAIL_REFRESH_TOKEN'] ?? ($_SERVER['GMAIL_REFRESH_TOKEN'] ?? ''))));
 
         $hasGmailApi = !empty($gmailClientId) && !empty($gmailClientSecret) && !empty($gmailRefreshToken);
-        $hasWebhook  = !empty($webhookUrl) && filter_var($webhookUrl, FILTER_VALIDATE_URL) !== false;
         $hasSmtp     = !empty($username)
             && !empty($password)
             && !str_contains($username, 'your_email@gmail.com')
             && !str_contains($password, 'your_16_character');
 
-        // Configured if Gmail REST API, HTTP Webhook, or Gmail SMTP is provided
-        $isConfigured = $hasGmailApi || $hasWebhook || $hasSmtp;
+        // Configured if either Official Gmail REST API or Gmail SMTP is provided
+        $isConfigured = $hasGmailApi || $hasSmtp;
 
         return [
             'host'                => $host,
@@ -117,9 +113,6 @@ class MailConfig
             'gmail_client_secret' => $gmailClientSecret,
             'gmail_refresh_token' => $gmailRefreshToken,
             'has_gmail_api'       => $hasGmailApi,
-            'webhook_url'         => $webhookUrl,
-            'webhook_secret'      => $webhookSecret,
-            'has_webhook'         => $hasWebhook,
             'has_smtp'            => $hasSmtp,
             'is_configured'       => $isConfigured,
             'mock_mode'           => !$isConfigured || filter_var(getenv('MAIL_MOCK') ?: ($_ENV['MAIL_MOCK'] ?? false), FILTER_VALIDATE_BOOLEAN),

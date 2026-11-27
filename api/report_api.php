@@ -100,7 +100,7 @@ try {
             $statusToSave = $statusMap[$statusKey];
 
             $fetchStmt = $pdo->prepare("
-                SELECT tr.*, u.name AS tenant_name, u.email AS tenant_email, u.phone AS tenant_phone, un.unit_number
+                SELECT tr.*, u.name AS tenant_name, u.email AS tenant_email, u.phone AS tenant_phone, u.profile_picture AS tenant_profile_picture, un.unit_number
                 FROM tenant_reports tr
                 JOIN users u ON tr.tenant_id = u.id
                 LEFT JOIN units un ON tr.unit_id = un.id
@@ -274,7 +274,7 @@ try {
         $savedAttachments = [];
 
         $fileList = [];
-        foreach (['request_attachments', 'request_attachment', 'report_attachments', 'attachments', 'attachment', 'document', 'file'] as $key) {
+        foreach (['request_attachments', 'supporting_docs', 'request_attachment', 'report_attachments', 'attachments', 'attachment', 'document', 'file'] as $key) {
             if (isset($_FILES[$key])) {
                 $f = $_FILES[$key];
                 if (is_array($f['name'])) {
@@ -302,9 +302,14 @@ try {
             'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
         ];
         $finfo = finfo_open(FILEINFO_MIME_TYPE);
+        $seenUploadKeys = [];
 
         foreach ($fileList as $fileItem) {
-            if ($fileItem['size'] > 15 * 1024 * 1024) {
+            if ((int)$fileItem['size'] > 15 * 1024 * 1024) {
+                continue;
+            }
+            $dedupKey = (string)$fileItem['name'] . '|' . (string)$fileItem['size'];
+            if (isset($seenUploadKeys[$dedupKey])) {
                 continue;
             }
             $ext = strtolower(pathinfo($fileItem['name'], PATHINFO_EXTENSION));
@@ -316,12 +321,24 @@ try {
                 continue;
             }
 
+            $seenUploadKeys[$dedupKey] = true;
             $safeFilename = 'report_' . $tenantId . '_' . time() . '_' . bin2hex(random_bytes(6)) . '.' . $ext;
 
-            // Upload directly to Supabase Storage bucket 'reports' via REST API
-            $publicDocUrl = uploadToSupabaseStorage($fileItem['tmp_name'], $safeFilename, 'reports');
+            // Upload directly to Supabase Storage bucket 'reports' via REST API, with local uploads/reports fallback
+            $publicDocUrl = function_exists('uploadToSupabaseStorage')
+                ? uploadToSupabaseStorage($fileItem['tmp_name'], $safeFilename, 'reports')
+                : false;
             if ($publicDocUrl !== false) {
                 $savedAttachments[] = $publicDocUrl;
+            } else {
+                $localDir = dirname(__DIR__) . '/uploads/reports';
+                if (!is_dir($localDir)) {
+                    @mkdir($localDir, 0755, true);
+                }
+                $localDest = $localDir . '/' . $safeFilename;
+                if (@move_uploaded_file($fileItem['tmp_name'], $localDest) || @copy($fileItem['tmp_name'], $localDest)) {
+                    $savedAttachments[] = 'uploads/reports/' . $safeFilename;
+                }
             }
         }
         if ($finfo) {
@@ -365,7 +382,7 @@ try {
         );
 
         $rowStmt = $pdo->prepare("
-            SELECT tr.*, u.name AS tenant_name, u.email AS tenant_email, u.phone AS tenant_phone, un.unit_number
+            SELECT tr.*, u.name AS tenant_name, u.email AS tenant_email, u.phone AS tenant_phone, u.profile_picture AS tenant_profile_picture, un.unit_number
             FROM tenant_reports tr
             JOIN users u ON tr.tenant_id = u.id
             LEFT JOIN units un ON tr.unit_id = un.id
@@ -390,7 +407,7 @@ try {
 
         if ($reportId > 0) {
             $query = "
-                SELECT tr.*, u.name AS tenant_name, u.email AS tenant_email, u.phone AS tenant_phone, un.unit_number
+                SELECT tr.*, u.name AS tenant_name, u.email AS tenant_email, u.phone AS tenant_phone, u.profile_picture AS tenant_profile_picture, un.unit_number
                 FROM tenant_reports tr
                 JOIN users u ON tr.tenant_id = u.id
                 LEFT JOIN units un ON tr.unit_id = un.id
@@ -422,7 +439,7 @@ try {
         }
 
         $query = "
-            SELECT tr.*, u.name AS tenant_name, u.email AS tenant_email, u.phone AS tenant_phone, un.unit_number
+            SELECT tr.*, u.name AS tenant_name, u.email AS tenant_email, u.phone AS tenant_phone, u.profile_picture AS tenant_profile_picture, un.unit_number
             FROM tenant_reports tr
             JOIN users u ON tr.tenant_id = u.id
             LEFT JOIN units un ON tr.unit_id = un.id
