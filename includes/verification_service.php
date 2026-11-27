@@ -576,6 +576,7 @@ class VerificationService
         'National ID' => [
             'REPUBLIKA NG PILIPINAS',
             'REPUBLIC OF THE PHILIPPINES',
+            'REPUBLIKA',
             'NATIONAL ID',
             'PHILIPPINE NATIONAL ID',
             'DIGITAL NATIONAL ID',
@@ -590,15 +591,23 @@ class VerificationService
             'PAMBANSANG PAGKAKAKILANLAN',
             'PAMBANSANG',
             'PAGKAKAKILANLAN',
+            'KAKAKILANLAN',
             'PHILIPPINE IDENTIFICATION SYSTEM',
             'PHILIPPINE IDENTIFICATION CARD',
             'PHILIPPINE IDENTIFICATION',
+            'IDENTIFICATION CARD',
             'STATISTICS AUTHORITY',
             'PHILIPPINE STATISTICS AUTHORITY',
+            'PSA.GOV.PH',
+            'PSA OFFICE',
             'PSA',
             'PSN',
             'PCN',
-            'PILIPINAS'
+            'PILIPINAS',
+            'MGA PANGALAN',
+            'GITNANG APELYIDO',
+            'PETSA NG KAPANGANAKAN',
+            'KALAGAYANG SIBIL'
         ],
         "Driver's License" => [
             'LAND TRANSPORTATION OFFICE',
@@ -610,6 +619,7 @@ class VerificationService
             'PROFESSIONAL DRIVER',
             "STUDENT-DRIVER'S PERMIT",
             'LAND TRANSPORTATION',
+            'LTO.GOV.PH',
             'LTMS',
             'DL CODES',
             'RESTRICTIONS',
@@ -619,6 +629,7 @@ class VerificationService
             'PASAPORTE',
             'PASSPORT',
             'DEPARTMENT OF FOREIGN AFFAIRS',
+            'DFA.GOV.PH',
             'DFA',
             'CODE PHL',
             'P<PHL'
@@ -633,8 +644,10 @@ class VerificationService
         ],
         'SSS / GSIS ID' => [
             'SOCIAL SECURITY SYSTEM',
+            'SSS.GOV.PH',
             'SSS',
             'GSIS',
+            'GSIS.GOV.PH',
             'GOVERNMENT SERVICE INSURANCE SYSTEM',
             'GSIS ECARD',
             'UNIFIED MULTI-PURPOSE ID',
@@ -642,6 +655,7 @@ class VerificationService
         ],
         'PRC ID' => [
             'PROFESSIONAL REGULATION COMMISSION',
+            'PRC.GOV.PH',
             'PRC',
             'PROFESSIONAL IDENTIFICATION CARD',
             'PROFESSIONAL IDENTIFICATION',
@@ -649,6 +663,7 @@ class VerificationService
         ],
         'Postal ID' => [
             'PHILIPPINE POSTAL CORPORATION',
+            'PHLPOST.GOV.PH',
             'POSTAL ID',
             'POSTAL IDENTITY CARD',
             'PHLPOST',
@@ -656,6 +671,7 @@ class VerificationService
         ],
         "Voter's ID" => [
             'COMMISSION ON ELECTIONS',
+            'COMELEC.GOV.PH',
             'COMELEC',
             "VOTER'S IDENTIFICATION CARD",
             'VOTERS IDENTIFICATION CARD',
@@ -669,6 +685,7 @@ class VerificationService
         'PhilHealth ID' => [
             'PHILIPPINE HEALTH INSURANCE CORPORATION',
             'PHILIPPINE HEALTH INSURANCE',
+            'PHILHEALTH.GOV.PH',
             'PHILHEALTH',
             'PHILHEALTH IDENTIFICATION NUMBER',
             'PIN'
@@ -694,9 +711,11 @@ class VerificationService
             'REPUBLIC OF THE PHILIPPINES',
             'BUREAU OF INTERNAL REVENUE',
             'TAXPAYER IDENTIFICATION NUMBER',
+            'BIR.GOV.PH',
             'BIR',
             'TIN',
             'PAG-IBIG FUND',
+            'PAGIBIGFUND.GOV.PH',
             'PAG-IBIG',
             'HOME DEVELOPMENT MUTUAL FUND',
             'HDMF',
@@ -803,7 +822,7 @@ class VerificationService
      * @param string[] $keywords
      * @return string[] Matched keywords from the provided list
      */
-    public static function detectKeywords(string $rawText, array $keywords): array
+    public static function detectKeywords(string $rawText, array $keywords, bool $allowFuzzyGlare = false): array
     {
         if (empty(trim($rawText)) || empty($keywords)) {
             return [];
@@ -818,12 +837,32 @@ class VerificationService
         // Version with all spaces and non-alphanumeric stripped: handles camera OCR token splits e.g. "PHIL SYS" -> "PHILSYS", "PHIL ID" -> "PHILID"
         $noSpaceRaw = preg_replace('/[^A-Z0-9]+/', '', $upperRaw);
 
+        // Glare / OCR homoglyph normalized variants (e.g. 0->O, 1/|->I, 5->S, 8->B, 6->G)
+        $glareNoSpaceRaw = '';
+        $glareSpacedTokens = [];
+        if ($allowFuzzyGlare) {
+            $glareMapped = strtr($upperRaw, [
+                '0' => 'O',
+                '1' => 'I',
+                '|' => 'I',
+                '!' => 'I',
+                '5' => 'S',
+                '$' => 'S',
+                '8' => 'B',
+                '6' => 'G',
+                '@' => 'A',
+            ]);
+            $glareNoSpaceRaw = preg_replace('/[^A-Z]+/', '', str_replace('L', 'I', $glareMapped));
+            $glareSpaced = trim(preg_replace('/[^A-Z]+/', ' ', $glareMapped));
+            $glareSpacedTokens = array_values(array_filter(explode(' ', $glareSpaced), static fn(string $t): bool => strlen($t) >= 5));
+        }
+
         $detected = [];
         foreach ($keywords as $kw) {
             $upperKw = mb_strtoupper($kw, 'UTF-8');
             $len = mb_strlen($upperKw, 'UTF-8');
 
-            // For short acronyms (<= 4 chars like LTO, SSS, PRC, GSIS, UMID, DFA), require word boundary
+            // For short acronyms (<= 4 chars like LTO, SSS, PRC, GSIS, UMID, DFA, PSA), require word boundary
             // to avoid substring false positives (e.g. 'ALTO', 'ASSESSMENT', 'APPROACH')
             if ($len <= 4) {
                 $escapedKw = preg_quote($upperKw, '/');
@@ -854,14 +893,42 @@ class VerificationService
                 continue;
             }
 
-            // 4. Collapsed no-space comparison (handles camera OCR spaces: "PHIL SYS" -> "PHILSYS", "PHIL ID" -> "PHILID", "REPUBLIKANG PILIPINAS")
+            // 4. Collapsed no-space comparison (handles camera OCR spaces: "PHIL SYS" -> "PHILSYS", "PHIL ID" -> "PHILID")
             $noSpaceKw = preg_replace('/[^A-Z0-9]+/', '', $upperKw);
             if (mb_strlen($noSpaceKw, 'UTF-8') >= 5 && str_contains($noSpaceRaw, $noSpaceKw)) {
                 $detected[] = $kw;
                 continue;
             }
 
-            // 5. Regex pattern matching for variations
+            // 5. Glare / homoglyph & fuzzy long-word comparison when validating the selected ID type
+            if ($allowFuzzyGlare) {
+                $glareKwAlpha = preg_replace('/[^A-Z]+/', '', str_replace(['0', '1', '5', '8', '6', 'L'], ['O', 'I', 'S', 'B', 'G', 'I'], $upperKw));
+                if (strlen($glareKwAlpha) >= 7 && str_contains($glareNoSpaceRaw, $glareKwAlpha)) {
+                    $detected[] = $kw;
+                    continue;
+                }
+
+                // Single-word long distinctive root check with tolerance for 1-2 glare-distorted letters
+                $kwAlphaParts = array_values(array_filter(explode(' ', trim(preg_replace('/[^A-Z]+/', ' ', $upperKw))), static fn(string $w): bool => strlen($w) >= 8));
+                if (count($kwAlphaParts) === 1 && !empty($glareSpacedTokens)) {
+                    $targetRoot = $kwAlphaParts[0];
+                    $targetLen = strlen($targetRoot);
+                    $maxDist = $targetLen >= 11 ? 3 : 2;
+                    $matchedFuzzy = false;
+                    foreach ($glareSpacedTokens as $tok) {
+                        if (abs(strlen($tok) - $targetLen) <= $maxDist && levenshtein($tok, $targetRoot) <= $maxDist) {
+                            $matchedFuzzy = true;
+                            break;
+                        }
+                    }
+                    if ($matchedFuzzy) {
+                        $detected[] = $kw;
+                        continue;
+                    }
+                }
+            }
+
+            // 6. Regex pattern matching for variations
             $escapedKw = preg_quote($kw, '/');
             $patternKw = preg_replace('/[\\\'’]/', "['’\\s\\-]*", $escapedKw);
             $patternKw = preg_replace('/\\\s+/', '\\s+', $patternKw);
@@ -873,6 +940,139 @@ class VerificationService
         }
 
         return array_values(array_unique($detected));
+    }
+
+    /**
+     * Detect ID-specific structural/layout patterns (e.g. 16-digit PSN + PHL, bilingual PhilSys field labels,
+     * agency URLs like psa.gov.ph, LTO license format, Passport MRZ, UMID CRN, PhilHealth PIN) to handle camera glare.
+     *
+     * @param string $canonicalIdType
+     * @param string $rawOcrText
+     * @return string[]
+     */
+    public static function detectStructuredIdPatterns(string $canonicalIdType, string $rawOcrText): array
+    {
+        if (trim($rawOcrText) === '') {
+            return [];
+        }
+
+        $patternsMatched = [];
+        switch ($canonicalIdType) {
+            case 'National ID':
+                // 16-digit PSN / PCN (XXXX-XXXX-XXXX-XXXX) paired with PHL or ID card fields
+                $hasPsn = (bool)preg_match('/\b\d{4}[\s\-]+\d{4}[\s\-]+\d{4}[\s\-]+\d{4}\b/', $rawOcrText)
+                    || (bool)preg_match('/\b\d{16}\b/', $rawOcrText);
+                $hasCardFieldContext = (bool)preg_match('/\b(?:PHL|PSA|PILIPINAS|REPUBLIKA|LAST\s*NAME|GIVEN\s*NAME|MIDDLE\s*NAME|DATE\s*OF\s*BIRTH|APELYIDO|PANGALAN|KAPANGANAKAN|TIRAHAN|ADDRESS|SEX|KASARIAN)\b/i', $rawOcrText);
+                if ($hasPsn && $hasCardFieldContext) {
+                    $patternsMatched[] = 'PSN-16-PATTERN';
+                }
+
+                // Back-side PSA URL or office label
+                if (preg_match('/psa[\.\s]*gov[\.\s]*ph|\bpsa\s+office\b/i', $rawOcrText)) {
+                    $patternsMatched[] = 'PSA-URL-OR-OFFICE';
+                }
+
+                // Bilingual PhilSys field labels (front & back)
+                $bilingualLabels = [
+                    'APELYIDO',
+                    'MGA PANGALAN',
+                    'GITNANG APELYIDO',
+                    'PETSA NG KAPANGANAKAN',
+                    'TIRAHAN',
+                    'KASARIAN',
+                    'URI NG DUGO',
+                    'KALAGAYANG SIBIL',
+                    'LUGAR NG KAPANGANAKAN',
+                ];
+                $labelHits = 0;
+                foreach ($bilingualLabels as $lbl) {
+                    if (stripos($rawOcrText, $lbl) !== false) {
+                        $labelHits++;
+                    }
+                }
+                if ($labelHits >= 2 || ($labelHits >= 1 && preg_match('/\bPHL\b/', $rawOcrText))) {
+                    $patternsMatched[] = 'PHILSYS-BILINGUAL-LAYOUT';
+                }
+                break;
+
+            case "Driver's License":
+                if (preg_match('/\b[A-Z]\d{2}[\-\s]+\d{2}[\-\s]+\d{6}\b/i', $rawOcrText)
+                    || preg_match('/lto[\.\s]*gov[\.\s]*ph/i', $rawOcrText)
+                    || (preg_match('/\b(?:DL\s*CODES|AGENCY\s*CODE|RESTRICTIONS)\b/i', $rawOcrText)
+                        && preg_match('/\b(?:LICENSE|DOTR|TRANSPORTATION|NON[\-\s]*PRO|PRO)\b/i', $rawOcrText))) {
+                    $patternsMatched[] = 'LTO-LICENSE-LAYOUT';
+                }
+                break;
+
+            case 'Passport':
+                if (preg_match('/P<[A-Z]{3}[A-Z<]{5,}/', $rawOcrText)
+                    || preg_match('/dfa[\.\s]*gov[\.\s]*ph/i', $rawOcrText)) {
+                    $patternsMatched[] = 'PASSPORT-MRZ-OR-DFA';
+                }
+                break;
+
+            case 'UMID':
+                if (preg_match('/\bCRN[\-\s]*\d{4}[\-\s]*\d{7}[\-\s]*\d\b/i', $rawOcrText)
+                    || (preg_match('/\b\d{4}[\-\s]+\d{7}[\-\s]+\d\b/', $rawOcrText)
+                        && preg_match('/\b(?:PHL|UMID|UNIFIED|MULTI|DATE\s*OF\s*BIRTH|SEX)\b/i', $rawOcrText))) {
+                    $patternsMatched[] = 'UMID-CRN-PATTERN';
+                }
+                break;
+
+            case 'SSS / GSIS ID':
+                if ((preg_match('/\b\d{2}[\-\s]+\d{7}[\-\s]+\d\b/', $rawOcrText)
+                        && preg_match('/\b(?:SSS|SS\s*NO|SOCIAL\s*SECURITY|GSIS|ECARD)\b/i', $rawOcrText))
+                    || preg_match('/(?:sss|gsis)[\.\s]*gov[\.\s]*ph/i', $rawOcrText)) {
+                    $patternsMatched[] = 'SSS-GSIS-LAYOUT';
+                }
+                break;
+
+            case 'Postal ID':
+                if (preg_match('/phlpost[\.\s]*gov[\.\s]*ph/i', $rawOcrText)
+                    || (preg_match('/\bPRN\b/i', $rawOcrText) && preg_match('/\bPOSTAL\b/i', $rawOcrText))) {
+                    $patternsMatched[] = 'POSTAL-ID-LAYOUT';
+                }
+                break;
+
+            case "Voter's ID":
+                if (preg_match('/comelec[\.\s]*gov[\.\s]*ph/i', $rawOcrText)
+                    || (preg_match('/\bVIN\b/i', $rawOcrText) && preg_match('/\b(?:PRECINCT|COMELEC|VOTER|ELECTIONS)\b/i', $rawOcrText))) {
+                    $patternsMatched[] = 'VOTER-ID-LAYOUT';
+                }
+                break;
+
+            case 'PRC ID':
+                if (preg_match('/prc[\.\s]*gov[\.\s]*ph/i', $rawOcrText)
+                    || (preg_match('/\bREGISTRATION\s*NO\b/i', $rawOcrText) && preg_match('/\b(?:VALID\s*UNTIL|PROFESSION|COMMISSION)\b/i', $rawOcrText))) {
+                    $patternsMatched[] = 'PRC-ID-LAYOUT';
+                }
+                break;
+
+            case 'PhilHealth ID':
+                if (preg_match('/\b\d{2}[\-\s]+\d{9}[\-\s]+\d\b/', $rawOcrText)
+                    || preg_match('/philhealth[\.\s]*gov[\.\s]*ph/i', $rawOcrText)) {
+                    $patternsMatched[] = 'PHILHEALTH-PIN-LAYOUT';
+                }
+                break;
+
+            case 'Student ID':
+                if (preg_match('/\b(?:STUDENT\s*NO|STUDENT\s*NUMBER|LRN|SCHOOL\s*YEAR)\b/i', $rawOcrText)
+                    && preg_match('/\b(?:UNIVERSITY|COLLEGE|SCHOOL|INSTITUTE|CAMPUS|STUDENT|ACADEMY)\b/i', $rawOcrText)) {
+                    $patternsMatched[] = 'STUDENT-ID-LAYOUT';
+                }
+                break;
+
+            case 'Other Valid Government ID':
+                if ((preg_match('/\b\d{3}[\-\s]+\d{3}[\-\s]+\d{3}(?:[\-\s]+\d{3})?\b/', $rawOcrText)
+                        && preg_match('/\b(?:TIN|BIR|REVENUE|TAXPAYER)\b/i', $rawOcrText))
+                    || preg_match('/(?:bir|pagibigfund|nbi)[\.\s]*gov[\.\s]*ph/i', $rawOcrText)
+                    || preg_match('/\bMID\s*(?:NO|NUMBER)\b/i', $rawOcrText)) {
+                    $patternsMatched[] = 'OTHER-GOV-ID-LAYOUT';
+                }
+                break;
+        }
+
+        return $patternsMatched;
     }
 
     /**
@@ -927,15 +1127,19 @@ class VerificationService
             ];
         }
 
-        // 1. Evaluate selected ID keywords first
-        $detectedHardcoded = self::detectKeywords($rawOcrText, $requiredSignatures);
-        $detectedExtended = self::detectKeywords($rawOcrText, $extendedSignatures);
-        $allDetected = array_values(array_unique(array_merge($detectedHardcoded, $detectedExtended)));
+        // 1. Evaluate selected ID keywords (with glare/homoglyph tolerance) and structured ID patterns first
+        $detectedHardcoded = self::detectKeywords($rawOcrText, $requiredSignatures, true);
+        $detectedExtended = self::detectKeywords($rawOcrText, $extendedSignatures, true);
+        $detectedPatterns = self::detectStructuredIdPatterns($canonical, $rawOcrText);
+        $allDetected = array_values(array_unique(array_merge($detectedHardcoded, $detectedExtended, $detectedPatterns)));
 
         $selectedUniquePool = self::UNIQUE_ID_IDENTIFIERS[$canonical] ?? [];
         $detectedSelectedUnique = !empty($selectedUniquePool)
-            ? self::detectKeywords($rawOcrText, $selectedUniquePool)
+            ? self::detectKeywords($rawOcrText, $selectedUniquePool, true)
             : [];
+        if (!empty($detectedPatterns)) {
+            $detectedSelectedUnique = array_values(array_unique(array_merge($detectedSelectedUnique, $detectedPatterns)));
+        }
 
         // 2. Cross-verify against other distinct ID types (unless "Other Valid Government ID" is selected)
         $conflictingType = null;
@@ -1161,7 +1365,7 @@ class VerificationService
             }
         }
 
-        // Pass 4: Also inspect Back ID text when provided (some IDs carry issuing markings on back)
+        // Pass 4: Also inspect Back ID text (both color & grayscale) when provided (e.g. psa.gov.ph / PSA Office on PhilSys back)
         if ($backImagePath && file_exists($backImagePath)) {
             $backNormPath = $dir . '/tmp_back_' . $token . '.jpg';
             $resolvedBack = self::prepareNormalizedColorImage($backImagePath, $backNormPath);
@@ -1171,6 +1375,23 @@ class VerificationService
             $backText = self::runTesseractOcr($resolvedBack);
             if ($backText !== '') {
                 $textChunks[] = $backText;
+                $check = self::verifyIdTypeMatchesDocument($idType, implode("\n", $textChunks));
+                if (!empty($check['matched'])) {
+                    foreach ($tempFiles as $tmp) {
+                        @unlink($tmp);
+                    }
+                    return ['raw_text' => trim(implode("\n", $textChunks)), 'type_check' => $check];
+                }
+            }
+
+            $backGrayPath = $dir . '/tmp_back_gray_' . $token . '.jpg';
+            $resolvedBackGray = self::preprocessIdImage($backImagePath, $backGrayPath);
+            if ($resolvedBackGray === $backGrayPath && file_exists($backGrayPath)) {
+                $tempFiles[] = $backGrayPath;
+            }
+            $backGrayText = self::runTesseractOcr($resolvedBackGray);
+            if ($backGrayText !== '') {
+                $textChunks[] = $backGrayText;
             }
         }
 
@@ -1232,20 +1453,23 @@ class VerificationService
         }
 
         $parts = [];
-        $prompt = "You are verifying an uploaded Philippine ID document against the user's selected Document Type: \"{$idType}\".\n"
-            . "Note: Mobile uploads may be rotated 90, 180, or 270 degrees, photographed slightly at an angle, or be a digital ID screenshot.\n"
-            . "Recognize ALL official Philippine IDs and their variants accurately:\n"
-            . "- National ID: Physical PhilSys PhilID card, paper ePhilID, or Digital Philippine National ID (eGovPH / national-id.gov.ph showing Philippine Identification System, PSA, PSN/PCN, Digital ID Number, QR code).\n"
-            . "- Driver's License: Physical LTO card or LTMS Digital Driver's License (DOTr, Land Transportation Office, Non-Pro/Pro, Student Permit).\n"
-            . "- Passport: DFA Philippine ePassport (Pasaporte, Passport, Department of Foreign Affairs, P<PHL MRZ).\n"
-            . "- UMID: Unified Multi-Purpose ID (note: UMID cards commonly display SSS or GSIS branding and CRN — if it says Unified Multi-Purpose ID / UMID, match both UMID and SSS / GSIS ID).\n"
+        $prompt = "You are verifying an uploaded Philippine ID document (front image and optional back image) against the user's selected Document Type: \"{$idType}\".\n"
+            . "Important real-photo guidelines:\n"
+            . "- Mobile captures of glossy PVC cards naturally have slight indoor light glare/reflection over parts of headers or fields, or may be rotated 90/180/270 degrees, or be digital ID screenshots.\n"
+            . "- Evaluate the OVERALL card layout, flag/seal colors, field structure, and BOTH front and back context together rather than failing over minor glare covering a few characters.\n"
+            . "- Reject ONLY if the document clearly belongs to a different ID type (e.g., LTO Driver's License uploaded as PhilSys) or is clearly not a valid ID (blank photo, selfie without an ID, or random object).\n\n"
+            . "Official Philippine IDs & variants to recognize accurately:\n"
+            . "- National ID: Physical PVC PhilSys card (says 'REPUBLIKA NG PILIPINAS', 'PAMBANSANG PAGKAKAKILANLAN', 'Philippine Identification Card', 16-digit PSN like ####-####-####-####, 'PHL', bilingual fields like Apelyido/Last Name, and QR code / 'PSA' / 'psa.gov.ph' on back), paper ePhilID, OR Digital National ID (eGovPH / national-id.gov.ph showing 'Philippine National ID', 'Digital ID Number', 'Philippine Identification System', PSA).\n"
+            . "- Driver's License: Physical LTO card or LTMS Digital Driver's License (DOTr, Land Transportation Office, Non-Professional/Professional Driver's License, Student-Driver's Permit, DL Codes, Restrictions).\n"
+            . "- Passport: DFA Philippine ePassport (Pasaporte, Passport, Department of Foreign Affairs, Code PHL, P<PHL MRZ).\n"
+            . "- UMID: Unified Multi-Purpose ID (note: UMID cards display SSS or GSIS branding and CRN — if it says Unified Multi-Purpose ID / UMID, match both UMID and SSS / GSIS ID).\n"
             . "- SSS / GSIS ID: SSS Card, SSS UMID, GSIS eCard / UMID.\n"
-            . "- Postal ID: PHLPost / Philippine Postal Corporation Improved/Digital Postal ID.\n"
+            . "- Postal ID: PHLPost / Philippine Postal Corporation Improved or Digital Postal ID.\n"
             . "- Voter's ID: COMELEC Voter's ID or official Voter's Certification.\n"
             . "- PRC ID: Professional Regulation Commission Professional Identification Card.\n"
-            . "- PhilHealth ID: Philippine Health Insurance Corporation card / digitized ID.\n"
+            . "- PhilHealth ID: Philippine Health Insurance Corporation card / digitized PhilHealth ID (12-digit PIN).\n"
             . "- Student ID: School, college, university, or TESDA student ID card.\n"
-            . "- Other Valid Government ID: BIR TIN ID, Pag-IBIG Loyalty Card (HDMF), Senior Citizen ID (OSCA), PWD ID, Barangay ID, NBI Clearance, Police Clearance, OWWA eCard, Seafarer's Book (MARINA), Civil Service / IBP / Solo Parent ID.\n\n"
+            . "- Other Valid Government ID: BIR TIN ID, Pag-IBIG Loyalty Card (HDMF), Senior Citizen ID (OSCA), PWD ID (NCDA), Barangay ID, NBI Clearance, Police Clearance, OWWA eCard, Seafarer's Book (MARINA), Civil Service / IBP / Solo Parent ID.\n\n"
             . "Return ONLY valid raw JSON (no markdown fences) with keys:\n"
             . "{\"is_valid_id\": boolean, \"detected_type\": string, \"matches_selected_type\": boolean, \"ocr_text\": string, \"reason\": string}";
 
@@ -1377,6 +1601,45 @@ class VerificationService
     }
 
     /**
+     * Check whether OCR text clearly reflects a real government/civic ID card layout
+     * (e.g. multiple standard personal/civil ID fields survived camera glare over the header banner).
+     *
+     * @param string $rawText
+     * @return bool
+     */
+    public static function hasRecognizableIdCardFields(string $rawText): bool
+    {
+        if (trim($rawText) === '') {
+            return false;
+        }
+
+        $fieldPatterns = [
+            '/\b(?:LAST\s*NAME|SURNAME|APELYIDO)\b/i',
+            '/\b(?:GIVEN\s*NAMES?|FIRST\s*NAME|MGA\s*PANGALAN)\b/i',
+            '/\b(?:MIDDLE\s*NAME|GITNANG\s*APELYIDO)\b/i',
+            '/\b(?:DATE\s*OF\s*BIRTH|BIRTH\s*DATE|BIRTHDATE|PETSA\s*NG\s*KAPANGANAKAN)\b/i',
+            '/\b(?:PLACE\s*OF\s*BIRTH|LUGAR\s*NG\s*KAPANGANAKAN)\b/i',
+            '/\b(?:TIRAHAN|RESIDENCE|ADDRESS)\b/i',
+            '/\b(?:KASARIAN|BLOOD\s*TYPE|URI\s*NG\s*DUGO|MARITAL\s*STATUS|KALAGAYANG\s*SIBIL)\b/i',
+            '/\b(?:NATIONALITY|CITIZENSHIP|PHL|FILIPINO)\b/i',
+            '/\b(?:DATE\s*ISSUED|VALID\s*UNTIL|EXPIRY|EXPIRATION|CARD\s*NO|ID\s*NUMBER)\b/i',
+            '/\b\d{4}[\s\-]+\d{4}[\s\-]+\d{4}[\s\-]+\d{4}\b/',
+        ];
+
+        $hits = 0;
+        foreach ($fieldPatterns as $pattern) {
+            if (preg_match($pattern, $rawText)) {
+                $hits++;
+                if ($hits >= 2) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Unified, resilient ID Document Type validation pipeline.
      * Combines fast keyword check -> Gemini Vision (when key is configured) -> multi-pass rotated OCR.
      *
@@ -1408,7 +1671,7 @@ class VerificationService
             }
         }
 
-        // 2. Vision path: use Gemini Vision when API key is available (handles rotated/digital/photo IDs reliably)
+        // 2. Vision path: use Gemini Vision when API key is available (handles rotated/digital/glare IDs reliably)
         $visionCheck = self::validateIdTypeWithGeminiVision($idType, $frontImagePath, $backImagePath);
         if ($visionCheck !== null) {
             $mergedOcr = trim(implode("\n", array_filter([$trimmedOcr, $visionCheck['ocr_text'] ?? ''])));
@@ -1421,7 +1684,7 @@ class VerificationService
             ];
         }
 
-        // 3. Multi-pass & rotated server OCR fallback
+        // 3. Multi-pass & rotated server OCR fallback (includes front + back)
         $multiPass = self::extractIdTextMultiPass($frontImagePath, $idType, $trimmedOcr, $backImagePath);
         $combinedText = trim((string)($multiPass['raw_text'] ?? ''));
 
@@ -1430,6 +1693,25 @@ class VerificationService
         $alphaWordCount = count($alphaWords[0] ?? []);
         $hasServerTesseract = (self::findTesseractBinary() !== null);
         $hasConflict = !empty($multiPass['type_check']['conflicting_type']);
+
+        // Glare resilience: if OCR read recognizable ID card personal/civil fields without conflicting agency markers,
+        // avoid false rejection when glossy card glare obscured header letters.
+        if (empty($multiPass['type_check']['matched']) && !$hasConflict && self::hasRecognizableIdCardFields($combinedText)) {
+            $canonical = self::normalizeIdType($idType);
+            return [
+                'matched' => true,
+                'skipped' => false,
+                'raw_text' => $combinedText,
+                'type_check' => [
+                    'matched' => true,
+                    'reason' => "Matched {$canonical} via glare-tolerant ID card field layout.",
+                    'canonical_type' => $canonical,
+                    'detected_keywords' => ['ID_CARD_FIELD_LAYOUT'],
+                    'required_keywords' => self::getKeywordsForIdType($canonical),
+                ],
+                'method' => 'ocr_glare_layout',
+            ];
+        }
 
         if ($combinedText === '' || (!$hasServerTesseract && !$hasConflict && $alphaWordCount < 2)) {
             return [
