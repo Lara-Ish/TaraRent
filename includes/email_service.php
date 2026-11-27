@@ -166,23 +166,162 @@ if (!function_exists('sendViaPhpMailerSmtp')) {
     }
 }
 
+if (!function_exists('getGmailRestAccessToken')) {
+    /**
+     * Exchange OAuth2 refresh token for a Gmail API access token via HTTPS (Port 443).
+     *
+     * @return array{success: bool, access_token: ?string, error: ?string}
+     */
+    function getGmailRestAccessToken(array $config, bool $forceRefresh = false): array
+    {
+        static $cachedToken = null;
+        static $cachedExpiresAt = 0;
+
+        if (!$forceRefresh && $cachedToken !== null && time() < $cachedExpiresAt) {
+            return ['success' => true, 'access_token' => $cachedToken, 'error' => null];
+        }
+
+        $verifySsl = !empty(getenv('RENDER')) || PHP_OS_FAMILY !== 'Windows';
+        $ch = curl_init('https://oauth2.googleapis.com/token');
+        curl_setopt_array($ch, [
+            CURLOPT_POST           => true,
+            CURLOPT_POSTFIELDS     => http_build_query([
+                'client_id'     => $config['gmail_client_id'] ?? '',
+                'client_secret' => $config['gmail_client_secret'] ?? '',
+                'refresh_token' => $config['gmail_refresh_token'] ?? '',
+                'grant_type'    => 'refresh_token',
+            ]),
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT        => 15,
+            CURLOPT_SSL_VERIFYPEER => $verifySsl,
+            CURLOPT_HTTPHEADER     => ['Content-Type: application/x-www-form-urlencoded'],
+        ]);
+
+        $resp    = curl_exec($ch);
+        $code    = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlErr = curl_error($ch);
+        curl_close($ch);
+
+        if ($curlErr !== '') {
+            return ['success' => false, 'access_token' => null, 'error' => "Gmail OAuth cURL Error: {$curlErr}"];
+        }
+
+        $data = json_decode((string)$resp, true);
+        if ($code >= 200 && $code < 300 && !empty($data['access_token'])) {
+            $cachedToken = (string)$data['access_token'];
+            $ttl = max(60, (int)($data['expires_in'] ?? 3599) - 60);
+            $cachedExpiresAt = time() + $ttl;
+            return ['success' => true, 'access_token' => $cachedToken, 'error' => null];
+        }
+
+        $errMsg = $data['error_description'] ?? ($data['error'] ?? "HTTP {$code}");
+        return ['success' => false, 'access_token' => null, 'error' => "Gmail OAuth Error: {$errMsg}"];
+    }
+}
+
+if (!function_exists('sendViaGmailRestApi')) {
+    /**
+     * Send email via Official Gmail REST API (HTTPS Port 443).
+     *
+     * @return array{success: bool, error: ?string}
+     */
+    function sendViaGmailRestApi(array $config, string $toEmail, string $toName, string $subject, string $htmlBody, string $altBody = ''): array
+    {
+        $tokenRes = getGmailRestAccessToken($config);
+        if (empty($tokenRes['success'])) {
+            return ['success' => false, 'error' => $tokenRes['error'] ?? 'Failed to obtain Gmail API access token.'];
+        }
+
+        $fromEmail = $config['from_email'] ?: 'TaraRent2026@gmail.com';
+        $fromName  = $config['from_name'] ?: 'TaraRent';
+        $plainText = $altBody !== ''
+            ? $altBody
+            : strip_tags(str_replace(['<br>', '<br/>', '<p>', '</p>'], ["\n", "\n", "\n\n", ''], $htmlBody));
+
+        $boundary       = '=_TaraRent_' . bin2hex(random_bytes(8));
+        $encodedSubject = '=?UTF-8?B?' . base64_encode($subject) . '?=';
+        $fromHeader     = '=?UTF-8?B?' . base64_encode($fromName) . '?= <' . $fromEmail . '>';
+        $toHeader       = ($toName !== '' ? '=?UTF-8?B?' . base64_encode($toName) . '?= ' : '') . '<' . $toEmail . '>';
+
+        $raw  = "From: {$fromHeader}\r\n";
+        $raw .= "To: {$toHeader}\r\n";
+        $raw .= "Reply-To: {$fromHeader}\r\n";
+        $raw .= "Subject: {$encodedSubject}\r\n";
+        $raw .= "MIME-Version: 1.0\r\n";
+        $raw .= "Content-Type: multipart/alternative; boundary=\"{$boundary}\"\r\n\r\n";
+        $raw .= "--{$boundary}\r\n";
+        $raw .= "Content-Type: text/plain; charset=UTF-8\r\n";
+        $raw .= "Content-Transfer-Encoding: base64\r\n\r\n";
+        $raw .= chunk_split(base64_encode($plainText)) . "\r\n";
+        $raw .= "--{$boundary}\r\n";
+        $raw .= "Content-Type: text/html; charset=UTF-8\r\n";
+        $raw .= "Content-Transfer-Encoding: base64\r\n\r\n";
+        $raw .= chunk_split(base64_encode($htmlBody)) . "\r\n";
+        $raw .= "--{$boundary}--";
+
+        $base64Url = rtrim(strtr(base64_encode($raw), '+/', '-_'), '=');
+        $payload   = json_encode(['raw' => $base64Url]);
+
+        $verifySsl = !empty(getenv('RENDER')) || PHP_OS_FAMILY !== 'Windows';
+        $ch = curl_init('https://gmail.googleapis.com/gmail/v1/users/me/messages/send');
+        curl_setopt_array($ch, [
+            CURLOPT_POST           => true,
+            CURLOPT_POSTFIELDS     => $payload,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT        => 20,
+            CURLOPT_SSL_VERIFYPEER => $verifySsl,
+            CURLOPT_HTTPHEADER     => [
+                'Authorization: Bearer ' . $tokenRes['access_token'],
+                'Content-Type: application/json',
+                'Content-Length: ' . strlen((string)$payload),
+            ],
+        ]);
+
+        $resp    = curl_exec($ch);
+        $code    = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlErr = curl_error($ch);
+        curl_close($ch);
+
+        if ($curlErr !== '') {
+            return ['success' => false, 'error' => "Gmail API cURL Error: {$curlErr}"];
+        }
+
+        $decoded = json_decode((string)$resp, true);
+        if ($code >= 200 && $code < 300 && !empty($decoded['id'])) {
+            return ['success' => true, 'error' => null];
+        }
+
+        $apiErr = $decoded['error']['message'] ?? ("HTTP {$code} - " . substr(strip_tags((string)$resp), 0, 200));
+        return ['success' => false, 'error' => "Gmail API Error: {$apiErr}"];
+    }
+}
+
 if (!function_exists('dispatchConfiguredEmail')) {
     /**
-     * Route outbound email across SMTP and HTTP webhook with automatic fallback.
+     * Route outbound email across Gmail REST API, SMTP, and HTTP webhook with automatic fallback.
      *
      * @return array{success: bool, error: ?string}
      */
     function dispatchConfiguredEmail(array $config, string $toEmail, string $toName, string $subject, string $htmlBody, string $altBody = ''): array
     {
-        $hasWebhook = !empty($config['has_webhook']);
-        $hasSmtp = !empty($config['has_smtp']) || (!empty($config['username']) && !empty($config['password']));
-        $isRender = (bool)getenv('RENDER');
+        $hasGmailApi = !empty($config['has_gmail_api']);
+        $hasWebhook  = !empty($config['has_webhook']);
+        $hasSmtp     = !empty($config['has_smtp']) || (!empty($config['username']) && !empty($config['password']));
+        $isRender    = (bool)getenv('RENDER');
 
-        $transports = $isRender ? ['webhook', 'smtp'] : ['smtp', 'webhook'];
+        $transports = $isRender ? ['gmail_api', 'webhook', 'smtp'] : ['smtp', 'gmail_api', 'webhook'];
         $errors = [];
 
         foreach ($transports as $transport) {
-            if ($transport === 'smtp' && $hasSmtp) {
+            if ($transport === 'gmail_api' && $hasGmailApi) {
+                $res = sendViaGmailRestApi($config, $toEmail, $toName, $subject, $htmlBody, $altBody);
+                if (!empty($res['success'])) {
+                    return $res;
+                }
+                if (!empty($res['error'])) {
+                    $errors[] = $res['error'];
+                }
+            } elseif ($transport === 'smtp' && $hasSmtp) {
                 $res = sendViaPhpMailerSmtp($config, $toEmail, $toName, $subject, $htmlBody, $altBody);
                 if (!empty($res['success'])) {
                     return $res;
@@ -887,6 +1026,22 @@ class EmailService
     public static function testSmtpConnection(): array
     {
         $config = MailConfig::get(true);
+        if (!empty($config['has_gmail_api']) && (getenv('RENDER') || empty($config['username']) || empty($config['password']))) {
+            $tokenRes = getGmailRestAccessToken($config, true);
+            if (!empty($tokenRes['success'])) {
+                return [
+                    'success' => true,
+                    'message' => 'Successfully connected to Official Gmail REST API (Port 443 HTTPS).',
+                    'details' => 'OAuth2 token exchange succeeded. Ready to send emails on Render Free Tier.'
+                ];
+            }
+            return [
+                'success' => false,
+                'message' => $tokenRes['error'] ?? 'Gmail REST API connection failed.',
+                'details' => 'Verify GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, and GMAIL_REFRESH_TOKEN.'
+            ];
+        }
+
         if (!empty($config['has_webhook']) && (getenv('RENDER') || empty($config['username']) || empty($config['password']))) {
             $ch = curl_init($config['webhook_url']);
             curl_setopt_array($ch, [
