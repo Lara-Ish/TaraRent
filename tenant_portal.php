@@ -5742,10 +5742,61 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
 
     window.isUpdatingVerifiedId = false;
     window.hasStagedPendingId = false;
+    window.idValidationState = {
+      validated: false,
+      docType: '',
+      frontSig: '',
+      backSig: ''
+    };
+
+    function getCurrentIdAttachmentSignature(side) {
+      const isFront = side !== 'back';
+      const file = isFront
+        ? (selectedFrontIdFile || selectedIdFile || (document.getElementById('idFrontFileInput') && document.getElementById('idFrontFileInput').files[0]) || (document.getElementById('idFileInput') && document.getElementById('idFileInput').files[0]))
+        : (selectedBackIdFile || (document.getElementById('idBackFileInput') && document.getElementById('idBackFileInput').files[0]));
+      if (file && typeof file.name === 'string') {
+        return `${file.name}:${file.size}:${file.lastModified || 0}`;
+      }
+      const hiddenEl = isFront
+        ? (document.getElementById('captured_front_id_base64') || document.getElementById('captured_id_base64'))
+        : document.getElementById('captured_back_id_base64');
+      const b64 = hiddenEl ? hiddenEl.value.trim() : '';
+      return b64 ? `b64:${b64.length}:${b64.slice(-24)}` : '';
+    }
+
+    function resetIdValidationState(clearStaged = true) {
+      if (clearStaged) {
+        window.hasStagedPendingId = false;
+      }
+      window.idValidationState = {
+        validated: false,
+        docType: '',
+        frontSig: '',
+        backSig: ''
+      };
+    }
+
+    function isCurrentIdValidatedForStep2() {
+      const docTypeEl = document.getElementById('verifyDocType');
+      const docType = docTypeEl ? docTypeEl.value : '';
+      const frontSig = getCurrentIdAttachmentSignature('front');
+      const backSig = getCurrentIdAttachmentSignature('back');
+      return Boolean(
+        window.hasStagedPendingId &&
+        window.idValidationState &&
+        window.idValidationState.validated === true &&
+        docType &&
+        frontSig &&
+        backSig &&
+        window.idValidationState.docType === docType &&
+        window.idValidationState.frontSig === frontSig &&
+        window.idValidationState.backSig === backSig
+      );
+    }
 
     function cancelIdUpdateIfPending() {
       if (window.isUpdatingVerifiedId && (window.hasStagedPendingId || selectedIdFile)) {
-        window.hasStagedPendingId = false;
+        resetIdValidationState(true);
         selectedIdFile = null;
         fetch('verify_face.php', {
           method: 'POST',
@@ -5758,7 +5809,7 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
 
     function openVerifyAccountModal(isUpdate = false) {
       window.isUpdatingVerifiedId = (window.IS_TENANT_VERIFIED || isUpdate === true);
-      window.hasStagedPendingId = false;
+      resetIdValidationState(true);
 
       openModal('verifyAccountModal');
 
@@ -5807,6 +5858,7 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
       }
 
       stopIdCamera();
+      resetIdValidationState(true);
       const cap = side === 'back' ? 'Back' : 'Front';
 
       if (side === 'front') {
@@ -5957,6 +6009,20 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
       }
 
       if (stepNum === 2) {
+        if (!isCurrentIdValidatedForStep2()) {
+          currentVerificationStep = 1;
+          stopLivenessCamera();
+          if (v1) v1.style.display = 'block';
+          if (v2) v2.style.display = 'none';
+          const blockMsg = 'Please upload and validate a matching ID document before proceeding to Live Scan.';
+          if (alertBox) {
+            alertBox.style.display = 'block';
+            alertBox.innerHTML = `<span style="display:flex;align-items:center;gap:8px;">${window.rcIcon('alert-triangle', 'w-4 h-4 text-red-600')}<span><strong>Verification Failed:</strong> ${escapeHtml(blockMsg)}</span></span>`;
+          }
+          showToast(`Verification Failed: ${blockMsg}`, 'error');
+          return;
+        }
+
         // Transition directly to Step 2 (Live Face Scan)
         currentVerificationStep = 2;
         if (v1) v1.style.display = 'none';
@@ -7016,6 +7082,13 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
         return;
       }
 
+      resetIdValidationState(true);
+      const alertEl = document.getElementById('verifyModalAlert');
+      if (alertEl) {
+        alertEl.style.display = 'none';
+        alertEl.innerHTML = '';
+      }
+
       if (side === 'front') {
         selectedFrontIdFile = file;
         selectedIdFile = file; // compatibility
@@ -7636,6 +7709,18 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
         setupDropZone('idBackDropZone', 'idBackFileInput', 'btnRemoveBackAttachedPhoto', 'back');
         // Legacy fallback
         setupDropZone('idDropZone', 'idFileInput', 'btnRemoveAttachedPhoto', 'front');
+
+        const docTypeDropdown = document.getElementById('verifyDocType');
+        if (docTypeDropdown) {
+          docTypeDropdown.addEventListener('change', () => {
+            resetIdValidationState(true);
+            const alertBox = document.getElementById('verifyModalAlert');
+            if (alertBox) {
+              alertBox.style.display = 'none';
+              alertBox.innerHTML = '';
+            }
+          });
+        }
       } catch (e) {
         console.warn('ID dropzone listener notice:', e);
       }
@@ -7710,11 +7795,17 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
             selectedIdFile = frontFile || null;
             selectedBackIdFile = backFile || null;
 
+            // Fast-forward to Live Scan ONLY if exact same Document Type + Front + Back already passed validation
+            if (isCurrentIdValidatedForStep2()) {
+              goToVerificationStep(2);
+              return;
+            }
+
             const submitBtn = document.getElementById('btnSubmitVerification');
             const origHtml = submitBtn ? submitBtn.innerHTML : 'Submit for Verification';
             if (submitBtn) {
               submitBtn.disabled = true;
-              submitBtn.innerHTML = '<span class="clay-spinner" style="width: 16px; height: 16px; border-width: 2px; vertical-align: middle; margin-right: 8px;"></span> Validating Document...';
+              submitBtn.innerHTML = '<span class="clay-spinner" style="width: 16px; height: 16px; border-width: 2px; vertical-align: middle; margin-right: 8px;"></span> Validating ID...';
             }
 
             // Helper to strip redundant backend "Verification Failed:" / "Verification Error:" prefixes
@@ -7830,6 +7921,12 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
 
               if (res.ok && data && data.status === 'success') {
                 window.hasStagedPendingId = true;
+                window.idValidationState = {
+                  validated: true,
+                  docType: docType,
+                  frontSig: getCurrentIdAttachmentSignature('front'),
+                  backSig: getCurrentIdAttachmentSignature('back')
+                };
                 // Document type cross-check PASSED!
                 // Seamlessly transition directly to Step 2 (Live Face Scan)
                 if (submitBtn) {
@@ -7838,7 +7935,8 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
                 }
                 goToVerificationStep(2);
               } else {
-                // Document mismatch or validation error! Halt process!
+                // Document mismatch or validation error! Halt process and keep on Step 1!
+                resetIdValidationState(true);
                 const cleanErrMsg = data && data.message
                   ? formatVerificationErrMsg(data.message)
                   : (res.status === 413
@@ -7850,6 +7948,7 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
                 if (alertBox) {
                   alertBox.style.display = 'block';
                   alertBox.innerHTML = `<span style="display:flex;align-items:center;gap:8px;">${window.rcIcon('alert-triangle', 'w-4 h-4 text-red-600')}<span><strong>${headingLabel}</strong> ${escapeHtml(cleanErrMsg)}</span></span>`;
+                  try { alertBox.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch (_) {}
                 }
                 if (submitBtn) {
                   submitBtn.disabled = false;
@@ -7858,11 +7957,13 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
               }
             } catch (err) {
               console.error('ID Document validation error:', err);
+              resetIdValidationState(true);
               const netErrMsg = 'Connection issue while validating your document. Please check your internet connection and try again.';
               showToast(`Verification Error: ${netErrMsg}`, 'error');
               if (alertBox) {
                 alertBox.style.display = 'block';
                 alertBox.innerHTML = `<span style="display:flex;align-items:center;gap:8px;">${window.rcIcon('alert-triangle', 'w-4 h-4 text-red-600')}<span><strong>Verification Error:</strong> ${escapeHtml(netErrMsg)}</span></span>`;
+                try { alertBox.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch (_) {}
               }
               if (submitBtn) {
                 submitBtn.disabled = false;
