@@ -494,45 +494,31 @@ try {
                 exit;
             }
 
-            // 2. Pre-process Front ID for OCR and extract text if needed
+            // 2. Validate ID Document Type using fast OCR, Gemini Vision (if configured), and multi-pass rotated OCR
             $rawOcrText = trim((string)($input['ocr_raw_text'] ?? ($_POST['ocr_raw_text'] ?? '')));
-
-            if (empty($rawOcrText)) {
-                $procFilename = 'proc_' . $frontFilename;
-                $procDestination = $uploadDir . '/' . $procFilename;
-                VerificationService::preprocessIdImage($frontDestination, $procDestination);
-                $ocrImagePath = (file_exists($procDestination) && filesize($procDestination) > 0) ? $procDestination : $frontDestination;
-
-                $tesseractBin = VerificationService::findTesseractBinary();
-                if ($tesseractBin !== null) {
-                    $escapedBin = escapeshellarg($tesseractBin);
-                    $escapedFile = escapeshellarg($ocrImagePath);
-                    $cmd = "{$escapedBin} {$escapedFile} stdout -l eng --oem 1 2>nul";
-                    $output = [];
-                    $retVal = 0;
-                    @exec($cmd, $output, $retVal);
-                    if ($retVal === 0 && !empty($output)) {
-                        $rawOcrText = implode("\n", $output);
-                    }
-                }
-            }
+            $validationResult = VerificationService::validateIdDocument($idType, $frontDestination, $rawOcrText, $backDestination);
+            $rawOcrText = $validationResult['raw_text'];
+            $typeCheck = $validationResult['type_check'];
 
             // 3. ID TYPE CROSS-CHECK: Enforce validation rule that attached ID must match chosen Document Type
-            if (!empty($rawOcrText)) {
-                $typeCheck = VerificationService::verifyIdTypeMatchesDocument($idType, $rawOcrText);
-                if (!$typeCheck['matched']) {
-                    @unlink($frontDestination);
-                    @unlink($backDestination);
-                    $mismatchMessage = 'Verification Failed: The uploaded document does not match the selected ID type.';
-                    http_response_code(422);
-                    echo json_encode([
-                        'status' => 'error',
-                        'code' => 'ID_TYPE_MISMATCH',
-                        'message' => $mismatchMessage,
-                        'details' => $typeCheck
-                    ]);
-                    exit;
+            if (empty($validationResult['matched']) && empty($validationResult['skipped'])) {
+                @unlink($frontDestination);
+                @unlink($backDestination);
+                $mismatchDetail = trim((string)($typeCheck['reason'] ?? ''));
+                $mismatchDetail = (string)preg_replace('/^(?:Verification\s+Failed:\s*)+/i', '', $mismatchDetail);
+                if ($mismatchDetail === '') {
+                    $mismatchDetail = 'The uploaded document does not match the selected ID type.';
                 }
+                http_response_code(422);
+                echo json_encode([
+                    'status' => 'error',
+                    'verification_status' => 'unverified',
+                    'code' => 'ID_TYPE_MISMATCH',
+                    'message' => $mismatchDetail,
+                    'details' => $typeCheck,
+                    'validation_method' => $validationResult['method'] ?? 'ocr'
+                ]);
+                exit;
             }
 
             // 4. Staged successfully! Upload both Front & Back to Supabase Cloud Storage
@@ -833,17 +819,17 @@ try {
                 $rawOcrText = trim((string)$input['ocr_raw_text']);
             }
 
-            // If raw OCR text was not passed by client, attempt server-side Tesseract CLI
-            if (empty($rawOcrText) && !isset($_SERVER['HTTP_X_MOCK_OCR_NAME']) && !isset($_POST['mock_ocr_data'])) {
-                $tesseractBin = VerificationService::findTesseractBinary();
-                if ($tesseractBin !== null) {
-                    $escapedBin = escapeshellarg($tesseractBin);
-                    $escapedFile = escapeshellarg($ocrImagePath);
-                    $cmd = "{$escapedBin} {$escapedFile} stdout -l eng --oem 1 2>nul";
-                    $cliOutput = @shell_exec($cmd);
-                    if (!empty($cliOutput) && strlen(trim((string)$cliOutput)) > 5) {
-                        $rawOcrText = trim((string)$cliOutput);
-                    }
+            // If raw OCR text was not passed by client (or needs multi-pass/Vision verification), run unified validator
+            $idTypePreValidated = false;
+            $idTypeCheck = null;
+            if (!isset($_SERVER['HTTP_X_MOCK_OCR_NAME']) && !isset($_POST['mock_ocr_data']) && !isset($_SERVER['HTTP_X_MOCK_OCR_RAW'])) {
+                $docValidation = VerificationService::validateIdDocument($idType, $idDestination, (string)($rawOcrText ?? ''), $backDestination ?? null);
+                if (!empty($docValidation['raw_text'])) {
+                    $rawOcrText = $docValidation['raw_text'];
+                }
+                if (empty($docValidation['skipped'])) {
+                    $idTypeCheck = $docValidation['type_check'];
+                    $idTypePreValidated = true;
                 }
             }
 
@@ -903,11 +889,16 @@ try {
                 exit;
             }
 
-            // FAIL-EARLY HARD-STOP: Search raw OCR text for required keywords mapped to selected ID type
-            $idTypeCheck = VerificationService::verifyIdTypeMatchesDocument($idType, $rawOcrText);
+            // FAIL-EARLY HARD-STOP: Search raw OCR text (or reuse Vision check) mapped to selected ID type
+            if (!$idTypePreValidated || !is_array($idTypeCheck)) {
+                $idTypeCheck = VerificationService::verifyIdTypeMatchesDocument($idType, $rawOcrText);
+            }
 
-            if (!$idTypeCheck['matched']) {
-                $typeFailureReason = $idTypeCheck['reason'] ?: "Verification Failed: The uploaded document does not match the selected ID type.";
+            if (empty($idTypeCheck['matched'])) {
+                $typeFailureReason = trim((string)preg_replace('/^(?:Verification\s+Failed:\s*)+/i', '', (string)($idTypeCheck['reason'] ?? '')));
+                if ($typeFailureReason === '') {
+                    $typeFailureReason = 'The uploaded document does not match the selected ID type.';
+                }
                 $updateStmt = $pdo->prepare("
                     UPDATE users 
                     SET verification_status = 'unverified',

@@ -67,10 +67,10 @@ if (!defined('TESSERACT_PATH')) {
 
 // Legacy constants safely defined for backward compatibility
 if (!defined('GEMINI_API_KEY')) {
-    define('GEMINI_API_KEY', '');
+    define('GEMINI_API_KEY', (string)(getenv('GEMINI_API_KEY') ?: ($_ENV['GEMINI_API_KEY'] ?? '')));
 }
 if (!defined('GEMINI_API_MODEL')) {
-    define('GEMINI_API_MODEL', 'gemini-2.5-flash');
+    define('GEMINI_API_MODEL', (string)(getenv('GEMINI_API_MODEL') ?: ($_ENV['GEMINI_API_MODEL'] ?? 'gemini-2.5-flash')));
 }
 if (!defined('GEMINI_API_URL')) {
     define('GEMINI_API_URL', 'https://generativelanguage.googleapis.com/v1beta/models/' . GEMINI_API_MODEL . ':generateContent');

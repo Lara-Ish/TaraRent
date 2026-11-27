@@ -6537,20 +6537,21 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
           stopLivenessCamera();
 
           const isUpdateFallback = window.isUpdatingVerifiedId || (result && result.was_verified);
-          const errMsg = isUpdateFallback 
+          const rawErrMsg = isUpdateFallback 
             ? "ID update cancelled or failed. Your previously verified ID remains active." 
             : (result.message || 'Face verification failed. Please try again.');
+          const cleanErrMsg = String(rawErrMsg).replace(/^(?:\s*Verification\s+(?:Failed|Error)\s*:\s*)+/i, '').trim() || 'Face verification failed. Please try again.';
 
-          showToast(errMsg, isUpdateFallback ? 'info' : 'error', 6000);
+          showToast(isUpdateFallback ? cleanErrMsg : `Verification Failed: ${cleanErrMsg}`, isUpdateFallback ? 'info' : 'error', 6000);
           if (overlay) overlay.style.display = 'none';
 
           const alertBox = document.getElementById('verifyModalAlert');
           if (alertBox) {
             alertBox.style.display = 'block';
-            alertBox.innerHTML = `<span style="display:inline-flex;align-items:center;gap:6px;">${window.rcIcon('alert-triangle', 'w-4 h-4')} <span><strong>${isUpdateFallback ? 'Notice:' : 'Verification Failed:'}</strong> ${escapeHtml(errMsg)}</span></span>`;
+            alertBox.innerHTML = `<span style="display:inline-flex;align-items:center;gap:6px;">${window.rcIcon('alert-triangle', 'w-4 h-4')} <span><strong>${isUpdateFallback ? 'Notice:' : 'Verification Failed:'}</strong> ${escapeHtml(cleanErrMsg)}</span></span>`;
           }
 
-          updateLivenessStatusBadge('x-circle', isUpdateFallback ? errMsg : 'Face verification failed. Please try again.', 'spoof');
+          updateLivenessStatusBadge('x-circle', isUpdateFallback ? cleanErrMsg : 'Face verification failed. Please try again.', 'spoof');
 
           // Show retry button
           const retryBtn = document.getElementById('btnLivenessRetry');
@@ -7716,14 +7717,67 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
               submitBtn.innerHTML = '<span class="clay-spinner" style="width: 16px; height: 16px; border-width: 2px; vertical-align: middle; margin-right: 8px;"></span> Validating Document...';
             }
 
+            // Helper to strip redundant backend "Verification Failed:" / "Verification Error:" prefixes
+            const formatVerificationErrMsg = (raw) => {
+              const cleaned = String(raw || '')
+                .replace(/^(?:\s*Verification\s+(?:Failed|Error)\s*:\s*)+/i, '')
+                .trim();
+              return cleaned || 'The uploaded document does not match the selected ID type.';
+            };
+
+            // Downscale oversized mobile photo uploads cleanly before OCR and server staging
+            const optimizeUploadImageFile = async (file, maxDim = 1600, quality = 0.86) => {
+              if (!file || !(file instanceof Blob) || !file.type || !file.type.startsWith('image/')) {
+                return file;
+              }
+              if (file.size <= 1.2 * 1024 * 1024) {
+                return file;
+              }
+              try {
+                const imgUrl = URL.createObjectURL(file);
+                const loadedImg = await new Promise((resolve, reject) => {
+                  const img = new Image();
+                  img.onload = () => resolve(img);
+                  img.onerror = reject;
+                  img.src = imgUrl;
+                });
+                URL.revokeObjectURL(imgUrl);
+
+                const w = loadedImg.naturalWidth || loadedImg.width || 0;
+                const h = loadedImg.naturalHeight || loadedImg.height || 0;
+                if (!w || !h || (w <= maxDim && h <= maxDim && file.size <= 2 * 1024 * 1024)) {
+                  return file;
+                }
+                const scale = Math.min(1, maxDim / Math.max(w, h));
+                const targetW = Math.max(1, Math.round(w * scale));
+                const targetH = Math.max(1, Math.round(h * scale));
+                const canvas = document.createElement('canvas');
+                canvas.width = targetW;
+                canvas.height = targetH;
+                const ctx = canvas.getContext('2d');
+                if (!ctx) return file;
+                ctx.drawImage(loadedImg, 0, 0, targetW, targetH);
+                const compressedBlob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', quality));
+                if (compressedBlob && compressedBlob.size > 0 && compressedBlob.size < file.size) {
+                  return new File([compressedBlob], (file.name || 'id_photo').replace(/\.[^.]+$/, '') + '.jpg', { type: 'image/jpeg' });
+                }
+              } catch (compressErr) {
+                console.warn('Image optimization skipped:', compressErr);
+              }
+              return file;
+            };
+
+            const preparedFrontFile = frontFile ? await optimizeUploadImageFile(frontFile) : null;
+            const preparedBackFile = backFile ? await optimizeUploadImageFile(backFile) : null;
+
             // Extract OCR text with Tesseract.js if not already held
             let ocrText = heldOcrRawText || '';
             if (!ocrText && window.Tesseract && typeof Tesseract.recognize === 'function') {
               try {
-                const targetImage = preprocessedIdBlob || frontFile;
+                const targetImage = preprocessedIdBlob || preparedFrontFile || frontFile;
                 if (targetImage) {
                   const ocrPromise = Tesseract.recognize(targetImage, 'eng');
-                  const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('OCR Timeout')), 5000));
+                  const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('OCR Timeout')), 4500));
                   const ocrResult = await Promise.race([ocrPromise, timeoutPromise]);
                   if (ocrResult && ocrResult.data && ocrResult.data.text) {
                     ocrText = ocrResult.data.text;
@@ -7738,15 +7792,15 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
             const formData = new FormData();
             formData.append('action', 'validate_and_stage_id');
             formData.append('id_type', docType);
-            if (frontFile) {
-              formData.append('id_photo', frontFile);
+            if (preparedFrontFile) {
+              formData.append('id_photo', preparedFrontFile, preparedFrontFile.name || 'front_id.jpg');
             }
             if (frontBase64) {
               formData.append('captured_id_base64', frontBase64);
               formData.append('captured_front_id_base64', frontBase64);
             }
-            if (backFile) {
-              formData.append('id_photo_back', backFile);
+            if (preparedBackFile) {
+              formData.append('id_photo_back', preparedBackFile, preparedBackFile.name || 'back_id.jpg');
             }
             if (backBase64) {
               formData.append('captured_back_id_base64', backBase64);
@@ -7766,9 +7820,15 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
                 method: 'POST',
                 body: formData
               });
-              const data = await res.json();
+              const rawRespText = await res.text();
+              let data = null;
+              try {
+                data = rawRespText ? JSON.parse(rawRespText) : null;
+              } catch (parseErr) {
+                console.warn('Non-JSON ID validation response:', rawRespText ? rawRespText.slice(0, 300) : '(empty)');
+              }
 
-              if (res.ok && data.status === 'success') {
+              if (res.ok && data && data.status === 'success') {
                 window.hasStagedPendingId = true;
                 // Document type cross-check PASSED!
                 // Seamlessly transition directly to Step 2 (Live Face Scan)
@@ -7779,11 +7839,17 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
                 goToVerificationStep(2);
               } else {
                 // Document mismatch or validation error! Halt process!
-                const errMsg = data.message || 'Verification Failed: The uploaded document does not match the selected ID type.';
-                showToast(errMsg, 'error');
+                const cleanErrMsg = data && data.message
+                  ? formatVerificationErrMsg(data.message)
+                  : (res.status === 413
+                    ? 'The uploaded ID image is too large. Please use a clearer or smaller photo.'
+                    : 'Unable to validate document type. Please check your photo and try again.');
+                const isMismatch = data && data.code === 'ID_TYPE_MISMATCH';
+                const headingLabel = isMismatch || (data && data.message) ? 'Verification Failed:' : 'Verification Error:';
+                showToast(`${headingLabel} ${cleanErrMsg}`, 'error');
                 if (alertBox) {
                   alertBox.style.display = 'block';
-                  alertBox.innerHTML = `<span style="display:flex;align-items:center;gap:8px;">${window.rcIcon('alert-triangle', 'w-4 h-4 text-red-600')}<span><strong>Verification Failed:</strong> ${escapeHtml(errMsg)}</span></span>`;
+                  alertBox.innerHTML = `<span style="display:flex;align-items:center;gap:8px;">${window.rcIcon('alert-triangle', 'w-4 h-4 text-red-600')}<span><strong>${headingLabel}</strong> ${escapeHtml(cleanErrMsg)}</span></span>`;
                 }
                 if (submitBtn) {
                   submitBtn.disabled = false;
@@ -7792,11 +7858,11 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
               }
             } catch (err) {
               console.error('ID Document validation error:', err);
-              const errMsg = 'Verification Failed: The uploaded document does not match the selected ID type.';
-              showToast(errMsg, 'error');
+              const netErrMsg = 'Connection issue while validating your document. Please check your internet connection and try again.';
+              showToast(`Verification Error: ${netErrMsg}`, 'error');
               if (alertBox) {
                 alertBox.style.display = 'block';
-                alertBox.innerHTML = `<span style="display:flex;align-items:center;gap:8px;">${window.rcIcon('alert-triangle', 'w-4 h-4 text-red-600')}<span><strong>Verification Error:</strong> Unable to validate document type. Please try again.</span></span>`;
+                alertBox.innerHTML = `<span style="display:flex;align-items:center;gap:8px;">${window.rcIcon('alert-triangle', 'w-4 h-4 text-red-600')}<span><strong>Verification Error:</strong> ${escapeHtml(netErrMsg)}</span></span>`;
               }
               if (submitBtn) {
                 submitBtn.disabled = false;

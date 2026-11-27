@@ -231,24 +231,23 @@ if (!empty($_POST['upload_id_only']) || $action === 'validate_and_stage_id') {
 
         if ($saved) {
             $rawOcrText = trim((string)($_POST['ocr_raw_text'] ?? ''));
-            if (empty($rawOcrText)) {
-                $ocrRes = VerificationService::extractIdDataWithOCR($dest, null, $accountUser, $idType);
-                if (!empty($ocrRes['raw_text'])) {
-                    $rawOcrText = $ocrRes['raw_text'];
-                }
-            }
+            $validationResult = VerificationService::validateIdDocument($idType, $dest, $rawOcrText);
+            $rawOcrText = $validationResult['raw_text'];
+            $typeCheck = $validationResult['type_check'];
 
-            if (!empty($rawOcrText)) {
-                $typeCheck = VerificationService::verifyIdTypeMatchesDocument($idType, $rawOcrText);
-                if (!$typeCheck['matched']) {
-                    @unlink($dest);
-                    sendFaceJsonResponse(422, [
-                        'status' => 'error',
-                        'code' => 'ID_TYPE_MISMATCH',
-                        'message' => 'Verification Failed: The uploaded document does not match the selected ID type.',
-                        'details' => $typeCheck
-                    ]);
+            if (empty($validationResult['matched']) && empty($validationResult['skipped'])) {
+                @unlink($dest);
+                $mismatchDetail = trim((string)($typeCheck['reason'] ?? ''));
+                $mismatchDetail = (string)preg_replace('/^(?:Verification\s+Failed:\s*)+/i', '', $mismatchDetail);
+                if ($mismatchDetail === '') {
+                    $mismatchDetail = 'The uploaded document does not match the selected ID type.';
                 }
+                sendFaceJsonResponse(422, [
+                    'status' => 'error',
+                    'code' => 'ID_TYPE_MISMATCH',
+                    'message' => $mismatchDetail,
+                    'details' => $typeCheck
+                ]);
             }
 
             // Upload to Supabase Cloud Storage bucket 'id_verifications'
@@ -537,20 +536,19 @@ if (!$idFilePath || !file_exists($idFilePath)) {
 $idType = trim((string)($_POST['id_type'] ?? ($accountUser['id_type'] ?? '')));
 $rawOcrText = trim((string)($_POST['ocr_raw_text'] ?? ''));
 
-// Scan the uploaded ID image if OCR text was not passed from frontend and a new ID was uploaded
-if (empty($rawOcrText) && !empty($idFilePath) && isset($_FILES['id_photo'])) {
-    $ocrResult = VerificationService::extractIdDataWithOCR($idFilePath, null, $accountUser, $idType);
-    if (!empty($ocrResult['raw_text'])) {
-        $rawOcrText = $ocrResult['raw_text'];
+// Scan/validate the ID document type using unified orientation-tolerant validator
+if (!empty($idType)) {
+    $docValidation = VerificationService::validateIdDocument($idType, $idFilePath, $rawOcrText);
+    if (!empty($docValidation['raw_text'])) {
+        $rawOcrText = $docValidation['raw_text'];
     }
-}
-
-// Active OCR Cross-Checking against selected ID Type (only when OCR text is available)
-if (!empty($idType) && !empty($rawOcrText)) {
-    $typeCheck = VerificationService::verifyIdTypeMatchesDocument($idType, $rawOcrText);
-    if (!$typeCheck['matched']) {
-        // STRICT REJECTION: If a document mismatch is detected, halt flow safely
-        $handleFailure('Verification Failed: The uploaded document does not match the selected ID type.');
+    if (empty($docValidation['matched']) && empty($docValidation['skipped'])) {
+        $mismatchDetail = trim((string)($docValidation['type_check']['reason'] ?? ''));
+        $mismatchDetail = (string)preg_replace('/^(?:Verification\s+Failed:\s*)+/i', '', $mismatchDetail);
+        if ($mismatchDetail === '') {
+            $mismatchDetail = 'The uploaded document does not match the selected ID type.';
+        }
+        $handleFailure($mismatchDetail);
     }
 }
 

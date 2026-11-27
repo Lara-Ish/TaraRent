@@ -52,6 +52,8 @@ class VerificationService
                 return $inputPath;
             }
 
+            $img = self::applyExifOrientationToGd($img, $inputPath);
+
             $width = imagesx($img);
             $height = imagesy($img);
 
@@ -59,8 +61,8 @@ class VerificationService
             $maxDim = 1600;
             if ($width > $maxDim || $height > $maxDim) {
                 $scale = min($maxDim / $width, $maxDim / $height);
-                $newW = (int)($width * $scale);
-                $newH = (int)($height * $scale);
+                $newW = max(1, (int)($width * $scale));
+                $newH = max(1, (int)($height * $scale));
                 $resized = imagecreatetruecolor($newW, $newH);
                 imagecopyresampled($resized, $img, 0, 0, 0, 0, $newW, $newH, $width, $height);
                 imagedestroy($img);
@@ -89,6 +91,99 @@ class VerificationService
     }
 
     /**
+     * Rotate a GD image resource to upright orientation based on EXIF metadata.
+     *
+     * @param \GdImage|resource $img
+     * @param string $sourcePath
+     * @return \GdImage|resource
+     */
+    private static function applyExifOrientationToGd($img, string $sourcePath)
+    {
+        if (!function_exists('exif_read_data')) {
+            return $img;
+        }
+        $exif = @exif_read_data($sourcePath);
+        if (!is_array($exif) || empty($exif['Orientation'])) {
+            return $img;
+        }
+        $angle = match ((int)$exif['Orientation']) {
+            3 => 180,
+            6 => -90,
+            8 => 90,
+            default => 0,
+        };
+        if ($angle !== 0 && function_exists('imagerotate')) {
+            $rotated = @imagerotate($img, $angle, 0);
+            if ($rotated) {
+                imagedestroy($img);
+                return $rotated;
+            }
+        }
+        return $img;
+    }
+
+    /**
+     * Prepare an EXIF-corrected, bounded color JPEG for Vision API or color-header OCR.
+     *
+     * @param string $inputPath
+     * @param string|null $outputPath
+     * @param int $maxDim
+     * @param int $quality
+     * @return string
+     */
+    public static function prepareNormalizedColorImage(
+        string $inputPath,
+        ?string $outputPath = null,
+        int $maxDim = 1600,
+        int $quality = 88
+    ): string {
+        if (!file_exists($inputPath) || filesize($inputPath) === 0) {
+            return $inputPath;
+        }
+        if (!extension_loaded('gd') || !function_exists('imagecreatefromstring')) {
+            return $inputPath;
+        }
+
+        $rawBytes = @file_get_contents($inputPath);
+        if ($rawBytes === false || $rawBytes === '') {
+            return $inputPath;
+        }
+
+        $img = @imagecreatefromstring($rawBytes);
+        if (!$img) {
+            return $inputPath;
+        }
+
+        $img = self::applyExifOrientationToGd($img, $inputPath);
+        $width = imagesx($img);
+        $height = imagesy($img);
+
+        if ($width > $maxDim || $height > $maxDim) {
+            $scale = min($maxDim / $width, $maxDim / $height);
+            $newW = max(1, (int)($width * $scale));
+            $newH = max(1, (int)($height * $scale));
+            $resized = imagecreatetruecolor($newW, $newH);
+            imagecopyresampled($resized, $img, 0, 0, 0, 0, $newW, $newH, $width, $height);
+            imagedestroy($img);
+            $img = $resized;
+        }
+
+        if ($outputPath === null) {
+            $dir = dirname($inputPath);
+            $outputPath = $dir . '/norm_' . pathinfo(basename($inputPath), PATHINFO_FILENAME) . '.jpg';
+        }
+
+        @imagejpeg($img, $outputPath, $quality);
+        imagedestroy($img);
+
+        if (file_exists($outputPath) && filesize($outputPath) > 0) {
+            return $outputPath;
+        }
+
+        return $inputPath;
+    }
+
+    /**
      * Strict mapping array that ties the exact <option> values submitted by the user
      * to their required OCR keywords.
      *
@@ -101,7 +196,16 @@ class VerificationService
             'Pambansang Pagkakakilanlan',
             'Philippine Identification System',
             'Philippine Identification Card',
+            'Philippine Identification',
+            'Philippine National ID',
+            'Digital National ID',
+            'Digital ID Number',
+            'Digital ID',
+            'ePhilID',
+            'e-PhilID',
             'PhilSys',
+            'PhilSys Number',
+            'Phil ID',
             'PhilID',
             'National ID',
             'Philippine Statistics Authority',
@@ -113,6 +217,11 @@ class VerificationService
             'Pambansang Pagkakakilanlan',
             'Philippine Identification System',
             'Philippine Identification Card',
+            'Philippine Identification',
+            'Philippine National ID',
+            'Digital National ID',
+            'Digital ID Number',
+            'ePhilID',
             'PhilSys',
             'PhilID',
             'National ID',
@@ -125,6 +234,10 @@ class VerificationService
             'Pambansang Pagkakakilanlan',
             'Philippine Identification System',
             'Philippine Identification Card',
+            'Philippine National ID',
+            'Digital National ID',
+            'Digital ID Number',
+            'ePhilID',
             'PhilSys',
             'PhilID',
             'National ID',
@@ -137,6 +250,10 @@ class VerificationService
             'Pambansang Pagkakakilanlan',
             'Philippine Identification System',
             'Philippine Identification Card',
+            'Philippine National ID',
+            'Digital National ID',
+            'Digital ID Number',
+            'ePhilID',
             'PhilSys',
             'PhilID',
             'National ID',
@@ -149,6 +266,10 @@ class VerificationService
             'Pambansang Pagkakakilanlan',
             'Philippine Identification System',
             'Philippine Identification Card',
+            'Philippine National ID',
+            'Digital National ID',
+            'Digital ID Number',
+            'ePhilID',
             'PhilSys',
             'PhilID',
             'National ID',
@@ -161,6 +282,10 @@ class VerificationService
             'Pambansang Pagkakakilanlan',
             'Philippine Identification System',
             'Philippine Identification Card',
+            'Philippine National ID',
+            'Digital National ID',
+            'Digital ID Number',
+            'ePhilID',
             'PhilSys',
             'PhilID',
             'National ID',
@@ -173,6 +298,10 @@ class VerificationService
             'Pambansang Pagkakakilanlan',
             'Philippine Identification System',
             'Philippine Identification Card',
+            'Philippine National ID',
+            'Digital National ID',
+            'Digital ID Number',
+            'ePhilID',
             'PhilSys',
             'PhilID',
             'National ID',
@@ -185,6 +314,10 @@ class VerificationService
             'Pambansang Pagkakakilanlan',
             'Philippine Identification System',
             'Philippine Identification Card',
+            'Philippine National ID',
+            'Digital National ID',
+            'Digital ID Number',
+            'ePhilID',
             'PhilSys',
             'PhilID',
             'National ID',
@@ -194,245 +327,156 @@ class VerificationService
         "Driver's License" => [
             'Land Transportation Office',
             'LTO',
+            'Department of Transportation',
+            'DOTr',
             "Driver's License",
+            'Drivers License',
+            'Non-Professional',
+            'Professional Driver',
+            'LTMS',
+            'DL Codes',
+            'Restrictions',
         ],
         'Passport' => [
             'Pasaporte',
             'Passport',
             'Department of Foreign Affairs',
+            'DFA',
+            'P<PHL',
+            'Code PHL',
         ],
         'UMID' => [
             'Unified Multi-Purpose ID',
+            'Unified Multi Purpose ID',
+            'Unified Multipurpose ID',
             'UMID',
-            'Republic of the Philippines',
+            'Common Reference Number',
+            'CRN',
         ],
         'SSS / GSIS ID' => [
             'Social Security System',
             'SSS',
             'Government Service Insurance System',
             'GSIS',
+            'GSIS eCard',
+            'Unified Multi-Purpose ID',
+            'UMID',
         ],
         'PRC ID' => [
             'Professional Regulation Commission',
             'PRC',
             'Professional Identification Card',
+            'Professional Identification',
         ],
         'Postal ID' => [
             'Philippine Postal Corporation',
             'PHLPost',
+            'PhilPost',
             'Postal ID',
+            'Postal Identity Card',
         ],
         "Voter's ID" => [
             'Commission on Elections',
             'COMELEC',
             "Voter's Identification Card",
+            'Voters Identification Card',
+            "Voter's ID",
+            'Voters ID',
+            "Voter's Certification",
+            'Voter Certification',
+            'Certificate of Registration',
+            'VIN',
         ],
         'PhilHealth ID' => [
             'Philippine Health Insurance Corporation',
+            'Philippine Health Insurance',
             'PhilHealth',
+            'PhilHealth Identification Number',
         ],
         'Student ID' => [
             'Student',
+            'Student ID',
+            'Student Identification',
             'University',
             'College',
             'School',
             'Institute',
             'Campus',
+            'Academy',
+            'Polytechnic',
+            'Pamantasan',
+            'TESDA',
+            'Learner Reference Number',
+            'LRN',
         ],
         'Other Valid Government ID' => [
             'Republika ng Pilipinas',
             'Republic of the Philippines',
+            'Bureau of Internal Revenue',
+            'Taxpayer Identification Number',
+            'BIR',
+            'TIN',
+            'Pag-IBIG Fund',
+            'Pag-IBIG',
+            'Home Development Mutual Fund',
+            'HDMF',
+            'Senior Citizen',
+            'OSCA',
+            'Persons with Disability',
+            'NCDA',
+            'PDAO',
+            'PWD',
+            'Barangay',
+            'National Bureau of Investigation',
+            'NBI Clearance',
+            'NBI',
+            'Philippine National Police',
+            'Police Clearance',
+            'NPCS',
+            'OWWA',
+            'OFW',
+            'Seafarer',
+            'MARINA',
+            'Integrated Bar of the Philippines',
+            'Civil Service Commission',
+            'Solo Parent',
+            'Government',
+            'Municipality',
+            'City of',
+            'Province of',
         ],
         "Voter's ID / Certificate" => [
             'Commission on Elections',
             'COMELEC',
             "Voter's Identification Card",
+            'Voters Identification Card',
+            "Voter's ID",
+            'Voters ID',
+            "Voter's Certification",
+            'Voter Certification',
+            'Certificate of Registration',
         ],
         'Student ID (Current SY)' => [
             'Student',
+            'Student ID',
             'University',
             'College',
             'School',
             'Institute',
             'Campus',
+            'Academy',
+            'Polytechnic',
+            'Pamantasan',
+            'TESDA',
         ],
     ];
 
     /**
      * Specific, hardcoded keyword signatures unique to each Philippine ID type.
-     * The OCR must detect at least one of these designated keywords for the claimed ID type:
-     * - National ID (PhilSys): "Republika ng Pilipinas", "Republic of the Philippines", "Pambansang Pagkakakilanlan", "Philippine Identification System", "PhilSys", "PhilID", or "National ID"
-     * - Driver's License: "Land Transportation Office", "LTO", or "Driver's License"
-     * - Passport: "Pasaporte", "Passport", or "Department of Foreign Affairs"
-     * - UMID: "Unified Multi-Purpose ID", "UMID", or "Republic of the Philippines"
-     * - SSS / GSIS ID: "Social Security System", "SSS", "Government Service Insurance System", or "GSIS"
-     * - PRC ID: "Professional Regulation Commission", "PRC", or "Professional Identification Card"
-     * - Postal ID: "Philippine Postal Corporation", "PHLPost", or "Postal ID"
-     * - Voter's ID: "Commission on Elections", "COMELEC", or "Voter's Identification Card"
-     * - PhilHealth ID: "Philippine Health Insurance Corporation" or "PhilHealth"
-     * - Student ID: "Student", "University", "College", "School", "Institute", or "Campus"
      *
      * @var array<string, string[]>
      */
-    public const HARDCODED_ID_SIGNATURES = [
-        'National ID' => [
-            'Republika ng Pilipinas',
-            'Republic of the Philippines',
-            'Pambansang Pagkakakilanlan',
-            'Philippine Identification System',
-            'Philippine Identification Card',
-            'PhilSys',
-            'PhilID',
-            'National ID',
-            'Philippine Statistics Authority',
-            'PSA',
-        ],
-        'PhilSys' => [
-            'Republika ng Pilipinas',
-            'Republic of the Philippines',
-            'Pambansang Pagkakakilanlan',
-            'Philippine Identification System',
-            'Philippine Identification Card',
-            'PhilSys',
-            'PhilID',
-            'National ID',
-            'Philippine Statistics Authority',
-            'PSA',
-        ],
-        'PhilSys ID' => [
-            'Republika ng Pilipinas',
-            'Republic of the Philippines',
-            'Pambansang Pagkakakilanlan',
-            'Philippine Identification System',
-            'Philippine Identification Card',
-            'PhilSys',
-            'PhilID',
-            'National ID',
-            'Philippine Statistics Authority',
-            'PSA',
-        ],
-        'Philippine National ID' => [
-            'Republika ng Pilipinas',
-            'Republic of the Philippines',
-            'Pambansang Pagkakakilanlan',
-            'Philippine Identification System',
-            'Philippine Identification Card',
-            'PhilSys',
-            'PhilID',
-            'National ID',
-            'Philippine Statistics Authority',
-            'PSA',
-        ],
-        'Philippine National ID (PhilSys)' => [
-            'Republika ng Pilipinas',
-            'Republic of the Philippines',
-            'Pambansang Pagkakakilanlan',
-            'Philippine Identification System',
-            'Philippine Identification Card',
-            'PhilSys',
-            'PhilID',
-            'National ID',
-            'Philippine Statistics Authority',
-            'PSA',
-        ],
-        'National ID (PhilSys)' => [
-            'Republika ng Pilipinas',
-            'Republic of the Philippines',
-            'Pambansang Pagkakakilanlan',
-            'Philippine Identification System',
-            'Philippine Identification Card',
-            'PhilSys',
-            'PhilID',
-            'National ID',
-            'Philippine Statistics Authority',
-            'PSA',
-        ],
-        'PhilSys / National ID' => [
-            'Republika ng Pilipinas',
-            'Republic of the Philippines',
-            'Pambansang Pagkakakilanlan',
-            'Philippine Identification System',
-            'Philippine Identification Card',
-            'PhilSys',
-            'PhilID',
-            'National ID',
-            'Philippine Statistics Authority',
-            'PSA',
-        ],
-        'PhilID' => [
-            'Republika ng Pilipinas',
-            'Republic of the Philippines',
-            'Pambansang Pagkakakilanlan',
-            'Philippine Identification System',
-            'Philippine Identification Card',
-            'PhilSys',
-            'PhilID',
-            'National ID',
-            'Philippine Statistics Authority',
-            'PSA',
-        ],
-        "Driver's License" => [
-            'Land Transportation Office',
-            'LTO',
-            "Driver's License",
-        ],
-        'Passport' => [
-            'Pasaporte',
-            'Passport',
-            'Department of Foreign Affairs',
-        ],
-        'UMID' => [
-            'Unified Multi-Purpose ID',
-            'UMID',
-            'Republic of the Philippines',
-        ],
-        'SSS / GSIS ID' => [
-            'Social Security System',
-            'SSS',
-            'Government Service Insurance System',
-            'GSIS',
-        ],
-        'PRC ID' => [
-            'Professional Regulation Commission',
-            'PRC',
-            'Professional Identification Card',
-        ],
-        'Postal ID' => [
-            'Philippine Postal Corporation',
-            'PHLPost',
-            'Postal ID',
-        ],
-        "Voter's ID" => [
-            'Commission on Elections',
-            'COMELEC',
-            "Voter's Identification Card",
-        ],
-        "Voter's ID / Certificate" => [
-            'Commission on Elections',
-            'COMELEC',
-            "Voter's Identification Card",
-        ],
-        'PhilHealth ID' => [
-            'Philippine Health Insurance Corporation',
-            'PhilHealth',
-        ],
-        'Student ID' => [
-            'Student',
-            'University',
-            'College',
-            'School',
-            'Institute',
-            'Campus',
-        ],
-        'Student ID (Current SY)' => [
-            'Student',
-            'University',
-            'College',
-            'School',
-            'Institute',
-            'Campus',
-        ],
-    ];
+    public const HARDCODED_ID_SIGNATURES = self::STRICT_ID_OPTION_KEYWORDS;
 
     /**
      * Unique distinguishing signatures for strict cross-verification.
@@ -449,80 +493,25 @@ class VerificationService
             'LTO Driver',
             'Non-Professional Driver',
             'Professional Driver',
+            "Student-Driver's Permit",
+            'Department of Transportation',
             'LTO',
         ],
         'Passport' => [
             'Pasaporte',
             'Passport',
             'Department of Foreign Affairs',
+            'P<PHL',
             'DFA',
         ],
         'National ID' => [
             'PhilSys',
             'National ID',
-            'Philippine Identification System',
-            'Philippine Identification Card',
-            'Pambansang Pagkakakilanlan',
-            'PhilID',
-            'Philippine Statistics Authority',
-        ],
-        'PhilSys' => [
-            'PhilSys',
-            'National ID',
-            'Philippine Identification System',
-            'Philippine Identification Card',
-            'Pambansang Pagkakakilanlan',
-            'PhilID',
-            'Philippine Statistics Authority',
-        ],
-        'PhilSys ID' => [
-            'PhilSys',
-            'National ID',
-            'Philippine Identification System',
-            'Philippine Identification Card',
-            'Pambansang Pagkakakilanlan',
-            'PhilID',
-            'Philippine Statistics Authority',
-        ],
-        'Philippine National ID' => [
-            'PhilSys',
-            'National ID',
-            'Philippine Identification System',
-            'Philippine Identification Card',
-            'Pambansang Pagkakakilanlan',
-            'PhilID',
-            'Philippine Statistics Authority',
-        ],
-        'Philippine National ID (PhilSys)' => [
-            'PhilSys',
-            'National ID',
-            'Philippine Identification System',
-            'Philippine Identification Card',
-            'Pambansang Pagkakakilanlan',
-            'PhilID',
-            'Philippine Statistics Authority',
-        ],
-        'National ID (PhilSys)' => [
-            'PhilSys',
-            'National ID',
-            'Philippine Identification System',
-            'Philippine Identification Card',
-            'Pambansang Pagkakakilanlan',
-            'PhilID',
-            'Philippine Statistics Authority',
-        ],
-        'PhilSys / National ID' => [
-            'PhilSys',
-            'National ID',
-            'Philippine Identification System',
-            'Philippine Identification Card',
-            'Pambansang Pagkakakilanlan',
-            'PhilID',
-            'Philippine Statistics Authority',
-        ],
-        'PhilID' => [
-            'PhilSys',
-            'National ID',
+            'Philippine National ID',
+            'Digital National ID',
+            'Digital ID Number',
+            'ePhilID',
+            'e-PhilID',
             'Philippine Identification System',
             'Philippine Identification Card',
             'Pambansang Pagkakakilanlan',
@@ -551,12 +540,15 @@ class VerificationService
             'PHLPost',
             'PhilPost',
             'Postal ID',
+            'Postal Identity Card',
         ],
         "Voter's ID" => [
             'Commission on Elections',
             'COMELEC',
             "Voter's Identification Card",
             "Voters Identification Card",
+            "Voter's Certification",
+            'Voter Certification',
             "Voter's ID",
             'Voters ID',
         ],
@@ -570,12 +562,8 @@ class VerificationService
             'Student Identification',
             'Student ID Card',
             'Student ID',
-            'Student',
-            'University',
-            'College',
-            'School',
-            'Campus',
-            'Institute',
+            'Student Number',
+            'Learner Reference Number',
         ],
     ];
 
@@ -589,6 +577,12 @@ class VerificationService
             'REPUBLIKA NG PILIPINAS',
             'REPUBLIC OF THE PHILIPPINES',
             'NATIONAL ID',
+            'PHILIPPINE NATIONAL ID',
+            'DIGITAL NATIONAL ID',
+            'DIGITAL ID NUMBER',
+            'DIGITAL ID',
+            'EPHILID',
+            'E-PHILID',
             'PHILSYS',
             'PHIL SYS',
             'PHILID',
@@ -602,160 +596,38 @@ class VerificationService
             'STATISTICS AUTHORITY',
             'PHILIPPINE STATISTICS AUTHORITY',
             'PSA',
-            'PILIPINAS'
-        ],
-        'PhilSys' => [
-            'REPUBLIKA NG PILIPINAS',
-            'REPUBLIC OF THE PHILIPPINES',
-            'NATIONAL ID',
-            'PHILSYS',
-            'PHIL SYS',
-            'PHILID',
-            'PHIL ID',
-            'PAMBANSANG PAGKAKAKILANLAN',
-            'PAMBANSANG',
-            'PAGKAKAKILANLAN',
-            'PHILIPPINE IDENTIFICATION SYSTEM',
-            'PHILIPPINE IDENTIFICATION CARD',
-            'PHILIPPINE IDENTIFICATION',
-            'STATISTICS AUTHORITY',
-            'PHILIPPINE STATISTICS AUTHORITY',
-            'PSA',
-            'PILIPINAS'
-        ],
-        'PhilSys ID' => [
-            'REPUBLIKA NG PILIPINAS',
-            'REPUBLIC OF THE PHILIPPINES',
-            'NATIONAL ID',
-            'PHILSYS',
-            'PHIL SYS',
-            'PHILID',
-            'PHIL ID',
-            'PAMBANSANG PAGKAKAKILANLAN',
-            'PAMBANSANG',
-            'PAGKAKAKILANLAN',
-            'PHILIPPINE IDENTIFICATION SYSTEM',
-            'PHILIPPINE IDENTIFICATION CARD',
-            'PHILIPPINE IDENTIFICATION',
-            'STATISTICS AUTHORITY',
-            'PHILIPPINE STATISTICS AUTHORITY',
-            'PSA',
-            'PILIPINAS'
-        ],
-        'Philippine National ID' => [
-            'REPUBLIKA NG PILIPINAS',
-            'REPUBLIC OF THE PHILIPPINES',
-            'NATIONAL ID',
-            'PHILSYS',
-            'PHIL SYS',
-            'PHILID',
-            'PHIL ID',
-            'PAMBANSANG PAGKAKAKILANLAN',
-            'PAMBANSANG',
-            'PAGKAKAKILANLAN',
-            'PHILIPPINE IDENTIFICATION SYSTEM',
-            'PHILIPPINE IDENTIFICATION CARD',
-            'PHILIPPINE IDENTIFICATION',
-            'STATISTICS AUTHORITY',
-            'PHILIPPINE STATISTICS AUTHORITY',
-            'PSA',
-            'PILIPINAS'
-        ],
-        'Philippine National ID (PhilSys)' => [
-            'REPUBLIKA NG PILIPINAS',
-            'REPUBLIC OF THE PHILIPPINES',
-            'NATIONAL ID',
-            'PHILSYS',
-            'PHIL SYS',
-            'PHILID',
-            'PHIL ID',
-            'PAMBANSANG PAGKAKAKILANLAN',
-            'PAMBANSANG',
-            'PAGKAKAKILANLAN',
-            'PHILIPPINE IDENTIFICATION SYSTEM',
-            'PHILIPPINE IDENTIFICATION CARD',
-            'PHILIPPINE IDENTIFICATION',
-            'STATISTICS AUTHORITY',
-            'PHILIPPINE STATISTICS AUTHORITY',
-            'PSA',
-            'PILIPINAS'
-        ],
-        'National ID (PhilSys)' => [
-            'REPUBLIKA NG PILIPINAS',
-            'REPUBLIC OF THE PHILIPPINES',
-            'NATIONAL ID',
-            'PHILSYS',
-            'PHIL SYS',
-            'PHILID',
-            'PHIL ID',
-            'PAMBANSANG PAGKAKAKILANLAN',
-            'PAMBANSANG',
-            'PAGKAKAKILANLAN',
-            'PHILIPPINE IDENTIFICATION SYSTEM',
-            'PHILIPPINE IDENTIFICATION CARD',
-            'PHILIPPINE IDENTIFICATION',
-            'STATISTICS AUTHORITY',
-            'PHILIPPINE STATISTICS AUTHORITY',
-            'PSA',
-            'PILIPINAS'
-        ],
-        'PhilSys / National ID' => [
-            'REPUBLIKA NG PILIPINAS',
-            'REPUBLIC OF THE PHILIPPINES',
-            'NATIONAL ID',
-            'PHILSYS',
-            'PHIL SYS',
-            'PHILID',
-            'PHIL ID',
-            'PAMBANSANG PAGKAKAKILANLAN',
-            'PAMBANSANG',
-            'PAGKAKAKILANLAN',
-            'PHILIPPINE IDENTIFICATION SYSTEM',
-            'PHILIPPINE IDENTIFICATION CARD',
-            'PHILIPPINE IDENTIFICATION',
-            'STATISTICS AUTHORITY',
-            'PHILIPPINE STATISTICS AUTHORITY',
-            'PSA',
-            'PILIPINAS'
-        ],
-        'PhilID' => [
-            'REPUBLIKA NG PILIPINAS',
-            'REPUBLIC OF THE PHILIPPINES',
-            'NATIONAL ID',
-            'PHILSYS',
-            'PHIL SYS',
-            'PHILID',
-            'PHIL ID',
-            'PAMBANSANG PAGKAKAKILANLAN',
-            'PAMBANSANG',
-            'PAGKAKAKILANLAN',
-            'PHILIPPINE IDENTIFICATION SYSTEM',
-            'PHILIPPINE IDENTIFICATION CARD',
-            'PHILIPPINE IDENTIFICATION',
-            'STATISTICS AUTHORITY',
-            'PHILIPPINE STATISTICS AUTHORITY',
-            'PSA',
+            'PSN',
+            'PCN',
             'PILIPINAS'
         ],
         "Driver's License" => [
             'LAND TRANSPORTATION OFFICE',
+            'DEPARTMENT OF TRANSPORTATION',
+            'DOTR',
             "DRIVER'S LICENSE",
             'DRIVERS LICENSE',
+            'NON-PROFESSIONAL',
+            'PROFESSIONAL DRIVER',
+            "STUDENT-DRIVER'S PERMIT",
             'LAND TRANSPORTATION',
+            'LTMS',
+            'DL CODES',
+            'RESTRICTIONS',
             'LTO'
         ],
         'Passport' => [
             'PASAPORTE',
             'PASSPORT',
             'DEPARTMENT OF FOREIGN AFFAIRS',
-            'DFA'
+            'DFA',
+            'CODE PHL',
+            'P<PHL'
         ],
         'UMID' => [
             'UNIFIED MULTI-PURPOSE ID',
             'UNIFIED MULTI PURPOSE ID',
             'UNIFIED MULTIPURPOSE ID',
             'UMID',
-            'REPUBLIC OF THE PHILIPPINES',
             'COMMON REFERENCE NUMBER',
             'CRN'
         ],
@@ -763,17 +635,22 @@ class VerificationService
             'SOCIAL SECURITY SYSTEM',
             'SSS',
             'GSIS',
-            'GOVERNMENT SERVICE INSURANCE SYSTEM'
+            'GOVERNMENT SERVICE INSURANCE SYSTEM',
+            'GSIS ECARD',
+            'UNIFIED MULTI-PURPOSE ID',
+            'UMID'
         ],
         'PRC ID' => [
             'PROFESSIONAL REGULATION COMMISSION',
             'PRC',
             'PROFESSIONAL IDENTIFICATION CARD',
-            'PROFESSIONAL IDENTIFICATION'
+            'PROFESSIONAL IDENTIFICATION',
+            'REGISTRATION NO'
         ],
         'Postal ID' => [
             'PHILIPPINE POSTAL CORPORATION',
             'POSTAL ID',
+            'POSTAL IDENTITY CARD',
             'PHLPOST',
             'PHILPOST'
         ],
@@ -781,47 +658,72 @@ class VerificationService
             'COMMISSION ON ELECTIONS',
             'COMELEC',
             "VOTER'S IDENTIFICATION CARD",
-            "VOTERS IDENTIFICATION CARD",
+            'VOTERS IDENTIFICATION CARD',
             "VOTER'S ID",
             'VOTERS ID',
-            'CERTIFICATE OF REGISTRATION'
-        ],
-        "Voter's ID / Certificate" => [
-            'COMMISSION ON ELECTIONS',
-            'COMELEC',
-            "VOTER'S IDENTIFICATION CARD",
-            "VOTERS IDENTIFICATION CARD",
-            "VOTER'S ID",
-            'VOTERS ID',
-            'CERTIFICATE OF REGISTRATION'
+            "VOTER'S CERTIFICATION",
+            'VOTER CERTIFICATION',
+            'CERTIFICATE OF REGISTRATION',
+            'VIN'
         ],
         'PhilHealth ID' => [
             'PHILIPPINE HEALTH INSURANCE CORPORATION',
             'PHILIPPINE HEALTH INSURANCE',
-            'PHILHEALTH'
+            'PHILHEALTH',
+            'PHILHEALTH IDENTIFICATION NUMBER',
+            'PIN'
         ],
         'Student ID' => [
             'STUDENT',
+            'STUDENT ID',
             'UNIVERSITY',
             'COLLEGE',
             'SCHOOL',
             'INSTITUTE',
             'CAMPUS',
-            'STUDENT IDENTIFICATION'
-        ],
-        'Student ID (Current SY)' => [
-            'STUDENT',
-            'UNIVERSITY',
-            'COLLEGE',
-            'SCHOOL',
-            'INSTITUTE',
-            'CAMPUS',
+            'ACADEMY',
+            'POLYTECHNIC',
+            'PAMANTASAN',
+            'TESDA',
+            'LEARNER REFERENCE NUMBER',
+            'LRN',
             'STUDENT IDENTIFICATION'
         ],
         'Other Valid Government ID' => [
             'REPUBLIKA NG PILIPINAS',
             'REPUBLIC OF THE PHILIPPINES',
-            'GOVERNMENT'
+            'BUREAU OF INTERNAL REVENUE',
+            'TAXPAYER IDENTIFICATION NUMBER',
+            'BIR',
+            'TIN',
+            'PAG-IBIG FUND',
+            'PAG-IBIG',
+            'HOME DEVELOPMENT MUTUAL FUND',
+            'HDMF',
+            'SENIOR CITIZEN',
+            'OSCA',
+            'PERSONS WITH DISABILITY',
+            'NCDA',
+            'PDAO',
+            'PWD',
+            'BARANGAY',
+            'NATIONAL BUREAU OF INVESTIGATION',
+            'NBI CLEARANCE',
+            'NBI',
+            'PHILIPPINE NATIONAL POLICE',
+            'POLICE CLEARANCE',
+            'NPCS',
+            'OWWA',
+            'OFW',
+            'SEAFARER',
+            'MARINA',
+            'INTEGRATED BAR OF THE PHILIPPINES',
+            'CIVIL SERVICE COMMISSION',
+            'SOLO PARENT',
+            'GOVERNMENT',
+            'MUNICIPALITY',
+            'CITY OF',
+            'PROVINCE OF',
         ]
     ];
 
@@ -835,28 +737,28 @@ class VerificationService
     {
         $clean = trim($selectedIdType);
 
-        if (preg_match('/(?:National\s*ID|PhilSys|PhilID|Philippine\s*National|Pambansang)/i', $clean)) {
+        if (preg_match('/(?:National\s*ID|PhilSys|e[\-\s]?PhilID|PhilID|Philippine\s*National|Pambansang|Philippine\s*Statistics|Digital\s*ID)/i', $clean)) {
             return 'National ID';
         }
-        if (preg_match('/(?:Driver|\bDL\b)/i', $clean)) {
+        if (preg_match('/(?:Driver|Land\s*Transportation|LTO|\bDL\b)/i', $clean)) {
             return "Driver's License";
         }
-        if (preg_match('/(?:Passport|Pasaporte)/i', $clean)) {
+        if (preg_match('/(?:Passport|Pasaporte|\bDFA\b)/i', $clean)) {
             return 'Passport';
         }
         if (preg_match('/(?:UMID|Unified\s*Multi)/i', $clean)) {
             return 'UMID';
         }
-        if (preg_match('/(?:SSS|GSIS)/i', $clean)) {
+        if (preg_match('/(?:SSS|GSIS|Social\s*Security|Government\s*Service\s*Insurance)/i', $clean)) {
             return 'SSS / GSIS ID';
         }
-        if (preg_match('/(?:PRC)/i', $clean)) {
+        if (preg_match('/(?:PRC|Professional\s*Regulation)/i', $clean)) {
             return 'PRC ID';
         }
-        if (preg_match('/(?:Postal)/i', $clean)) {
+        if (preg_match('/(?:Postal|PHLPost|PhilPost)/i', $clean)) {
             return 'Postal ID';
         }
-        if (preg_match('/(?:Voter)/i', $clean)) {
+        if (preg_match('/(?:Voter|COMELEC)/i', $clean)) {
             return "Voter's ID";
         }
         if (preg_match('/(?:PhilHealth)/i', $clean)) {
@@ -864,6 +766,9 @@ class VerificationService
         }
         if (preg_match('/(?:Student)/i', $clean)) {
             return 'Student ID';
+        }
+        if (preg_match('/(?:Other\s*Valid|\bTIN\b|\bBIR\b|Pag[\-\s]?IBIG|HDMF|Senior\s*Citizen|\bOSCA\b|\bPWD\b|Barangay|\bNBI\b|Police\s*Clearance|\bOWWA\b|Seafarer|MARINA|Solo\s*Parent)/i', $clean)) {
+            return 'Other Valid Government ID';
         }
 
         return $clean;
@@ -1007,50 +912,76 @@ class VerificationService
         }
 
         $canonical = self::normalizeIdType($selectedIdType);
-        $requiredSignatures = self::STRICT_ID_OPTION_KEYWORDS[$selectedIdType] 
-            ?? (self::STRICT_ID_OPTION_KEYWORDS[$canonical] 
+        $requiredSignatures = self::STRICT_ID_OPTION_KEYWORDS[$selectedIdType]
+            ?? (self::STRICT_ID_OPTION_KEYWORDS[$canonical]
             ?? (self::HARDCODED_ID_SIGNATURES[$canonical] ?? self::getKeywordsForIdType($canonical)));
         $extendedSignatures = self::EXTENDED_ID_SIGNATURES[$canonical] ?? $requiredSignatures;
 
-        // Check if raw text is empty
         if (empty(trim($rawOcrText))) {
             return [
                 'matched' => false,
-                'reason' => 'Verification Failed: The uploaded document does not match the selected ID type.',
+                'reason' => 'The uploaded document does not match the selected ID type.',
                 'canonical_type' => $canonical,
                 'detected_keywords' => [],
                 'required_keywords' => $requiredSignatures
             ];
         }
 
-        // 1. HARD-STOP CHECK 1: Strict Cross-Verification against all other ID types to detect mismatches
-        // If the uploaded document has unique, unambiguous signatures belonging to a DIFFERENT ID type
-        // (e.g. User selected "PRC ID" but document has "Commission on Elections" / Voter's ID,
-        // or selected "Driver's License" but document has "PhilSys",
-        // or selected "PhilSys / National ID" but document has "Land Transportation Office"),
-        // immediately reject verification!
+        // 1. Evaluate selected ID keywords first
+        $detectedHardcoded = self::detectKeywords($rawOcrText, $requiredSignatures);
+        $detectedExtended = self::detectKeywords($rawOcrText, $extendedSignatures);
+        $allDetected = array_values(array_unique(array_merge($detectedHardcoded, $detectedExtended)));
+
+        $selectedUniquePool = self::UNIQUE_ID_IDENTIFIERS[$canonical] ?? [];
+        $detectedSelectedUnique = !empty($selectedUniquePool)
+            ? self::detectKeywords($rawOcrText, $selectedUniquePool)
+            : [];
+
+        // 2. Cross-verify against other distinct ID types (unless "Other Valid Government ID" is selected)
         $conflictingType = null;
         $conflictingDetected = [];
 
-        foreach (self::UNIQUE_ID_IDENTIFIERS as $otherType => $otherKeywords) {
-            $normalizedOther = self::normalizeIdType($otherType);
-            if ($normalizedOther === $canonical) {
-                continue;
-            }
+        if ($canonical !== 'Other Valid Government ID') {
+            foreach (self::UNIQUE_ID_IDENTIFIERS as $otherType => $otherKeywords) {
+                $normalizedOther = self::normalizeIdType($otherType);
+                if ($normalizedOther === $canonical) {
+                    continue;
+                }
 
-            $matches = self::detectKeywords($rawOcrText, $otherKeywords);
-            if (!empty($matches)) {
-                $conflictingType = $otherType;
-                $conflictingDetected = $matches;
-                break;
+                // Official UMID cards carry SSS/GSIS branding and CRN alongside UMID headers
+                $isUmidSssPair = (
+                    ($canonical === 'UMID' && $normalizedOther === 'SSS / GSIS ID') ||
+                    ($canonical === 'SSS / GSIS ID' && $normalizedOther === 'UMID')
+                );
+                if ($isUmidSssPair && !empty($detectedSelectedUnique)) {
+                    continue;
+                }
+
+                $matches = self::detectKeywords($rawOcrText, $otherKeywords);
+                if (!empty($matches)) {
+                    // Ignore short acronym-only artifacts if selected ID's distinctive signature strongly matched
+                    $hasLongConflict = false;
+                    foreach ($matches as $m) {
+                        if (mb_strlen($m, 'UTF-8') > 4) {
+                            $hasLongConflict = true;
+                            break;
+                        }
+                    }
+                    if (!empty($detectedSelectedUnique) && !$hasLongConflict) {
+                        continue;
+                    }
+
+                    $conflictingType = $normalizedOther;
+                    $conflictingDetected = $matches;
+                    break;
+                }
             }
         }
 
-        // If a conflicting ID type was definitively detected:
         if ($conflictingType !== null) {
             return [
                 'matched' => false,
-                'reason' => 'Verification Failed: The uploaded document does not match the selected ID type.',
+                'reason' => "The uploaded document appears to be a {$conflictingType} instead of the selected {$canonical}.",
                 'canonical_type' => $canonical,
                 'conflicting_type' => $conflictingType,
                 'detected_keywords' => $conflictingDetected,
@@ -1058,31 +989,471 @@ class VerificationService
             ];
         }
 
-        // 2. HARD-STOP CHECK 2: Search raw OCR text for required keywords mapped to selected ID type.
-        // If the OCR text does not contain at least one of the specific keywords mapped to the selected ID type,
-        // immediately reject!
-        $detectedHardcoded = self::detectKeywords($rawOcrText, $requiredSignatures);
-        $detectedExtended = self::detectKeywords($rawOcrText, $extendedSignatures);
-        $allDetected = array_values(array_unique(array_merge($detectedHardcoded, $detectedExtended)));
-
-        // Strict Rejection: At least one required keyword must be detected on the card
         if (empty($detectedHardcoded) && empty($allDetected)) {
             return [
                 'matched' => false,
-                'reason' => 'Verification Failed: The uploaded document does not match the selected ID type.',
+                'reason' => "Could not confirm required markings for {$canonical} on the uploaded document.",
                 'canonical_type' => $canonical,
                 'detected_keywords' => [],
                 'required_keywords' => $requiredSignatures
             ];
         }
 
-        // Passed strict ID type authentication!
         return [
             'matched' => true,
-            'reason' => 'Verification Successful: ID type matched',
+            'reason' => 'ID type matched',
             'canonical_type' => $canonical,
             'detected_keywords' => !empty($detectedHardcoded) ? $detectedHardcoded : $allDetected,
             'required_keywords' => $requiredSignatures
+        ];
+    }
+
+    /**
+     * Execute local Tesseract CLI cleanly across Windows and Linux.
+     *
+     * @param string $imagePath
+     * @return string
+     */
+    public static function runTesseractOcr(string $imagePath): string
+    {
+        if (!file_exists($imagePath) || filesize($imagePath) === 0) {
+            return '';
+        }
+
+        $tesseractBin = self::findTesseractBinary();
+        if ($tesseractBin === null) {
+            return '';
+        }
+
+        $isWindows = strtoupper(substr(PHP_OS, 0, 3)) === 'WIN';
+        $nullSink = $isWindows ? '2>nul' : '2>/dev/null';
+        $escapedBin = escapeshellarg($tesseractBin);
+        $escapedFile = escapeshellarg($imagePath);
+
+        $texts = [];
+        foreach (['3', '6'] as $psm) {
+            $output = [];
+            $retVal = 0;
+            $cmd = "{$escapedBin} {$escapedFile} stdout -l eng --oem 1 --psm {$psm} {$nullSink}";
+            @exec($cmd, $output, $retVal);
+            if ($retVal === 0 && !empty($output)) {
+                $chunk = trim(implode("\n", $output));
+                if ($chunk !== '') {
+                    $texts[] = $chunk;
+                }
+            }
+            if (strlen(implode("\n", $texts)) >= 40) {
+                break;
+            }
+        }
+
+        return trim(implode("\n", array_unique($texts)));
+    }
+
+    /**
+     * Multi-pass orientation-tolerant OCR extraction across normalized color, grayscale,
+     * and rotated copies (90/270/180 deg) when an uploaded mobile capture is sideways/upside down.
+     *
+     * @param string $frontImagePath
+     * @param string $idType
+     * @param string $initialOcrText
+     * @param string|null $backImagePath
+     * @return array{raw_text: string, type_check: array}
+     */
+    public static function extractIdTextMultiPass(
+        string $frontImagePath,
+        string $idType,
+        string $initialOcrText = '',
+        ?string $backImagePath = null
+    ): array {
+        $textChunks = [];
+        if (trim($initialOcrText) !== '') {
+            $textChunks[] = trim($initialOcrText);
+            $initialCheck = self::verifyIdTypeMatchesDocument($idType, $initialOcrText);
+            if (!empty($initialCheck['matched'])) {
+                return [
+                    'raw_text' => trim($initialOcrText),
+                    'type_check' => $initialCheck
+                ];
+            }
+        }
+
+        $tesseractBin = self::findTesseractBinary();
+        if ($tesseractBin === null) {
+            $combined = trim(implode("\n", $textChunks));
+            return [
+                'raw_text' => $combined,
+                'type_check' => $combined !== '' ? self::verifyIdTypeMatchesDocument($idType, $combined) : ['matched' => false, 'reason' => 'No OCR text available.']
+            ];
+        }
+
+        $tempFiles = [];
+        $dir = dirname($frontImagePath);
+        $token = bin2hex(random_bytes(4));
+
+        // Pass 1: EXIF-normalized color image (better on dark/colored banners like Digital National ID & LTO)
+        $colorNormPath = $dir . '/tmp_norm_' . $token . '.jpg';
+        $resolvedColorPath = self::prepareNormalizedColorImage($frontImagePath, $colorNormPath);
+        if ($resolvedColorPath === $colorNormPath && file_exists($colorNormPath)) {
+            $tempFiles[] = $colorNormPath;
+        }
+        $colorText = self::runTesseractOcr($resolvedColorPath);
+        if ($colorText !== '') {
+            $textChunks[] = $colorText;
+            $check = self::verifyIdTypeMatchesDocument($idType, implode("\n", $textChunks));
+            if (!empty($check['matched'])) {
+                foreach ($tempFiles as $tmp) {
+                    @unlink($tmp);
+                }
+                return ['raw_text' => trim(implode("\n", $textChunks)), 'type_check' => $check];
+            }
+        }
+
+        // Pass 2: Preprocessed grayscale contrast-enhanced image
+        $grayPath = $dir . '/tmp_gray_' . $token . '.jpg';
+        $resolvedGrayPath = self::preprocessIdImage($frontImagePath, $grayPath);
+        if ($resolvedGrayPath === $grayPath && file_exists($grayPath)) {
+            $tempFiles[] = $grayPath;
+        }
+        $grayText = self::runTesseractOcr($resolvedGrayPath);
+        if ($grayText !== '') {
+            $textChunks[] = $grayText;
+            $check = self::verifyIdTypeMatchesDocument($idType, implode("\n", $textChunks));
+            if (!empty($check['matched'])) {
+                foreach ($tempFiles as $tmp) {
+                    @unlink($tmp);
+                }
+                return ['raw_text' => trim(implode("\n", $textChunks)), 'type_check' => $check];
+            }
+        }
+
+        // Pass 3: Orientation fallback (90, 270, 180 degrees) for rotated mobile captures
+        if (extension_loaded('gd') && function_exists('imagerotate') && file_exists($resolvedColorPath)) {
+            $rawBytes = @file_get_contents($resolvedColorPath);
+            $baseImg = $rawBytes ? @imagecreatefromstring($rawBytes) : false;
+            if ($baseImg) {
+                foreach ([90, 270, 180] as $angle) {
+                    $rotImg = @imagerotate($baseImg, $angle, 0);
+                    if (!$rotImg) {
+                        continue;
+                    }
+                    $rotPath = $dir . '/tmp_rot_' . $angle . '_' . $token . '.jpg';
+                    @imagejpeg($rotImg, $rotPath, 92);
+                    imagedestroy($rotImg);
+
+                    if (file_exists($rotPath) && filesize($rotPath) > 0) {
+                        $tempFiles[] = $rotPath;
+                        $rotText = self::runTesseractOcr($rotPath);
+                        if ($rotText !== '') {
+                            $textChunks[] = $rotText;
+                            $check = self::verifyIdTypeMatchesDocument($idType, implode("\n", $textChunks));
+                            if (!empty($check['matched'])) {
+                                imagedestroy($baseImg);
+                                foreach ($tempFiles as $tmp) {
+                                    @unlink($tmp);
+                                }
+                                return ['raw_text' => trim(implode("\n", $textChunks)), 'type_check' => $check];
+                            }
+                        }
+                    }
+                }
+                imagedestroy($baseImg);
+            }
+        }
+
+        // Pass 4: Also inspect Back ID text when provided (some IDs carry issuing markings on back)
+        if ($backImagePath && file_exists($backImagePath)) {
+            $backNormPath = $dir . '/tmp_back_' . $token . '.jpg';
+            $resolvedBack = self::prepareNormalizedColorImage($backImagePath, $backNormPath);
+            if ($resolvedBack === $backNormPath && file_exists($backNormPath)) {
+                $tempFiles[] = $backNormPath;
+            }
+            $backText = self::runTesseractOcr($resolvedBack);
+            if ($backText !== '') {
+                $textChunks[] = $backText;
+            }
+        }
+
+        foreach ($tempFiles as $tmp) {
+            @unlink($tmp);
+        }
+
+        $combined = trim(implode("\n", array_filter($textChunks)));
+        $finalCheck = $combined !== ''
+            ? self::verifyIdTypeMatchesDocument($idType, $combined)
+            : [
+                'matched' => false,
+                'reason' => 'No readable text extracted from uploaded ID.',
+                'canonical_type' => self::normalizeIdType($idType),
+                'detected_keywords' => [],
+                'required_keywords' => self::getKeywordsForIdType($idType)
+            ];
+
+        return ['raw_text' => $combined, 'type_check' => $finalCheck];
+    }
+
+    /**
+     * Validate ID document type via Gemini Vision API when GEMINI_API_KEY is configured.
+     * Tolerates any orientation (portrait/landscape/rotated/upside-down) and recognizes all
+     * physical & digital Philippine ID variants (including Digital National ID & ePhilID).
+     * Returns null cleanly on network/timeout/malformed responses so OCR fallback can proceed.
+     *
+     * @param string $idType
+     * @param string $frontImagePath
+     * @param string|null $backImagePath
+     * @return array|null
+     */
+    public static function validateIdTypeWithGeminiVision(
+        string $idType,
+        string $frontImagePath,
+        ?string $backImagePath = null
+    ): ?array {
+        $apiKey = defined('GEMINI_API_KEY') ? trim((string)GEMINI_API_KEY) : '';
+        if ($apiKey === '' || !function_exists('curl_init') || !file_exists($frontImagePath)) {
+            return null;
+        }
+
+        $dir = dirname($frontImagePath);
+        $token = bin2hex(random_bytes(4));
+        $tmpFiles = [];
+
+        $normFront = $dir . '/tmp_vfront_' . $token . '.jpg';
+        $frontToSend = self::prepareNormalizedColorImage($frontImagePath, $normFront, 1400, 85);
+        if ($frontToSend === $normFront && file_exists($normFront)) {
+            $tmpFiles[] = $normFront;
+        }
+
+        $frontBytes = @file_get_contents($frontToSend);
+        if ($frontBytes === false || $frontBytes === '') {
+            foreach ($tmpFiles as $tmp) {
+                @unlink($tmp);
+            }
+            return null;
+        }
+
+        $parts = [];
+        $prompt = "You are verifying an uploaded Philippine ID document against the user's selected Document Type: \"{$idType}\".\n"
+            . "Note: Mobile uploads may be rotated 90, 180, or 270 degrees, photographed slightly at an angle, or be a digital ID screenshot.\n"
+            . "Recognize ALL official Philippine IDs and their variants accurately:\n"
+            . "- National ID: Physical PhilSys PhilID card, paper ePhilID, or Digital Philippine National ID (eGovPH / national-id.gov.ph showing Philippine Identification System, PSA, PSN/PCN, Digital ID Number, QR code).\n"
+            . "- Driver's License: Physical LTO card or LTMS Digital Driver's License (DOTr, Land Transportation Office, Non-Pro/Pro, Student Permit).\n"
+            . "- Passport: DFA Philippine ePassport (Pasaporte, Passport, Department of Foreign Affairs, P<PHL MRZ).\n"
+            . "- UMID: Unified Multi-Purpose ID (note: UMID cards commonly display SSS or GSIS branding and CRN — if it says Unified Multi-Purpose ID / UMID, match both UMID and SSS / GSIS ID).\n"
+            . "- SSS / GSIS ID: SSS Card, SSS UMID, GSIS eCard / UMID.\n"
+            . "- Postal ID: PHLPost / Philippine Postal Corporation Improved/Digital Postal ID.\n"
+            . "- Voter's ID: COMELEC Voter's ID or official Voter's Certification.\n"
+            . "- PRC ID: Professional Regulation Commission Professional Identification Card.\n"
+            . "- PhilHealth ID: Philippine Health Insurance Corporation card / digitized ID.\n"
+            . "- Student ID: School, college, university, or TESDA student ID card.\n"
+            . "- Other Valid Government ID: BIR TIN ID, Pag-IBIG Loyalty Card (HDMF), Senior Citizen ID (OSCA), PWD ID, Barangay ID, NBI Clearance, Police Clearance, OWWA eCard, Seafarer's Book (MARINA), Civil Service / IBP / Solo Parent ID.\n\n"
+            . "Return ONLY valid raw JSON (no markdown fences) with keys:\n"
+            . "{\"is_valid_id\": boolean, \"detected_type\": string, \"matches_selected_type\": boolean, \"ocr_text\": string, \"reason\": string}";
+
+        $parts[] = ['text' => $prompt];
+        $parts[] = [
+            'inline_data' => [
+                'mime_type' => 'image/jpeg',
+                'data' => base64_encode($frontBytes)
+            ]
+        ];
+
+        if ($backImagePath && file_exists($backImagePath)) {
+            $normBack = $dir . '/tmp_vback_' . $token . '.jpg';
+            $backToSend = self::prepareNormalizedColorImage($backImagePath, $normBack, 1200, 82);
+            if ($backToSend === $normBack && file_exists($normBack)) {
+                $tmpFiles[] = $normBack;
+            }
+            $backBytes = @file_get_contents($backToSend);
+            if ($backBytes !== false && $backBytes !== '') {
+                $parts[] = [
+                    'inline_data' => [
+                        'mime_type' => 'image/jpeg',
+                        'data' => base64_encode($backBytes)
+                    ]
+                ];
+            }
+        }
+
+        $apiUrl = (defined('GEMINI_API_URL') ? GEMINI_API_URL : 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent')
+            . '?key=' . urlencode($apiKey);
+
+        $payload = json_encode([
+            'contents' => [['parts' => $parts]],
+            'generationConfig' => [
+                'temperature' => 0.1,
+                'responseMimeType' => 'application/json'
+            ]
+        ]);
+
+        $ch = curl_init($apiUrl);
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+            CURLOPT_POSTFIELDS => $payload,
+            CURLOPT_TIMEOUT => 30,
+            CURLOPT_CONNECTTIMEOUT => 10,
+        ]);
+
+        $responseBody = @curl_exec($ch);
+        $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+
+        foreach ($tmpFiles as $tmp) {
+            @unlink($tmp);
+        }
+
+        if ($responseBody === false || $httpCode < 200 || $httpCode >= 300) {
+            return null;
+        }
+
+        $decoded = @json_decode((string)$responseBody, true);
+        $rawText = $decoded['candidates'][0]['content']['parts'][0]['text'] ?? '';
+        if (!is_string($rawText) || trim($rawText) === '') {
+            return null;
+        }
+
+        $parsed = self::parseVisionJsonResponse($rawText);
+        if ($parsed === null || !array_key_exists('matches_selected_type', $parsed)) {
+            return null;
+        }
+
+        $selectedCanonical = self::normalizeIdType($idType);
+        $detectedCanonical = self::normalizeIdType((string)($parsed['detected_type'] ?? ''));
+        $matchesSelected = (bool)$parsed['matches_selected_type'];
+
+        // Reconcile canonical equivalence (e.g. ePhilID -> National ID, TIN -> Other Valid Government ID)
+        if (!$matchesSelected && !empty($parsed['is_valid_id'])) {
+            if ($selectedCanonical === $detectedCanonical && $detectedCanonical !== '') {
+                $matchesSelected = true;
+            } elseif (
+                ($selectedCanonical === 'UMID' && $detectedCanonical === 'SSS / GSIS ID') ||
+                ($selectedCanonical === 'SSS / GSIS ID' && $detectedCanonical === 'UMID')
+            ) {
+                $matchesSelected = true;
+            }
+        }
+
+        return [
+            'matched' => $matchesSelected,
+            'is_valid_id' => (bool)($parsed['is_valid_id'] ?? true),
+            'detected_type' => (string)($parsed['detected_type'] ?? $detectedCanonical),
+            'canonical_type' => $selectedCanonical,
+            'ocr_text' => trim((string)($parsed['ocr_text'] ?? '')),
+            'reason' => trim((string)($parsed['reason'] ?? ($matchesSelected ? 'ID type matched' : 'The uploaded document does not match the selected ID type.'))),
+            'required_keywords' => self::getKeywordsForIdType($selectedCanonical),
+            'detected_keywords' => !empty($parsed['detected_type']) ? [(string)$parsed['detected_type']] : [],
+        ];
+    }
+
+    /**
+     * Parse JSON from a Vision model response, stripping markdown fences or surrounding prose.
+     *
+     * @param string $rawText
+     * @return array|null
+     */
+    public static function parseVisionJsonResponse(string $rawText): ?array
+    {
+        $cleanJson = trim($rawText);
+        if ($cleanJson === '') {
+            return null;
+        }
+        $cleanJson = (string)preg_replace('/^```(?:json)?\s*/i', '', $cleanJson);
+        $cleanJson = trim((string)preg_replace('/\s*```$/', '', $cleanJson));
+
+        $parsed = @json_decode($cleanJson, true);
+        if (is_array($parsed)) {
+            return $parsed;
+        }
+
+        if (preg_match('/\{[\s\S]*\}/', $cleanJson, $m)) {
+            $parsed = @json_decode($m[0], true);
+            if (is_array($parsed)) {
+                return $parsed;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Unified, resilient ID Document Type validation pipeline.
+     * Combines fast keyword check -> Gemini Vision (when key is configured) -> multi-pass rotated OCR.
+     *
+     * @param string $idType
+     * @param string $frontImagePath
+     * @param string $rawOcrText
+     * @param string|null $backImagePath
+     * @return array{matched: bool, skipped: bool, raw_text: string, type_check: array, method: string}
+     */
+    public static function validateIdDocument(
+        string $idType,
+        string $frontImagePath,
+        string $rawOcrText = '',
+        ?string $backImagePath = null
+    ): array {
+        $trimmedOcr = trim($rawOcrText);
+
+        // 1. Fast path: if supplied OCR text already cleanly matches selected ID type, pass immediately
+        if ($trimmedOcr !== '') {
+            $fastCheck = self::verifyIdTypeMatchesDocument($idType, $trimmedOcr);
+            if (!empty($fastCheck['matched'])) {
+                return [
+                    'matched' => true,
+                    'skipped' => false,
+                    'raw_text' => $trimmedOcr,
+                    'type_check' => $fastCheck,
+                    'method' => 'ocr_fast',
+                ];
+            }
+        }
+
+        // 2. Vision path: use Gemini Vision when API key is available (handles rotated/digital/photo IDs reliably)
+        $visionCheck = self::validateIdTypeWithGeminiVision($idType, $frontImagePath, $backImagePath);
+        if ($visionCheck !== null) {
+            $mergedOcr = trim(implode("\n", array_filter([$trimmedOcr, $visionCheck['ocr_text'] ?? ''])));
+            return [
+                'matched' => !empty($visionCheck['matched']),
+                'skipped' => false,
+                'raw_text' => $mergedOcr,
+                'type_check' => $visionCheck,
+                'method' => 'gemini_vision',
+            ];
+        }
+
+        // 3. Multi-pass & rotated server OCR fallback
+        $multiPass = self::extractIdTextMultiPass($frontImagePath, $idType, $trimmedOcr, $backImagePath);
+        $combinedText = trim((string)($multiPass['raw_text'] ?? ''));
+
+        // Count distinct alphabetic words to detect pure QR/symbol noise when server lacks OCR & Vision
+        preg_match_all('/[a-zA-Z]{4,}/', $combinedText, $alphaWords);
+        $alphaWordCount = count($alphaWords[0] ?? []);
+        $hasServerTesseract = (self::findTesseractBinary() !== null);
+        $hasConflict = !empty($multiPass['type_check']['conflicting_type']);
+
+        if ($combinedText === '' || (!$hasServerTesseract && !$hasConflict && $alphaWordCount < 2)) {
+            return [
+                'matched' => true,
+                'skipped' => true,
+                'raw_text' => $combinedText,
+                'type_check' => [
+                    'matched' => true,
+                    'skipped' => true,
+                    'reason' => 'Automatic OCR engine unavailable on host; deferred without blocking.',
+                    'canonical_type' => self::normalizeIdType($idType),
+                    'detected_keywords' => [],
+                    'required_keywords' => self::getKeywordsForIdType($idType),
+                ],
+                'method' => 'deferred',
+            ];
+        }
+
+        return [
+            'matched' => !empty($multiPass['type_check']['matched']),
+            'skipped' => false,
+            'raw_text' => $combinedText,
+            'type_check' => $multiPass['type_check'],
+            'method' => 'ocr_multipass',
         ];
     }
 
