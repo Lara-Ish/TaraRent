@@ -203,6 +203,19 @@ try {
             $pRentStmt->execute([':tid' => $tId]);
             $latestRent = $pRentStmt->fetch(PDO::FETCH_ASSOC);
 
+            // Resolve real-time Next Due Date (automatically advancing to next billing cycle when current cycle is paid & verified)
+            $pAllStmt = $pdo->prepare("
+                SELECT id, payment_type, billing_cycle, due_date, amount_due, amount_paid, status
+                FROM payments
+                WHERE tenant_id = :tid
+                ORDER BY billing_cycle DESC NULLS LAST, id DESC
+            ");
+            $pAllStmt->execute([':tid' => $tId]);
+            $billingState = TenantService::resolveTenantBillingState($tenant, $pAllStmt->fetchAll(PDO::FETCH_ASSOC));
+            $tenant['next_due_date'] = $billingState['next_due_date'];
+            $tenant['next_due_date_formatted'] = $billingState['next_due_display'];
+            $tenant['is_paid_and_advanced'] = $billingState['is_paid_and_advanced'];
+
             // Fetch Deposit payment record
             $pDepStmt = $pdo->prepare("
                 SELECT id, payment_type, billing_cycle, due_date, amount_due, amount_paid, payment_date, status, receipt_filename
@@ -1332,7 +1345,8 @@ try {
             // Total Initial Due:  ₱6,000.00
             // -----------------------------------------------------------------
             $moveInCycle = date('Y-m-01', strtotime($moveInDate));
-            $rentDueDate = date('Y-m-05', strtotime($moveInCycle));
+            $moveInDay = (int)date('j', strtotime($moveInDate));
+            $rentDueDate = TenantService::computeDueDateForCycle($moveInCycle, $moveInDay);
             $standardRentAmount = !empty($unit['monthly_rent']) ? (float)$unit['monthly_rent'] : 3000.00;
             if ($standardRentAmount <= 0) {
                 $standardRentAmount = 3000.00;

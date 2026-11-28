@@ -310,7 +310,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     let alertTimeout = null;
 
     let isFaceApiModelsLoaded = false;
+    let isFaceRecognitionModelLoaded = false;
     let isModelLoadingInProgress = false;
+
+    /**
+     * Safely parse and reconstruct a 128-float Float32Array descriptor (guards against double JSON encoding).
+     */
+    function normalizeFaceDescriptorVector(raw) {
+      let parsed = raw;
+      for (let i = 0; i < 3 && typeof parsed === 'string'; i++) {
+        try {
+          parsed = JSON.parse(parsed);
+        } catch (e) {
+          return null;
+        }
+      }
+      if (!parsed || typeof parsed.length !== 'number') return null;
+      const arr = Array.from(parsed);
+      if (arr.length !== 128) return null;
+      const vec = new Float32Array(arr);
+      for (let i = 0; i < 128; i++) {
+        if (!Number.isFinite(vec[i])) return null;
+      }
+      return vec;
+    }
 
     // Strict Anti-Spoofing State Machines
     let livenessBlinkState = 'INITIAL'; // 'INITIAL' -> 'OPEN_OBSERVED' -> 'DROPPED_CLOSED' -> 'COMPLETED'
@@ -395,6 +418,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
           break;
         } catch (err) {
           console.warn('Could not load models from uri:', uri, err);
+        }
+      }
+
+      if (isFaceApiModelsLoaded && faceapi.nets.faceRecognitionNet) {
+        const recogUris = ['assets/models', '/TaraRent/assets/models', 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model'];
+        for (const rUri of recogUris) {
+          try {
+            await faceapi.nets.faceRecognitionNet.loadFromUri(rUri);
+            isFaceRecognitionModelLoaded = true;
+            break;
+          } catch (rErr) {
+            console.warn('Could not load faceRecognitionNet from uri:', rUri, rErr);
+          }
         }
       }
 
@@ -577,10 +613,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
       }
 
-      if (!detection || !detection.landmarks) {
+      const detScore = detection && detection.detection ? (detection.detection.score || 0) : 0;
+      if (!detection || !detection.landmarks || detScore < 0.60) {
         consecutiveNoFaceFrames++;
-        if (consecutiveNoFaceFrames >= 15) {
-          updateStatusBadge('scan-face', 'No face detected in camera. Please face the camera directly in good lighting.', 'normal');
+        if (consecutiveNoFaceFrames >= 12) {
+          updateStatusBadge('scan-face', 'No face detected in camera — please face the light.', 'normal');
+        } else if (detection && detScore > 0 && detScore < 0.60) {
+          updateStatusBadge('scan-face', 'Hold still in good lighting...', 'normal');
         } else {
           updateStatusBadge('scan-face', 'Detecting face...', 'normal');
         }
@@ -717,7 +756,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       isVerifying = true;
       stopFaceDetectionLoop();
 
-      updateStatusBadge('sparkles', 'Liveness verified! Logging in...', 'perfect-capturing');
+      updateStatusBadge('sparkles', 'Liveness verified! Capturing stable frames...', 'perfect-capturing');
 
       const video = document.getElementById('faceWebcamVideo');
       const captureCanvas = document.getElementById('faceCaptureCanvas');
@@ -725,30 +764,94 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
       const width = video.videoWidth || 640;
       const height = video.videoHeight || 480;
-
       captureCanvas.width = width;
       captureCanvas.height = height;
       const captureCtx = captureCanvas.getContext('2d');
 
-      // Ensure canvas capture is mirrored using ctx.scale(-1, 1)
-      captureCtx.save();
-      captureCtx.scale(-1, 1);
-      captureCtx.drawImage(video, -width, 0, width, height);
-      captureCtx.restore();
+      const drawMirroredFrame = () => {
+        captureCtx.save();
+        captureCtx.scale(-1, 1);
+        captureCtx.drawImage(video, -width, 0, width, height);
+        captureCtx.restore();
+      };
 
-      const base64Data = captureCanvas.toDataURL('image/jpeg', 0.92);
+      const canExtractDescriptor = typeof faceapi !== 'undefined' &&
+        (isFaceRecognitionModelLoaded || (faceapi.nets.faceRecognitionNet && faceapi.nets.faceRecognitionNet.isLoaded));
+      const frameOpts = typeof faceapi !== 'undefined'
+        ? new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.45 })
+        : null;
+
+      let bestBase64 = '';
+      let bestFrameScore = -1;
+      const capturedDescriptors = [];
+
+      // Collect up to 3 consecutive high-confidence frames (score >= 0.60) to overcome single-frame blur/lighting
+      for (let attempt = 0; attempt < 4 && capturedDescriptors.length < 3; attempt++) {
+        if (attempt > 0) {
+          await new Promise(r => setTimeout(r, 120));
+        }
+        drawMirroredFrame();
+
+        let detScore = 0;
+        if (frameOpts) {
+          try {
+            let det = canExtractDescriptor
+              ? await faceapi.detectSingleFace(captureCanvas, frameOpts).withFaceLandmarks().withFaceDescriptor()
+              : await faceapi.detectSingleFace(captureCanvas, frameOpts).withFaceLandmarks();
+
+            detScore = det && det.detection ? (det.detection.score || 0) : 0;
+            if (det && detScore >= 0.60) {
+              if (detScore > bestFrameScore) {
+                bestFrameScore = detScore;
+                bestBase64 = captureCanvas.toDataURL('image/jpeg', 0.92);
+              }
+              if (det.descriptor) {
+                const vec = normalizeFaceDescriptorVector(det.descriptor);
+                if (vec) {
+                  capturedDescriptors.push(Array.from(vec));
+                }
+              }
+            }
+          } catch (sampleErr) {
+            console.warn('Frame stabilization warning:', sampleErr);
+          }
+        }
+      }
+
+      // Guard: Do not treat an empty/no-face capture as "Face not recognized"
+      if (bestFrameScore < 0.60 && !bestBase64) {
+        updateStatusBadge('alert-triangle', 'No face detected in camera — please face the light.', 'normal');
+        showFaceLoginAlert('No face detected in camera — please face the light.');
+        setTimeout(() => {
+          isVerifying = false;
+          resetLivenessAntiSpoofingState();
+          startFaceDetectionLoop();
+        }, 2000);
+        return;
+      }
+
+      if (!bestBase64) {
+        drawMirroredFrame();
+        bestBase64 = captureCanvas.toDataURL('image/jpeg', 0.92);
+      }
 
       updateStatusBadge('clock', 'Matching...', 'verifying');
 
       try {
+        const payload = {
+          image_data: bestBase64
+        };
+        if (capturedDescriptors.length > 0) {
+          payload.face_descriptor = capturedDescriptors[0];
+          payload.face_descriptors = capturedDescriptors;
+        }
+
         const response = await fetch('login_face_verify.php', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json'
           },
-          body: JSON.stringify({
-            image_data: base64Data
-          })
+          body: JSON.stringify(payload)
         });
 
         const result = await response.json();
@@ -766,9 +869,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             window.location.href = result.redirect_url || 'tenant_portal.php';
           }, 800);
         } else {
-          // Rejection / No match: display timed notification
-          const errMsg = result.message || 'Face not recognized. Please try again or log in with your password.';
-          handleFaceVerificationFailure(errMsg);
+          const isNoFace = response.status === 422 || (result && result.code === 'NO_FACE_DETECTED');
+          const errMsg = result.message || (isNoFace
+            ? 'No face detected in camera — please face the light.'
+            : 'Face not recognized. Please try again or log in with your password.');
+          handleFaceVerificationFailure(errMsg, isNoFace);
         }
       } catch (err) {
         console.error('Face verification network error:', err);
@@ -779,8 +884,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     /**
      * Handle verification failure: display timed notification & reset
      */
-    function handleFaceVerificationFailure(message) {
-      updateStatusBadge('x', 'Face not recognized', 'normal');
+    function handleFaceVerificationFailure(message, isNoFace = false) {
+      updateStatusBadge(isNoFace ? 'alert-triangle' : 'x', isNoFace ? 'No face detected — face the light' : 'Face not recognized', 'normal');
       showFaceLoginAlert(message);
 
       // Reset state after a brief delay so tenant can scan again if desired

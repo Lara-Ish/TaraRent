@@ -237,11 +237,25 @@ try {
                     : 'Payment receipt successfully verified and approved!')
                 : 'Payment receipt rejected. Feedback logged for tenant.';
 
+            $nextBillingInfo = null;
+            if ($isApproved && $tenantId > 0 && !$autoArchived) {
+                $tRowStmt = $pdo->prepare("SELECT id, move_in_date, created_at FROM users WHERE id = :id LIMIT 1");
+                $tRowStmt->execute([':id' => $tenantId]);
+                $tRow = $tRowStmt->fetch(PDO::FETCH_ASSOC);
+                if ($tRow) {
+                    $tPaysStmt = $pdo->prepare("SELECT payment_type, billing_cycle, due_date, amount_due, amount_paid, status FROM payments WHERE tenant_id = :tid ORDER BY billing_cycle DESC NULLS LAST, id DESC");
+                    $tPaysStmt->execute([':tid' => $tenantId]);
+                    $nextBillingInfo = TenantService::resolveTenantBillingState($tRow, $tPaysStmt->fetchAll(PDO::FETCH_ASSOC));
+                }
+            }
+
             echo json_encode([
                 'status' => 'success',
                 'message' => $successMsg,
                 'auto_archived' => $autoArchived,
                 'email_sent' => $emailSentOk ?? false,
+                'next_due_date' => $nextBillingInfo['next_due_date'] ?? null,
+                'next_due_display' => $nextBillingInfo['next_due_display'] ?? null,
                 'payment' => [
                     'id' => $paymentId,
                     'status' => $statusVal,
@@ -267,6 +281,15 @@ try {
             $billingCycle = trim((string)($_POST['billing_cycle'] ?? date('Y-m-01')));
             $paymentMethod = trim((string)($_POST['payment_method'] ?? 'GCash / Bank Transfer'));
             $refNum = trim((string)($_POST['reference_number'] ?? ''));
+            if ($refNum !== '' && !preg_match('/^\d+$/', $refNum)) {
+                http_response_code(422);
+                echo json_encode([
+                    'status' => 'error',
+                    'code' => 'INVALID_REFERENCE_NUMBER',
+                    'message' => 'Invalid reference number. Numbers only are allowed.'
+                ]);
+                exit;
+            }
             if (!empty($refNum) && stripos($paymentMethod, $refNum) === false) {
                 $paymentMethod = $paymentMethod . ' (Ref: ' . $refNum . ')';
             }
@@ -370,6 +393,9 @@ try {
                 $unitRow = $unitRentStmt->fetch();
                 $amountDue = $unitRow ? (float)$unitRow['monthly_rent'] : 3000.00;
 
+                $billingDay = TenantService::resolveBillingDay($tenantUser['move_in_date'] ?? null);
+                $computedDueDate = TenantService::computeDueDateForCycle($billingCycle, $billingDay);
+
                 $insertStmt = $pdo->prepare("
                     INSERT INTO payments 
                         (tenant_id, unit_id, payment_type, billing_cycle, due_date, amount_due, amount_paid, payment_date, status, payment_method, receipt_filename, verified_by_landlord, created_at)
@@ -381,7 +407,7 @@ try {
                     ':unit_id' => $unitId,
                     ':ptype' => $paymentType,
                     ':cycle' => $billingCycle,
-                    ':due_date' => date('Y-m-05', strtotime($billingCycle)),
+                    ':due_date' => $computedDueDate,
                     ':due' => $amountDue,
                     ':paid' => $amountPaid,
                     ':method' => $paymentMethod,
@@ -495,22 +521,9 @@ try {
                 $billingCycle = date('Y-m-01', $timestamp);
             }
 
-            // Format due date (defaults to 5th of the billing cycle month if not provided or empty)
-            if (empty($dueDateInput)) {
-                $dueDate = date('Y-m-05', strtotime($billingCycle));
-            } else {
-                $dueTimestamp = strtotime($dueDateInput);
-                if (!$dueTimestamp) {
-                    http_response_code(422);
-                    echo json_encode(['status' => 'error', 'message' => 'Invalid due date format.']);
-                    exit;
-                }
-                $dueDate = date('Y-m-d', $dueTimestamp);
-            }
-
             // Check if payment record exists
             $checkStmt = $pdo->prepare("
-                SELECT p.*, u.name AS tenant_name, un.unit_number 
+                SELECT p.*, u.name AS tenant_name, u.move_in_date, un.unit_number 
                 FROM payments p
                 JOIN users u ON p.tenant_id = u.id
                 JOIN units un ON p.unit_id = un.id
@@ -523,6 +536,20 @@ try {
                 http_response_code(404);
                 echo json_encode(['status' => 'error', 'message' => 'Rent payment record not found.']);
                 exit;
+            }
+
+            // Format due date dynamically from tenant's billing day if not provided
+            if (empty($dueDateInput)) {
+                $billingDay = TenantService::resolveBillingDay($payment['move_in_date'] ?? null, [$payment]);
+                $dueDate = TenantService::computeDueDateForCycle($billingCycle, $billingDay);
+            } else {
+                $dueTimestamp = strtotime($dueDateInput);
+                if (!$dueTimestamp) {
+                    http_response_code(422);
+                    echo json_encode(['status' => 'error', 'message' => 'Invalid due date format.']);
+                    exit;
+                }
+                $dueDate = date('Y-m-d', $dueTimestamp);
             }
 
             // Prevent duplicate active rent records for the same tenant and billing cycle

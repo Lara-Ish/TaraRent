@@ -531,4 +531,206 @@ class TenantService
 
         return $archivedCount;
     }
+
+    /**
+     * Current DateTimeImmutable in Asia/Manila timezone.
+     *
+     * @return DateTimeImmutable
+     */
+    public static function getManilaNow(): DateTimeImmutable
+    {
+        return new DateTimeImmutable('now', new DateTimeZone('Asia/Manila'));
+    }
+
+    /**
+     * Resolve a tenant's monthly billing day (1..31) from move_in_date, existing Rent due dates, or current Manila date.
+     *
+     * @param string|null $moveInDate
+     * @param array|null $payments
+     * @param DateTimeImmutable|null $referenceNow
+     * @return int
+     */
+    public static function resolveBillingDay(?string $moveInDate, ?array $payments = null, ?DateTimeImmutable $referenceNow = null): int
+    {
+        $tz = new DateTimeZone('Asia/Manila');
+        $trimmedMoveIn = trim((string)($moveInDate ?? ''));
+        if ($trimmedMoveIn !== '') {
+            $ts = strtotime($trimmedMoveIn);
+            if ($ts !== false) {
+                return (int)date('j', $ts);
+            }
+        }
+
+        if (is_array($payments)) {
+            foreach ($payments as $p) {
+                $pType = strtolower((string)($p['payment_type'] ?? 'rent'));
+                if ($pType === 'rent' && !empty($p['due_date'])) {
+                    $ts = strtotime((string)$p['due_date']);
+                    if ($ts !== false) {
+                        return (int)date('j', $ts);
+                    }
+                }
+            }
+        }
+
+        $now = $referenceNow ?: new DateTimeImmutable('now', $tz);
+        return (int)$now->format('j');
+    }
+
+    /**
+     * Compute a valid calendar due date (YYYY-MM-DD) for a billing cycle month and billing day,
+     * clamping the day to the month's length (e.g. day 31 in Feb -> Feb 28/29).
+     *
+     * @param string $billingCycle
+     * @param int $billingDay
+     * @return string
+     */
+    public static function computeDueDateForCycle(string $billingCycle, int $billingDay): string
+    {
+        $tz = new DateTimeZone('Asia/Manila');
+        $ts = strtotime($billingCycle);
+        $base = $ts !== false
+            ? (new DateTimeImmutable('@' . $ts))->setTimezone($tz)
+            : self::getManilaNow();
+
+        $firstOfMonth = $base->modify('first day of this month');
+        $daysInMonth = (int)$firstOfMonth->format('t');
+        $clampedDay = max(1, min($billingDay, $daysInMonth));
+        return $firstOfMonth->setDate(
+            (int)$firstOfMonth->format('Y'),
+            (int)$firstOfMonth->format('n'),
+            $clampedDay
+        )->format('Y-m-d');
+    }
+
+    /**
+     * Compute the tenant's real-time billing cycle and Next Due Date in Asia/Manila.
+     * Uses unpaid obligations first, and once paid & verified automatically advances
+     * to the following month's billing cycle using the tenant's move-in/billing day.
+     *
+     * @param array $tenantUser
+     * @param array $allPayments
+     * @param DateTimeImmutable|null $referenceNow
+     * @return array{
+     *   next_due_date: string,
+     *   next_billing_cycle: string,
+     *   next_due_display: string,
+     *   short_due_display: string,
+     *   billing_day: int,
+     *   is_paid_and_advanced: bool
+     * }
+     */
+    public static function resolveTenantBillingState(
+        array $tenantUser,
+        array $allPayments,
+        ?DateTimeImmutable $referenceNow = null
+    ): array {
+        $tz = new DateTimeZone('Asia/Manila');
+        $now = $referenceNow ?: self::getManilaNow();
+        $todayStr = $now->format('Y-m-d');
+        $billingDay = self::resolveBillingDay($tenantUser['move_in_date'] ?? null, $allPayments, $now);
+
+        $earliestDueDate = null;
+        $earliestCycle = null;
+        $latestSettledRentCycle = null;
+        $approvedRentDueDates = [];
+
+        foreach ($allPayments as $p) {
+            $pType = strtolower(trim((string)($p['payment_type'] ?? 'rent')));
+            $pStatus = strtolower(trim((string)($p['status'] ?? '')));
+            $amtDue = (float)($p['amount_due'] ?? 0.0);
+            $amtPaid = (float)($p['amount_paid'] ?? 0.0);
+            $remaining = max(0.0, $amtDue - $amtPaid);
+
+            if ($pType === 'rent' && $pStatus === 'approved' && $remaining <= 0.01) {
+                if (!empty($p['due_date'])) {
+                    $approvedRentDueDates[] = date('Y-m-d', strtotime((string)$p['due_date']));
+                }
+                if (!empty($p['billing_cycle'])) {
+                    $normCycle = date('Y-m-01', strtotime((string)$p['billing_cycle']));
+                    if ($latestSettledRentCycle === null || $normCycle > $latestSettledRentCycle) {
+                        $latestSettledRentCycle = $normCycle;
+                    }
+                } elseif (!empty($p['due_date'])) {
+                    $normCycle = date('Y-m-01', strtotime((string)$p['due_date']));
+                    if ($latestSettledRentCycle === null || $normCycle > $latestSettledRentCycle) {
+                        $latestSettledRentCycle = $normCycle;
+                    }
+                }
+            }
+
+            if (in_array($pStatus, ['unpaid', 'overdue', 'rejected', 'pending_setup', 'pending'], true) || $remaining > 0.01) {
+                if (!empty($p['due_date'])) {
+                    $dNorm = date('Y-m-d', strtotime((string)$p['due_date']));
+                    if ($earliestDueDate === null || $dNorm < $earliestDueDate) {
+                        $earliestDueDate = $dNorm;
+                        $earliestCycle = !empty($p['billing_cycle'])
+                            ? date('Y-m-01', strtotime((string)$p['billing_cycle']))
+                            : date('Y-m-01', strtotime($dNorm));
+                    }
+                }
+            }
+        }
+
+        $isPaidAndAdvanced = false;
+        $nextDueDate = null;
+        $nextBillingCycle = null;
+
+        if ($earliestDueDate !== null) {
+            $nextDueDate = $earliestDueDate;
+            $nextBillingCycle = $earliestCycle ?: date('Y-m-01', strtotime($earliestDueDate));
+        } elseif (!empty($tenantUser['next_due_date']) && strtotime((string)$tenantUser['next_due_date']) !== false) {
+            $storedNext = date('Y-m-d', strtotime((string)$tenantUser['next_due_date']));
+            if (!in_array($storedNext, $approvedRentDueDates, true) && $storedNext >= $todayStr) {
+                $nextDueDate = $storedNext;
+                $nextBillingCycle = date('Y-m-01', strtotime($storedNext));
+                $isPaidAndAdvanced = true;
+            }
+        }
+
+        if ($nextDueDate === null) {
+            if ($latestSettledRentCycle !== null) {
+                // Paid and verified: automatically advance to the following month's billing cycle
+                $isPaidAndAdvanced = true;
+                $cursor = DateTimeImmutable::createFromFormat('Y-m-d', $latestSettledRentCycle, $tz) ?: $now->modify('first day of this month');
+                $cursor = $cursor->modify('first day of next month');
+                $candidateDue = self::computeDueDateForCycle($cursor->format('Y-m-d'), $billingDay);
+
+                // Ensure upcoming due date isn't stuck in an already-elapsed month
+                $guard = 0;
+                while ($candidateDue < $todayStr && $guard < 36) {
+                    $cursor = $cursor->modify('first day of next month');
+                    $candidateDue = self::computeDueDateForCycle($cursor->format('Y-m-d'), $billingDay);
+                    $guard++;
+                }
+
+                $nextBillingCycle = $cursor->format('Y-m-01');
+                $nextDueDate = $candidateDue;
+            } else {
+                // Brand-new tenant with no ledger bills yet: derive dynamically from move_in_date or today
+                $moveInStr = trim((string)($tenantUser['move_in_date'] ?? ''));
+                $anchor = ($moveInStr !== '' && strtotime($moveInStr) !== false)
+                    ? (new DateTimeImmutable('@' . strtotime($moveInStr)))->setTimezone($tz)
+                    : $now;
+                $cursor = $anchor->modify('first day of this month');
+                $candidateDue = self::computeDueDateForCycle($cursor->format('Y-m-d'), $billingDay);
+                if ($candidateDue < $todayStr && $moveInStr === '') {
+                    $cursor = $cursor->modify('first day of next month');
+                    $candidateDue = self::computeDueDateForCycle($cursor->format('Y-m-d'), $billingDay);
+                }
+                $nextBillingCycle = $cursor->format('Y-m-01');
+                $nextDueDate = $candidateDue;
+            }
+        }
+
+        $dueTs = strtotime($nextDueDate);
+        return [
+            'next_due_date' => $nextDueDate,
+            'next_billing_cycle' => $nextBillingCycle,
+            'next_due_display' => date('M d, Y', $dueTs),
+            'short_due_display' => date('F j', $dueTs),
+            'billing_day' => $billingDay,
+            'is_paid_and_advanced' => $isPaidAndAdvanced,
+        ];
+    }
 }

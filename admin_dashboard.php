@@ -5503,7 +5503,8 @@ try {
         day: 'numeric'
       });
       const parts = formatter.formatToParts(new Date());
-      let year = 2026, month = 10, day = 31;
+      const _fallbackNow = new Date();
+      let year = _fallbackNow.getFullYear(), month = _fallbackNow.getMonth() + 1, day = _fallbackNow.getDate();
       for (const p of parts) {
         if (p.type === 'year') year = parseInt(p.value, 10);
         if (p.type === 'month') month = parseInt(p.value, 10);
@@ -6427,7 +6428,8 @@ try {
                   }
                 }
 
-                if (dueEl && lr.due_date) dueEl.textContent = fmtShortDate(lr.due_date);
+                const resolvedNextDue = (data.tenant && data.tenant.next_due_date) ? data.tenant.next_due_date : lr.due_date;
+                if (dueEl && resolvedNextDue) dueEl.textContent = fmtShortDate(resolvedNextDue);
                 if (paidEl) paidEl.textContent = lr.payment_date ? fmtShortDate(lr.payment_date) : (isPaid ? fmtShortDate(lr.due_date) : '--/--/--');
                 if (totEl) totEl.textContent = `PHP ${rDue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
                 if (lr.receipt_filename) {
@@ -10279,17 +10281,27 @@ try {
       }
 
       const dueDateInput = document.getElementById('configDueDate');
+      const defaultBillingDay = (currentDueDate && currentDueDate.length >= 10)
+        ? parseInt(currentDueDate.slice(8, 10), 10)
+        : getManilaDateDetails().day;
+      const clampMonthDue = (ym, targetDay) => {
+        const [yStr, mStr] = ym.split('-');
+        const yNum = parseInt(yStr, 10);
+        const mNum = parseInt(mStr, 10);
+        const daysInMonth = new Date(yNum, mNum, 0).getDate();
+        const dd = String(Math.max(1, Math.min(targetDay || 1, daysInMonth))).padStart(2, '0');
+        return `${yStr}-${mStr}-${dd}`;
+      };
       if (currentDueDate && currentDueDate.length >= 10) {
         dueDateInput.value = currentDueDate;
       } else {
-        const valMonth = cycleInput.value;
-        dueDateInput.value = `${valMonth}-05`;
+        dueDateInput.value = clampMonthDue(cycleInput.value, defaultBillingDay);
       }
 
-      // Auto-update due date when billing month changes if left default
+      // Auto-update due date when billing month changes using active billing day
       cycleInput.onchange = function() {
         if (cycleInput.value) {
-          dueDateInput.value = `${cycleInput.value}-05`;
+          dueDateInput.value = clampMonthDue(cycleInput.value, defaultBillingDay);
         }
       };
 

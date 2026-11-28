@@ -6,6 +6,10 @@
 
 declare(strict_types=1);
 
+if (date_default_timezone_get() !== 'Asia/Manila') {
+    date_default_timezone_set('Asia/Manila');
+}
+
 if (!function_exists('loadEnvFile')) {
     function loadEnvFile(string $filePath): void
     {
@@ -97,6 +101,7 @@ require_once dirname(__DIR__) . '/includes/storage_service.php';
         try {
             // PostgreSQL ALTER TABLE ADD COLUMN IF NOT EXISTS without MySQL-specific AFTER keyword
             $pdo->exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS live_photo_filename VARCHAR(255) NULL");
+            $pdo->exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS face_descriptor TEXT NULL");
             $pdo->exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_id_path VARCHAR(255) NULL");
             $pdo->exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_id_type VARCHAR(50) NULL");
             $pdo->exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_notes TEXT NULL");

@@ -29,16 +29,50 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     exit;
 }
 
-// 1. Parse Image Payload (Base64 JPEG data or multipart upload)
+// 1. Parse Image Payload & 128-float Face Descriptors (Base64 JPEG data / JSON / multipart upload)
 $rawBase64 = null;
+$submittedDescriptors = [];
 if (!empty($_POST['image_data'])) {
     $rawBase64 = (string)$_POST['image_data'];
-} else {
-    $rawInput = file_get_contents('php://input');
-    if (!empty($rawInput)) {
-        $json = json_decode($rawInput, true);
-        if (isset($json['image_data'])) {
+}
+if (!empty($_POST['face_descriptor'])) {
+    $d = VerificationService::parseFaceDescriptor($_POST['face_descriptor']);
+    if ($d !== null) {
+        $submittedDescriptors[] = $d;
+    }
+}
+if (!empty($_POST['face_descriptors'])) {
+    $rawList = is_string($_POST['face_descriptors']) ? @json_decode($_POST['face_descriptors'], true) : $_POST['face_descriptors'];
+    if (is_array($rawList)) {
+        foreach (array_slice($rawList, 0, 5) as $item) {
+            $d = VerificationService::parseFaceDescriptor($item);
+            if ($d !== null) {
+                $submittedDescriptors[] = $d;
+            }
+        }
+    }
+}
+
+$rawInput = file_get_contents('php://input');
+if (!empty($rawInput)) {
+    $json = json_decode($rawInput, true);
+    if (is_array($json)) {
+        if (empty($rawBase64) && isset($json['image_data'])) {
             $rawBase64 = (string)$json['image_data'];
+        }
+        if (isset($json['face_descriptor'])) {
+            $d = VerificationService::parseFaceDescriptor($json['face_descriptor']);
+            if ($d !== null) {
+                $submittedDescriptors[] = $d;
+            }
+        }
+        if (isset($json['face_descriptors']) && is_array($json['face_descriptors'])) {
+            foreach (array_slice($json['face_descriptors'], 0, 5) as $item) {
+                $d = VerificationService::parseFaceDescriptor($item);
+                if ($d !== null) {
+                    $submittedDescriptors[] = $d;
+                }
+            }
         }
     }
 }
@@ -50,41 +84,39 @@ if (empty($rawBase64) && isset($_FILES['image_file']) && $_FILES['image_file']['
     }
 }
 
-if (empty($rawBase64)) {
+if (empty($rawBase64) && empty($submittedDescriptors)) {
     http_response_code(422);
     echo json_encode([
         'status' => 'error',
-        'message' => 'No face image data received. Please look into the camera.'
+        'message' => 'No face detected in camera — please face the light.'
     ]);
     exit;
 }
 
-// 2. Decode Base64 Image
-$cleanBase64 = preg_replace('/^data:image\/\w+;base64,/', '', $rawBase64);
-$decoded = base64_decode($cleanBase64, true);
+// 2. Decode Base64 Image (when supplied) and store temp buffer for Face++ legacy fallback
+$tempFilePath = null;
+if (!empty($rawBase64)) {
+    $cleanBase64 = preg_replace('/^data:image\/\w+;base64,/', '', $rawBase64);
+    $decoded = base64_decode($cleanBase64, true);
 
-if ($decoded === false || strlen($decoded) < 200) {
+    if ($decoded !== false && strlen($decoded) >= 200) {
+        $tempDir = __DIR__ . '/uploads/temp_face_login';
+        if (!is_dir($tempDir)) {
+            @mkdir($tempDir, 0755, true);
+        }
+        $tempFilename = sprintf('face_login_%s_%s.jpg', date('Ymd_His'), bin2hex(random_bytes(4)));
+        $candidatePath = $tempDir . '/' . $tempFilename;
+        if (file_put_contents($candidatePath, $decoded) !== false) {
+            $tempFilePath = $candidatePath;
+        }
+    }
+}
+
+if ($tempFilePath === null && empty($submittedDescriptors)) {
     http_response_code(422);
     echo json_encode([
         'status' => 'error',
-        'message' => 'Invalid or corrupted image data received.'
-    ]);
-    exit;
-}
-
-// 3. Store in temporary file for Face++ processing
-$tempDir = __DIR__ . '/uploads/temp_face_login';
-if (!is_dir($tempDir)) {
-    @mkdir($tempDir, 0755, true);
-}
-$tempFilename = sprintf('face_login_%s_%s.jpg', date('Ymd_His'), bin2hex(random_bytes(4)));
-$tempFilePath = $tempDir . '/' . $tempFilename;
-
-if (file_put_contents($tempFilePath, $decoded) === false) {
-    http_response_code(500);
-    echo json_encode([
-        'status' => 'error',
-        'message' => 'Failed to initialize face verification buffer on the server.'
+        'message' => 'No face detected in camera — please face the light.'
     ]);
     exit;
 }
@@ -180,11 +212,11 @@ if (isset($_SERVER['HTTP_X_MOCK_FACE_USER'])) {
     exit;
 }
 
-// 5. 1:N Biometric Matching with Stored Verified Photos via Face++
-// Retrieve active verified user accounts who have stored face photos or profile avatars
+// 5. 1:N Biometric Matching: Persistent DB Face Descriptor Match first, Face++ photo comparison fallback
 $stmt = $pdo->query("
     SELECT u.id, u.username, u.name, u.email, u.role, u.phone, u.unit_id,
-           u.verification_status, u.is_verified, u.live_photo_filename, u.id_photo_filename, u.profile_picture,
+           u.verification_status, u.is_verified, u.face_descriptor,
+           u.live_photo_filename, u.id_photo_filename, u.profile_picture,
            un.unit_number
     FROM users u
     LEFT JOIN units un ON u.unit_id = un.id
@@ -193,7 +225,7 @@ $stmt = $pdo->query("
       AND u.deleted_at IS NULL
       AND (u.rental_status != 'archived' OR u.rental_status IS NULL)
       AND (u.is_verified = TRUE OR u.verification_status = 'verified')
-      AND (u.live_photo_filename IS NOT NULL OR u.id_photo_filename IS NOT NULL OR u.profile_picture IS NOT NULL)
+      AND (u.face_descriptor IS NOT NULL OR u.live_photo_filename IS NOT NULL OR u.id_photo_filename IS NOT NULL OR u.profile_picture IS NOT NULL)
     ORDER BY u.id_verified_at DESC, u.id DESC
 ");
 $candidates = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -225,54 +257,99 @@ $resolveCandidatePhotoSource = function (?string $rawVal, array $subfolders): ?s
 
 $matchedUser = null;
 $matchedConfidence = 0.0;
+$matchedDistance = null;
 $liveFrameHadNoFace = false;
 
-foreach ($candidates as $cand) {
-    $photoSources = [];
-    foreach ([
-        [$cand['live_photo_filename'] ?? null, ['uploads/id_verifications', 'uploads/live_captures', 'uploads']],
-        [$cand['profile_picture'] ?? null, ['uploads/avatars', 'uploads']],
-        [$cand['id_photo_filename'] ?? null, ['uploads/id_verifications', 'uploads/id_photos', 'uploads']],
-    ] as [$rawField, $dirs]) {
-        $resolved = $resolveCandidatePhotoSource($rawField, $dirs);
-        if ($resolved !== null && !in_array($resolved, $photoSources, true)) {
-            $photoSources[] = $resolved;
+// 5A. Primary Persistent Descriptor Matching (survives Render restarts & session expiry)
+if (!empty($submittedDescriptors)) {
+    $distanceThreshold = VerificationService::FACE_DESCRIPTOR_LOGIN_THRESHOLD; // 0.58
+    $bestDist = INF;
+    $bestCand = null;
+
+    foreach ($candidates as $cand) {
+        $storedVec = VerificationService::parseFaceDescriptor($cand['face_descriptor'] ?? null);
+        if ($storedVec === null) {
+            continue;
+        }
+
+        foreach ($submittedDescriptors as $liveVec) {
+            $dist = VerificationService::faceDescriptorEuclideanDistance($storedVec, $liveVec);
+            if ($dist < $bestDist) {
+                $bestDist = $dist;
+                $bestCand = $cand;
+            }
         }
     }
 
-    if (empty($photoSources)) {
-        continue;
+    if ($bestCand !== null && $bestDist <= $distanceThreshold) {
+        $matchedUser = $bestCand;
+        $matchedDistance = round($bestDist, 4);
+        $matchedConfidence = round(max(0.0, min(100.0, (1.0 - $bestDist) * 100.0)), 2);
     }
+}
 
-    foreach ($photoSources as $candidatePhotoPath) {
-        $compareResult = VerificationService::compareFacesWithFacePlusPlus($candidatePhotoPath, $tempFilePath);
-
-        if (($compareResult['error_code'] ?? '') === 'NO_FACE_LIVE') {
-            $liveFrameHadNoFace = true;
-            break 2; // Live frame contains no detectable face; prompt user cleanly
+// 5B. Fallback to Face++ stored photo comparison if no descriptor match (e.g. legacy accounts or offline descriptor)
+if ($matchedUser === null && $tempFilePath !== null) {
+    foreach ($candidates as $cand) {
+        $photoSources = [];
+        foreach ([
+            [$cand['live_photo_filename'] ?? null, ['uploads/id_verifications', 'uploads/live_captures', 'uploads']],
+            [$cand['profile_picture'] ?? null, ['uploads/avatars', 'uploads']],
+            [$cand['id_photo_filename'] ?? null, ['uploads/id_verifications', 'uploads/id_photos', 'uploads']],
+        ] as [$rawField, $dirs]) {
+            $resolved = $resolveCandidatePhotoSource($rawField, $dirs);
+            if ($resolved !== null && !in_array($resolved, $photoSources, true)) {
+                $photoSources[] = $resolved;
+            }
         }
 
-        if (!empty($compareResult['success'])) {
-            $liveFrameHadNoFace = false;
-            $confidence = (float)($compareResult['confidence'] ?? 0.0);
-            $threshold1e3 = (float)($compareResult['threshold_1e3'] ?? 62.3);
-            // Balanced Face ID login threshold: meets Face++ 1e-3 FAR baseline (>= 62.0%)
-            $minAcceptable = max(62.0, $threshold1e3 > 0 ? $threshold1e3 : 62.3);
-            if ($confidence >= $minAcceptable && $confidence > $matchedConfidence) {
-                $matchedUser = $cand;
-                $matchedConfidence = $confidence;
+        if (empty($photoSources)) {
+            continue;
+        }
+
+        foreach ($photoSources as $candidatePhotoPath) {
+            $compareResult = VerificationService::compareFacesWithFacePlusPlus($candidatePhotoPath, $tempFilePath);
+
+            if (($compareResult['error_code'] ?? '') === 'NO_FACE_LIVE') {
+                $liveFrameHadNoFace = true;
+                break 2; // Live frame contains no detectable face; prompt user cleanly
             }
-            // Fast exit if confidence is strongly above 1e-4 / 75%
-            if ($matchedConfidence >= 75.0) {
-                break 2;
+
+            if (!empty($compareResult['success'])) {
+                $liveFrameHadNoFace = false;
+                $confidence = (float)($compareResult['confidence'] ?? 0.0);
+                $threshold1e3 = (float)($compareResult['threshold_1e3'] ?? 62.3);
+                $minAcceptable = max(62.0, $threshold1e3 > 0 ? $threshold1e3 : 62.3);
+                if ($confidence >= $minAcceptable && $confidence > $matchedConfidence) {
+                    $matchedUser = $cand;
+                    $matchedConfidence = $confidence;
+                }
+                if ($matchedConfidence >= 75.0) {
+                    break 2;
+                }
+                break;
             }
-            break; // Candidate yielded a clean biometric comparison; move to next user if needed
         }
     }
 }
 
 // Clean up temporary snapshot file
-@unlink($tempFilePath);
+if ($tempFilePath !== null && file_exists($tempFilePath)) {
+    @unlink($tempFilePath);
+}
+
+// Backfill persistent DB face_descriptor cleanly if a legacy verified user matched via Face++ fallback
+if ($matchedUser !== null && empty($matchedUser['face_descriptor']) && !empty($submittedDescriptors)) {
+    $descriptorToSave = VerificationService::serializeFaceDescriptor($submittedDescriptors[0]);
+    if ($descriptorToSave !== null) {
+        try {
+            $bfStmt = $pdo->prepare("UPDATE users SET face_descriptor = :fd WHERE id = :id AND face_descriptor IS NULL");
+            $bfStmt->execute([':fd' => $descriptorToSave, ':id' => (int)$matchedUser['id']]);
+        } catch (Throwable $bfErr) {
+            error_log('[Face ID Backfill] ' . $bfErr->getMessage());
+        }
+    }
+}
 
 // 6. Handle Match & Auto-Login Result
 if ($matchedUser !== null) {
@@ -325,7 +402,8 @@ if ($liveFrameHadNoFace) {
     http_response_code(422);
     echo json_encode([
         'status' => 'error',
-        'message' => 'No face detected in camera. Please face the camera directly in good lighting.'
+        'code' => 'NO_FACE_DETECTED',
+        'message' => 'No face detected in camera — please face the light.'
     ]);
     exit;
 }

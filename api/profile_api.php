@@ -1101,6 +1101,8 @@ try {
                 $confidence
             );
 
+            $faceDescriptorJson = VerificationService::serializeFaceDescriptor($input['face_descriptor'] ?? ($_POST['face_descriptor'] ?? null));
+
             $updateStmt = $pdo->prepare("
                 UPDATE users 
                 SET is_verified = TRUE,
@@ -1108,6 +1110,7 @@ try {
                     id_type = :id_type,
                     id_photo_filename = :id_photo,
                     live_photo_filename = :live_face,
+                    face_descriptor = COALESCE(:face_descriptor, face_descriptor),
                     pending_id_path = NULL,
                     pending_id_type = NULL,
                     id_submitted_at = NOW(),
@@ -1119,6 +1122,7 @@ try {
                 ':id_type' => $idType,
                 ':id_photo' => $idFilename,
                 ':live_face' => $liveFaceFilename,
+                ':face_descriptor' => $faceDescriptorJson,
                 ':notes' => $notes,
                 ':id' => $userId
             ]);

@@ -667,6 +667,8 @@ if ($isConfidenceMatch) {
         error_log('[Verify Face] Cloud live photo upload notice: ' . $liveUploadEx->getMessage());
     }
 
+    $faceDescriptorJson = VerificationService::serializeFaceDescriptor($_POST['face_descriptor'] ?? null);
+
     $updateStmt = $pdo->prepare("
         UPDATE users 
         SET is_verified = TRUE,
@@ -675,6 +677,7 @@ if ($isConfidenceMatch) {
             id_photo_filename = :id_photo,
             id_photo_back_filename = :id_photo_back,
             live_photo_filename = :live_face,
+            face_descriptor = COALESCE(:face_descriptor, face_descriptor),
             pending_id_path = NULL,
             pending_id_back_path = NULL,
             pending_id_type = NULL,
@@ -689,6 +692,7 @@ if ($isConfidenceMatch) {
         ':id_photo' => $idFilenameToSave,
         ':id_photo_back' => $idBackFilenameToSave,
         ':live_face' => $liveFaceStoragePath,
+        ':face_descriptor' => $faceDescriptorJson,
         ':notes' => $notes,
         ':id' => $userId
     ]);

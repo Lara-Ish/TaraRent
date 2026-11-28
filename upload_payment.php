@@ -12,6 +12,7 @@ require_once __DIR__ . '/config/auth.php';
 require_once __DIR__ . '/config/db.php';
 require_once __DIR__ . '/includes/storage_service.php';
 require_once __DIR__ . '/includes/notification_service.php';
+require_once __DIR__ . '/includes/tenant_service.php';
 
 // 1. Session Authentication Check
 if (!class_exists('Auth') || !Auth::check()) {
@@ -34,7 +35,34 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 
 $pdo = Database::getConnection();
 
-// 2. Validate Receipt File
+// 2. Capture & Validate Form Parameters (Numbers-only reference check before file upload)
+$paymentType = trim((string)($_POST['payment_type'] ?? 'Monthly Rent'));
+if ($paymentType === '') {
+    $paymentType = 'Monthly Rent';
+}
+$amountPaid = (float)($_POST['amount_paid'] ?? 3000.00);
+$billingCycle = trim((string)($_POST['billing_cycle'] ?? date('Y-m-01')));
+$paymentMethod = trim((string)($_POST['payment_method'] ?? 'GCash / Bank Transfer'));
+$refNum = trim((string)($_POST['reference_number'] ?? ''));
+
+if ($refNum !== '' && !preg_match('/^\d+$/', $refNum)) {
+    $wantsJson = (!empty($_SERVER['HTTP_ACCEPT']) && str_contains($_SERVER['HTTP_ACCEPT'], 'application/json'))
+        || (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest');
+    if ($wantsJson) {
+        header('Content-Type: application/json; charset=UTF-8');
+        http_response_code(422);
+        echo json_encode(['status' => 'error', 'message' => 'Invalid reference number. Numbers only are allowed.']);
+    } else {
+        header('Location: tenant_portal.php?section=tenantPayments&error=invalid_reference');
+    }
+    exit;
+}
+
+if (!empty($refNum) && stripos($paymentMethod, $refNum) === false) {
+    $paymentMethod = $paymentMethod . ' (Ref: ' . $refNum . ')';
+}
+
+// 3. Validate Receipt File
 if (!isset($_FILES['receipt']) || $_FILES['receipt']['error'] !== UPLOAD_ERR_OK) {
     header('Location: tenant_portal.php?section=tenantPayments&error=no_file');
     exit;
@@ -69,7 +97,7 @@ if (function_exists('finfo_open')) {
     }
 }
 
-// 3. Upload Directly to Supabase Storage via REST API
+// 4. Upload Directly to Supabase Storage via REST API
 $timestamp = time();
 $safeName = "receipt_{$tenantId}_{$timestamp}_" . bin2hex(random_bytes(4)) . ".{$origExt}";
 $publicReceiptUrl = uploadToSupabaseStorage($file['tmp_name'], $safeName, 'receipts');
@@ -80,20 +108,9 @@ if ($publicReceiptUrl === false) {
     exit;
 }
 
-// 4. Capture Form Parameters
-$paymentType = trim((string)($_POST['payment_type'] ?? 'Monthly Rent'));
-if ($paymentType === '') {
-    $paymentType = 'Monthly Rent';
-}
-$amountPaid = (float)($_POST['amount_paid'] ?? 3000.00);
-$billingCycle = trim((string)($_POST['billing_cycle'] ?? date('Y-m-01')));
-$paymentMethod = trim((string)($_POST['payment_method'] ?? 'GCash / Bank Transfer'));
-$refNum = trim((string)($_POST['reference_number'] ?? ''));
-if (!empty($refNum) && stripos($paymentMethod, $refNum) === false) {
-    $paymentMethod = $paymentMethod . ' (Ref: ' . $refNum . ')';
-}
-
-// Resolve Due Date & Rent Amount from Unit
+// Resolve Due Date & Rent Amount dynamically from Unit & Tenant Move-In Billing Day
+$billingDay = TenantService::resolveBillingDay($currentUser['move_in_date'] ?? null);
+$computedDueDate = TenantService::computeDueDateForCycle($billingCycle, $billingDay);
 $baseRent = 3000.00;
 if ($unitId !== null && $unitId > 0) {
     $unitStmt = $pdo->prepare("SELECT monthly_rent FROM units WHERE id = :uid LIMIT 1");
@@ -146,7 +163,7 @@ $insertStmt->execute([
     ':unit_id'           => $unitId,
     ':payment_type'      => $paymentType,
     ':billing_cycle'     => $billingCycle,
-    ':due_date'          => $billingCycle,
+    ':due_date'          => $computedDueDate,
     ':base_rent_amount'  => $baseRent,
     ':amount_due'        => $baseRent,
     ':amount_paid'       => $amountPaid,

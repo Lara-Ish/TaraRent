@@ -536,7 +536,7 @@ try {
     // =========================================================================
     $smartInsights = [];
 
-    // Rule 1: High-Risk / Overdue Tenants -> Friendly early reminder suggestion
+    // Rule 1: High-Risk / Overdue Tenants -> Direct owner unpaid notice
     $highRiskTenants = array_values(array_filter($tenantRiskScores, static fn($t) => $t['risk_tier'] === 'High' || $t['overdue_bills_count'] > 0));
     if (count($highRiskTenants) > 0) {
         $topRisk = $highRiskTenants[0];
@@ -546,9 +546,9 @@ try {
             'id' => 'high_risk_sms',
             'pillar' => 'Payment Reliability Risk',
             'severity' => $isHighTier ? 'urgent' : 'warning',
-            'badge' => $isHighTier ? 'High Risk Reminder' : 'Overdue Rent Reminder',
-            'title' => "Send a friendly payment reminder to {$topRisk['tenant_name']} ({$topRisk['unit_number']})",
-            'recommendation' => "{$topRisk['tenant_name']} is in the {$topRisk['risk_tier']} Risk tier ({$topRisk['risk_score']}%) with ₱{$balText} unpaid. Send an early reminder before the next due date so rent doesn't fall further behind.",
+            'badge' => $isHighTier ? 'Unpaid Notice' : 'Overdue Notice',
+            'title' => "{$topRisk['tenant_name']} ({$topRisk['unit_number']}) hasn't paid in a while",
+            'recommendation' => "{$topRisk['tenant_name']} has ₱{$balText} unpaid and hasn't settled their rent in a while (Risk Score: {$topRisk['risk_score']}%).",
             'metric_highlight' => "{$topRisk['risk_score']}% Risk",
             'action_label' => 'Check Payments',
             'target_section' => 'sectionPayments',

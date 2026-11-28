@@ -2958,4 +2958,95 @@ class VerificationService
             'error' => null
         ];
     }
+
+    /**
+     * Balanced Euclidean distance threshold for 128-float face-api.js descriptor login.
+     */
+    public const FACE_DESCRIPTOR_LOGIN_THRESHOLD = 0.58;
+
+    /**
+     * Safely parse a stored or submitted 128-float face descriptor (guards against double JSON encoding
+     * or associative float objects like Float32Array serialization).
+     *
+     * @param mixed $raw
+     * @return float[]|null Normalized 128-element float vector, or null if invalid
+     */
+    public static function parseFaceDescriptor($raw): ?array
+    {
+        if ($raw === null || $raw === '') {
+            return null;
+        }
+
+        $parsed = $raw;
+        for ($depth = 0; $depth < 3 && is_string($parsed); $depth++) {
+            $trimmed = trim($parsed);
+            if ($trimmed === '') {
+                return null;
+            }
+            $decoded = @json_decode($trimmed, true);
+            if ($decoded === null && json_last_error() !== JSON_ERROR_NONE) {
+                return null;
+            }
+            $parsed = $decoded;
+        }
+
+        if (!is_array($parsed)) {
+            return null;
+        }
+
+        $values = array_values($parsed);
+        if (count($values) !== 128) {
+            return null;
+        }
+
+        $floats = [];
+        foreach ($values as $v) {
+            if (!is_numeric($v)) {
+                return null;
+            }
+            $f = (float)$v;
+            if (!is_finite($f)) {
+                return null;
+            }
+            $floats[] = $f;
+        }
+
+        return $floats;
+    }
+
+    /**
+     * Normalize and serialize a 128-float face descriptor into a single clean JSON array string.
+     *
+     * @param mixed $raw
+     * @return string|null
+     */
+    public static function serializeFaceDescriptor($raw): ?string
+    {
+        $floats = self::parseFaceDescriptor($raw);
+        if ($floats === null) {
+            return null;
+        }
+        $encoded = json_encode($floats);
+        return is_string($encoded) ? $encoded : null;
+    }
+
+    /**
+     * Compute Euclidean distance between two 128-float face descriptor vectors.
+     *
+     * @param float[] $descA
+     * @param float[] $descB
+     * @return float
+     */
+    public static function faceDescriptorEuclideanDistance(array $descA, array $descB): float
+    {
+        if (count($descA) !== 128 || count($descB) !== 128) {
+            return INF;
+        }
+        $sumSq = 0.0;
+        for ($i = 0; $i < 128; $i++) {
+            $diff = (float)$descA[$i] - (float)$descB[$i];
+            $sumSq += ($diff * $diff);
+        }
+        return sqrt($sumSq);
+    }
 }

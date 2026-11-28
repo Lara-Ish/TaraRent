@@ -9,6 +9,7 @@ declare(strict_types=1);
 header('Content-Type: application/json; charset=UTF-8');
 
 require_once __DIR__ . '/../config/auth.php';
+require_once __DIR__ . '/../includes/tenant_service.php';
 
 $requestMethod = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
@@ -104,10 +105,13 @@ try {
                     'pending', 'GCash / Bank Transfer', FALSE, 'Placeholder initial rent payment generated upon tenant registration.', NOW()
                 )
             ");
+            $anchorDate = $leaseStart ?: TenantService::getManilaNow()->format('Y-m-d');
+            $billingDay = TenantService::resolveBillingDay($anchorDate);
+            $billingCycle = date('Y-m-01', strtotime($anchorDate));
             $insertPayment->execute([
                 ':tenant_id' => $newTenantId,
-                ':billing_cycle' => date('Y-m-01', strtotime($leaseStart ?: date('Y-m-d'))),
-                ':due_date' => date('Y-m-05', strtotime($leaseStart ?: date('Y-m-d'))),
+                ':billing_cycle' => $billingCycle,
+                ':due_date' => TenantService::computeDueDateForCycle($billingCycle, $billingDay),
                 ':amount_due' => (float)$monthlyRent
             ]);
 

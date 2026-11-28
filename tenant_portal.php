@@ -14,6 +14,7 @@ header("Pragma: no-cache");
 header("Expires: Sat, 26 Jul 1997 05:00:00 GMT");
 
 require_once __DIR__ . '/config/auth.php';
+require_once __DIR__ . '/includes/tenant_service.php';
 Auth::requireTenant();
 
 $user = Auth::user();
@@ -127,14 +128,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['action']) && $_POST[
     $referenceNumber = trim((string)($_POST['reference_number'] ?? ''));
     $targetPaymentId = (int)($_POST['payment_id'] ?? 0);
 
-    // Normalize billing_cycle date format (YYYY-MM-01)
+    // Server-side numbers-only validation for Reference Number
+    if ($referenceNumber !== '' && !preg_match('/^\d+$/', $referenceNumber)) {
+        $wantsJson = (!empty($_SERVER['HTTP_ACCEPT']) && str_contains($_SERVER['HTTP_ACCEPT'], 'application/json'))
+            || (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest');
+        if ($wantsJson) {
+            header('Content-Type: application/json; charset=UTF-8');
+            http_response_code(422);
+            echo json_encode(['status' => 'error', 'message' => 'Invalid reference number. Numbers only are allowed.']);
+        } else {
+            header('Location: tenant_portal.php?section=tenantPayments&error=invalid_reference');
+        }
+        exit;
+    }
+
+    // Normalize billing_cycle date format (YYYY-MM-01) and compute real-time due date from tenant billing day
     if (!empty($billingMonth)) {
         $parsedTime = strtotime($billingMonth);
         $billingCycle = $parsedTime ? date('Y-m-01', $parsedTime) : date('Y-m-01');
     } else {
         $billingCycle = date('Y-m-01');
     }
-    $dueDate = date('Y-m-05', strtotime($billingCycle));
+    $billingDay = TenantService::resolveBillingDay($user['move_in_date'] ?? null);
+    $dueDate = TenantService::computeDueDateForCycle($billingCycle, $billingDay);
 
     // Normalize payment type
     $paymentType = 'Rent';
@@ -571,19 +587,9 @@ if ($hasPendingPayment) {
 
 $rentBalanceDisplay = number_format($tenantRentBalance, 2);
 
-if (!empty($earliestDueDate)) {
-    $nextDueDateDisplay = date('M d, Y', strtotime($earliestDueDate));
-    $shortDueDateDisplay = date('F j', strtotime($earliestDueDate));
-} elseif (!empty($rentBill['due_date'])) {
-    $nextDueDateDisplay = date('M d, Y', strtotime($rentBill['due_date']));
-    $shortDueDateDisplay = date('F j', strtotime($rentBill['due_date']));
-} elseif (!empty($allTenantPayments[0]['due_date'])) {
-    $nextDueDateDisplay = date('M d, Y', strtotime($allTenantPayments[0]['due_date']));
-    $shortDueDateDisplay = date('F j', strtotime($allTenantPayments[0]['due_date']));
-} else {
-    $nextDueDateDisplay = date('M 05, Y', strtotime('+1 month'));
-    $shortDueDateDisplay = date('F 5', strtotime('+1 month'));
-}
+$billingState = TenantService::resolveTenantBillingState($user, $allTenantPayments);
+$nextDueDateDisplay = $billingState['next_due_display'];
+$shortDueDateDisplay = $billingState['short_due_display'];
 
 // Dynamic maintenance counts for tickets submitted by this tenant
 $activeTicketsCount = count(array_filter($myTickets, fn($t) => in_array($t['status'], ['Pending', 'On-Going', 'open', 'in_progress'])));
@@ -1718,14 +1724,14 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
             $allTenantPayments = $payQueryStmt->fetchAll();
         }
 
-        // If no unpaid bills exist in the ledger, create a standard upcoming cycle entry so the form is always usable
+        // If no unpaid bills exist in the ledger, create the next dynamic cycle entry so the form is always usable
         if (empty($unpaidBills)) {
-            $currentMonthCycle = date('Y-m-01');
+            $dynamicState = isset($billingState) ? $billingState : TenantService::resolveTenantBillingState($user, $allTenantPayments);
             $unpaidBills[] = [
                 'id' => 0,
                 'payment_type' => 'Rent',
-                'billing_cycle' => $currentMonthCycle,
-                'due_date' => date('Y-m-05'),
+                'billing_cycle' => $dynamicState['next_billing_cycle'],
+                'due_date' => $dynamicState['next_due_date'],
                 'amount_due' => (float)($unit['monthly_rent'] ?? 3000.00),
                 'amount_paid' => 0.00,
                 'status' => 'unpaid'
@@ -1765,6 +1771,7 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
                   elseif ($_GET['error'] === 'upload_failed') echo 'Failed to save the receipt image. Please try again.';
                   elseif ($_GET['error'] === 'no_file') echo 'Please attach a payment receipt photo before submitting.';
                   elseif ($_GET['error'] === 'invalid_file_type') echo 'Only JPG, PNG, WEBP, or PDF receipt files are allowed.';
+                  elseif ($_GET['error'] === 'invalid_reference') echo 'Invalid reference number. Numbers only are allowed.';
                   else echo 'An error occurred while saving your payment. Please try again.';
                   ?>
                 </p>
@@ -1947,7 +1954,8 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
                     <!-- 5. Reference Number -->
                     <div class="md:col-span-2">
                       <label for="payReferenceNumber" class="block font-bold text-sm text-[#422B0B] mb-1.5" style="color: #422B0B !important;">Reference Number:</label>
-                      <input type="text" id="payReferenceNumber" name="reference_number" placeholder="Enter reference number (e.g. 083948857486783)" class="w-full bg-[#FFFDF8] text-[#3E2723] font-bold text-sm px-4 py-2.5 rounded-xl border border-[#8C6D43]/60 shadow-md placeholder-[#9A7B4F] focus:outline-none focus:ring-2 focus:ring-[#5E3F12] <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed' : '' ?>" <?= !$isTenantVerified ? 'disabled' : '' ?>>
+                      <input type="text" id="payReferenceNumber" name="reference_number" inputmode="numeric" pattern="[0-9]+" autocomplete="off" placeholder="Enter reference number (numbers only, e.g. 083948857486783)" class="w-full bg-[#FFFDF8] text-[#3E2723] font-bold text-sm px-4 py-2.5 rounded-xl border border-[#8C6D43]/60 shadow-md placeholder-[#9A7B4F] focus:outline-none focus:ring-2 focus:ring-[#5E3F12] <?= !$isTenantVerified ? 'opacity-60 cursor-not-allowed' : '' ?>" <?= !$isTenantVerified ? 'disabled' : '' ?>>
+                      <p id="payRefErrorMsg" class="text-xs font-bold text-red-600 mt-1 hidden" style="color: #dc2626;" role="alert">Reference number must contain numbers only.</p>
                     </div>
                   </div>
 
@@ -2831,7 +2839,7 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
                     </div>
                     <div class="tararent-info-field">
                       <span class="tararent-field-label">Date of Moving In</span>
-                      <span class="tararent-field-value"><?= !empty($user['move_in_date']) ? date('F d, Y', strtotime($user['move_in_date'])) : 'November 18, 2026' ?></span>
+                      <span class="tararent-field-value"><?= !empty($user['move_in_date']) ? date('F d, Y', strtotime($user['move_in_date'])) : (!empty($user['created_at']) ? date('F d, Y', strtotime($user['created_at'])) : 'Not set') ?></span>
                     </div>
                     <div class="tararent-info-field">
                       <span class="tararent-field-label">Monthly Rent Amount</span>
@@ -6109,6 +6117,7 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
     let isLivenessConfirmed = false;
     let lastFaceDetected = false;
     let isFaceApiModelsLoaded = false;
+    let isFaceRecognitionModelLoaded = false;
     let isModelLoadingInProgress = false;
 
     /**
@@ -6167,6 +6176,19 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
           break;
         } catch (err) {
           console.warn('Could not load models from uri:', uri, err);
+        }
+      }
+
+      if (isFaceApiModelsLoaded && faceapi.nets.faceRecognitionNet) {
+        const recogUris = ['assets/models', '/TaraRent/assets/models', 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model'];
+        for (const rUri of recogUris) {
+          try {
+            await faceapi.nets.faceRecognitionNet.loadFromUri(rUri);
+            isFaceRecognitionModelLoaded = true;
+            break;
+          } catch (rErr) {
+            console.warn('Could not load faceRecognitionNet from uri:', rUri, rErr);
+          }
         }
       }
 
@@ -6509,7 +6531,27 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
       // Extract high quality Base64 JPEG frame
       const liveFaceBase64 = canvas.toDataURL('image/jpeg', 0.95);
 
-      // 2. Pause video feed only after frame has been cleanly drawn to canvas
+      // Extract persistent 128-float face descriptor cleanly before pausing video
+      let extractedDescriptorJson = null;
+      if (typeof faceapi !== 'undefined' && (isFaceRecognitionModelLoaded || (faceapi.nets.faceRecognitionNet && faceapi.nets.faceRecognitionNet.isLoaded))) {
+        try {
+          const descOpts = new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.5 });
+          let descRes = await faceapi.detectSingleFace(canvas, descOpts).withFaceLandmarks().withFaceDescriptor();
+          if ((!descRes || !descRes.descriptor) && video.readyState >= 2) {
+            descRes = await faceapi.detectSingleFace(video, descOpts).withFaceLandmarks().withFaceDescriptor();
+          }
+          if (descRes && descRes.descriptor && descRes.descriptor.length === 128) {
+            const floatArr = Array.from(descRes.descriptor).map(v => Number(v));
+            if (floatArr.every(Number.isFinite)) {
+              extractedDescriptorJson = JSON.stringify(floatArr);
+            }
+          }
+        } catch (descErr) {
+          console.warn('Live verification face descriptor notice:', descErr);
+        }
+      }
+
+      // 2. Pause video feed only after frame & descriptor have been cleanly captured
       try {
         video.pause();
       } catch (e) {}
@@ -6536,6 +6578,9 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
       const formData = new FormData();
       formData.append('action', 'complete_verification');
       formData.append('live_face_data', liveFaceBase64);
+      if (extractedDescriptorJson) {
+        formData.append('face_descriptor', extractedDescriptorJson);
+      }
       if (selectedIdFile) {
         formData.append('id_photo', selectedIdFile);
       }
@@ -8537,12 +8582,68 @@ $myTotalMonthlyRent = (float)$unit['monthly_rent'] + $myAdditionalFee;
           });
         }
 
+        const refInput = document.getElementById('payReferenceNumber');
+        const refErrorMsg = document.getElementById('payRefErrorMsg');
+        if (refInput) {
+          const sanitizeRefValue = (rawVal) => {
+            const strVal = String(rawVal || '');
+            const digitsOnly = strVal.replace(/[^0-9]/g, '');
+            const hadNonDigits = digitsOnly !== strVal;
+            if (refInput.value !== digitsOnly) {
+              refInput.value = digitsOnly;
+            }
+            if (refErrorMsg) {
+              if (hadNonDigits) {
+                refErrorMsg.classList.remove('hidden');
+                refErrorMsg.style.display = 'block';
+              } else {
+                refErrorMsg.classList.add('hidden');
+                refErrorMsg.style.display = 'none';
+              }
+            }
+            return !hadNonDigits;
+          };
+
+          refInput.addEventListener('input', () => {
+            sanitizeRefValue(refInput.value);
+          });
+
+          refInput.addEventListener('paste', (e) => {
+            const pasted = (e.clipboardData || window.clipboardData)?.getData('text') || '';
+            if (/[^0-9]/.test(pasted)) {
+              e.preventDefault();
+              const cleanPaste = pasted.replace(/[^0-9]/g, '');
+              const start = refInput.selectionStart ?? refInput.value.length;
+              const end = refInput.selectionEnd ?? refInput.value.length;
+              refInput.value = (refInput.value.slice(0, start) + cleanPaste + refInput.value.slice(end)).replace(/[^0-9]/g, '');
+              if (refErrorMsg) {
+                refErrorMsg.classList.remove('hidden');
+                refErrorMsg.style.display = 'block';
+              }
+            }
+          });
+        }
+
         if (paymentForm) {
           paymentForm.addEventListener('submit', function(e) {
             if (!IS_TENANT_VERIFIED) {
               e.preventDefault();
               openVerificationActionPrompt('payment');
               return false;
+            }
+            if (refInput) {
+              const trimmedRef = refInput.value.trim();
+              if (trimmedRef !== '' && !/^\d+$/.test(trimmedRef)) {
+                e.preventDefault();
+                refInput.value = trimmedRef.replace(/[^0-9]/g, '');
+                if (refErrorMsg) {
+                  refErrorMsg.classList.remove('hidden');
+                  refErrorMsg.style.display = 'block';
+                }
+                showToast('Reference number must contain numbers only.', 'error');
+                refInput.focus();
+                return false;
+              }
             }
             if (!fileInput || !fileInput.files || fileInput.files.length === 0) {
               e.preventDefault();
